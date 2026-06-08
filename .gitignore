@@ -1,0 +1,64 @@
+# Secrets - NEVER commit credentials
+# After running git rm --cached .env, new .env files won't be tracked
+.env
+.env.local
+.env.production
+.env.*.local
+secrets.env
+# Keep template for documentation
+!secrets.template.env
+
+
+# Build results
+bin/
+bin\\*/
+obj/
+*.root.bak/
+.vs/
+
+# User-specific files
+*.user
+*.suo
+*.userosscache
+*.sln.docstates
+*.lscache
+
+# Local agent/tooling state
+.agents/
+.claude/
+.codegraph/
+.ruff_cache/
+
+# OS generated files
+.DS_Store
+Thumbs.db
+
+# Rider
+.idea/
+*.sln.iml
+
+# Others
+*.log
+!tests/scripts/fixtures/rag_observability/*.log
+*.vspscc
+*.vssscc
+_ReSharper*/
+*.[Rr]e[Ss]harper
+*.DotSettings.user
+
+# SSL/TLS Certificates - DO NOT COMMIT PRIVATE KEYS
+certs/*.key
+certs/*.pfx
+certs/*.pem
+certs/ghcr-config.json
+
+# Python
+*.pyc
+__pycache__/
+.venv/
+
+# SonarQube
+.sonarqube/
+
+# Git worktrees
+.worktree/
