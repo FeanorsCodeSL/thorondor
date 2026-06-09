@@ -1,6 +1,7 @@
 """Search pipeline orchestration."""
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 import asyncio
+from collections.abc import Callable
 import time
 
 from .assembly import ResultAssemblerImpl
@@ -18,9 +19,11 @@ from .interfaces import (
     SemanticChunker,
 )
 from .merge import merge_dedup
-from .models import RawMarkdown, SearchRequest, SearchResponse, SearchStats
-from .normalize import normalize_url
-from .types import Page, ScoredChunk
+from .models import Citation, Passage, RawMarkdown, SearchRequest, SearchResponse, SearchStats
+from .types import DiscoveryResult, Page, ScoredChunk
+from .url_safety import filter_safe_discovery_results
+
+MAX_SUBQUERIES = 3
 
 
 class SearchDependencyUnavailable(Exception):
@@ -42,6 +45,15 @@ class PipelineDeps:
     default_token_budget: int
     default_max_urls: int
     blocklist: set[str]
+    domain_allowlist: set[str] | None = None
+    allowlist_only: bool = False
+    url_safety: Callable[[list[DiscoveryResult]], list[DiscoveryResult]] = filter_safe_discovery_results
+
+    async def aclose(self) -> None:
+        for component in (self.planner, self.discovery, self.extractor, self.chunker, self.reranker):
+            close = getattr(component, "aclose", None)
+            if close is not None:
+                await close()
 
 
 def _empty_response(query: str, stats: SearchStats, reason: str) -> SearchResponse:
@@ -55,7 +67,8 @@ async def run_search(req: SearchRequest, deps: PipelineDeps) -> SearchResponse:
     max_urls = req.max_urls or deps.default_max_urls
     stats = SearchStats()
 
-    subqueries = await deps.planner.plan(req.query) if req.decompose else [req.query]
+    planned = await deps.planner.plan(req.query) if req.decompose else [req.query]
+    subqueries = (planned or [req.query])[:MAX_SUBQUERIES]
     stats.sub_queries = subqueries
 
     try:
@@ -71,28 +84,43 @@ async def run_search(req: SearchRequest, deps: PipelineDeps) -> SearchResponse:
         stats.elapsed_ms = int((time.perf_counter() - started) * 1000)
         return _empty_response(req.query, stats, "no_results_from_discovery")
 
+    safe_candidates = deps.url_safety(merged)
+
     blocklist = set(deps.blocklist)
     if req.exclude_domains:
-        blocklist.update(host.lower() for host in req.exclude_domains)
-    allowlist = {host.lower() for host in req.domains} if req.domains else None
-    selected = deps.selector.select(merged, max_urls, blocklist, allowlist)
+        blocklist.update(req.exclude_domains)
+    allowlist = set(req.domains) if req.domains else None
+    if deps.allowlist_only:
+        operator_allowlist = set(deps.domain_allowlist or set())
+        allowlist = operator_allowlist if allowlist is None else allowlist & operator_allowlist
+    selected = deps.selector.select(safe_candidates, max_urls, blocklist, allowlist)
     stats.urls_selected = len(selected)
     if not selected:
         stats.elapsed_ms = int((time.perf_counter() - started) * 1000)
-        return _empty_response(req.query, stats, "no_results_from_discovery")
+        return _empty_response(req.query, stats, "no_urls_after_selection")
 
     pages = await deps.extractor.extract([result.url for result in selected])
     stats.urls_crawled_ok = len(pages)
+    stats.urls_crawled_failed = max(0, stats.urls_selected - stats.urls_crawled_ok)
     if not pages:
         stats.elapsed_ms = int((time.perf_counter() - started) * 1000)
         return _empty_response(req.query, stats, "all_crawls_failed")
 
-    pages = content_dedup(pages)
+    pages_before_dedup = len(pages)
+    pages = [
+        replace(page, source_id=index + 1)
+        for index, page in enumerate(content_dedup(pages))
+    ]
+    stats.pages_after_dedup = len(pages)
+    stats.pages_deduped = max(0, pages_before_dedup - len(pages))
     try:
         chunks = await deps.chunker.chunk(pages)
     except ChunkerUnavailable as exc:
         raise SearchDependencyUnavailable("chunker", "chunker_unavailable") from exc
     stats.chunks_produced = len(chunks)
+    if chunks:
+        stats.chunk_strategy = chunks[0].chunk_strategy
+        stats.embedding_degraded = any(chunk.embedding_degraded for chunk in chunks)
     if not chunks:
         stats.elapsed_ms = int((time.perf_counter() - started) * 1000)
         return _empty_response(req.query, stats, "no_chunks_after_dedup")
@@ -105,18 +133,38 @@ async def run_search(req: SearchRequest, deps: PipelineDeps) -> SearchResponse:
         scored = [ScoredChunk(chunk, 1.0 / (index + 1)) for index, chunk in enumerate(chunks)]
         stats.reranked = False
         stats.chunks_reranked = 0
+    if not scored:
+        stats.elapsed_ms = int((time.perf_counter() - started) * 1000)
+        return _empty_response(req.query, stats, "no_chunks_after_rerank")
 
-    passages, citations = deps.assembler.assemble(scored, token_budget, req.max_passages)
+    assembled_passages, assembled_citations = deps.assembler.assemble(scored, token_budget, req.max_passages)
+    passages = [
+        Passage(
+            text=passage.text,
+            score=passage.score,
+            token_count=passage.token_count,
+            citation_id=passage.citation_id,
+        )
+        for passage in assembled_passages
+    ]
+    citations = [
+        Citation(id=citation.id, url=citation.url, title=citation.title)
+        for citation in assembled_citations
+    ]
     stats.tokens_returned = sum(p.token_count for p in passages)
     stats.elapsed_ms = int((time.perf_counter() - started) * 1000)
 
     raw_markdown = None
     if req.include_raw_markdown:
-        by_url: dict[str, Page] = {normalize_url(page.url): page for page in pages}
+        by_source_id: dict[int, Page] = {
+            page.source_id: page
+            for page in pages
+            if page.source_id is not None
+        }
         raw_markdown = [
-            RawMarkdown(citation_id=citation.id, markdown=by_url[normalize_url(citation.url)].markdown)
-            for citation in citations
-            if normalize_url(citation.url) in by_url
+            RawMarkdown(citation_id=citation.id, markdown=by_source_id[citation.source_id].markdown)
+            for citation in assembled_citations
+            if citation.source_id in by_source_id
         ]
 
     return SearchResponse(
@@ -137,19 +185,34 @@ def build_deps_from_settings(settings) -> PipelineDeps:
     from .selection import SelectionPolicyImpl
 
     planner = (
-        LlmPlanner(settings.llm_endpoint, settings.llm_model)
+        LlmPlanner(settings.llm_endpoint, settings.llm_model, api_key=settings.llm_api_key)
         if settings.llm_endpoint and settings.llm_model
         else IdentityPlanner()
     )
     return PipelineDeps(
         planner=planner,
-        discovery=SearxngDiscovery(settings.searxng_url),
+        discovery=SearxngDiscovery(settings.searxng_url, api_key=settings.searxng_api_key),
         selector=SelectionPolicyImpl(),
-        extractor=Crawl4aiExtractor(settings.crawl4ai_url, settings.crawl_concurrency, settings.crawl_timeout_s),
-        chunker=ChunkerClient(settings.chunker_url),
-        reranker=RerankerClient(settings.reranker_endpoint, settings.reranker_model, settings.reranker_path),
+        extractor=Crawl4aiExtractor(
+            settings.crawl4ai_url,
+            settings.crawl_concurrency,
+            settings.crawl_timeout_s,
+            respect_robots_txt=settings.crawl_respect_robots_txt,
+            per_host_concurrency=settings.crawl_per_host_concurrency,
+            api_key=settings.crawl4ai_api_key,
+        ),
+        chunker=ChunkerClient(settings.chunker_url, api_key=settings.chunker_api_key),
+        reranker=RerankerClient(
+            settings.reranker_endpoint,
+            settings.reranker_model,
+            settings.reranker_path,
+            api_key=settings.reranker_api_key,
+        ),
         assembler=ResultAssemblerImpl(),
         default_token_budget=settings.default_token_budget,
         default_max_urls=settings.max_urls,
         blocklist=settings.domain_blocklist,
+        domain_allowlist=settings.domain_allowlist,
+        allowlist_only=settings.allowlist_only,
+        url_safety=filter_safe_discovery_results,
     )

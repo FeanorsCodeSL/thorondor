@@ -6,8 +6,8 @@
 
 ## Goal
 
-Compose the whole stack — first-party `orchestrator` + `chunker`, bundled
-`SearXNG` + `Crawl4AI`, and optional bundled model servers — into one
+Compose the whole stack — first-party `orchestrator` + `chunker`, upstream
+container services `SearXNG` + `Crawl4AI`, and optional bundled model servers — into one
 `docker-compose.yml` with the default core stack plus the optional
 `bundled-models` profile, a Windows-testable llama.cpp override
 (`docker-compose.llamacpp.yml`), a complete `.env.example`, the SearXNG
@@ -42,7 +42,7 @@ configuration it needs, and a green end-to-end smoke test where a real
 **Kind:** logic
 
 ### Tasks
-- [x] Create `docker-compose.yml` at the repo root from doc 03 §3: `name: thorondor`; default core services `orchestrator` (build `orchestrator/Dockerfile`, the **only** published port `8080:8080`), `chunker` (build `./semantic-chunking-service`), `searxng` (`searxng/searxng:latest`, read-only `./searxng:/etc/searxng`), and `crawl4ai` (`unclecode/crawl4ai:latest`, `shm_size: "1g"`); optional `embedding` + `reranker` under `profiles: ["bundled-models"]`; a single internal `networks: [internal]`. There is no separate `core` compose profile: core is the default stack when no profile is supplied.
+- [x] Create `docker-compose.yml` at the repo root from doc 03 §3: `name: thorondor`; default core services `orchestrator` (build `orchestrator/Dockerfile`, the **only** published port `8080:8080`), `chunker` (build `./semantic-chunking-service`), `searxng` (`searxng/searxng:latest`, read-only `./searxng:/etc/searxng`), and `crawl4ai` as the public upstream self-hosted Docker API (`unclecode/crawl4ai:0.8.9`, `shm_size: "1g"`, image-only/no local build); optional `embedding` + `reranker` under `profiles: ["bundled-models"]`; a single internal `networks: [internal]`. There is no separate `core` compose profile: core is the default stack when no profile is supplied.
 - [x] Wire the orchestrator env block to the internal service URLs (`SEARXNG_URL=http://searxng:8080`, `CRAWL4AI_URL=http://crawl4ai:11235`, `CHUNKER_URL=http://chunker:8000`) and pass the BYO/knob vars through from `.env` with the documented defaults.
 - [x] Add `depends_on: [searxng, crawl4ai, chunker]` to the orchestrator (startup order only — readiness is handled by the degrade-don't-crash posture from Plan 02 Phase 5/6).
 
@@ -125,7 +125,7 @@ Desktop's `dockerDesktopLinuxEngine` is running.
 ### Tasks
 - [ ] Add the first-party `LICENSE` (permissive — MIT/Apache-2.0 per doc 05 §1; confirm choice with the owner before committing).
 - [ ] Credit **Chroma Research** for the ClusterSemanticChunker algorithm in the repo README and as a header comment in `chunking/cluster_semantic.py` (doc 05 §2) — do not represent the algorithm as novel.
-- [ ] Add a `NOTICE`/attribution for Crawl4AI (Apache-2.0) and a short **SearXNG AGPL-3.0 boundary** note in the README pointing to doc 05 §3 (run unmodified, configured-only).
+- [ ] Add a `NOTICE`/attribution for Crawl4AI (Apache-2.0, public upstream Docker image consumed over HTTP, no vendored source) and a short **SearXNG AGPL-3.0 boundary** note in the README pointing to doc 05 §3 (run unmodified, configured-only).
 - [ ] Pin the bundled model-server image **tags** in `docker-compose.yaml` and record, next to each, that its `LICENSE` for that tag was verified (doc 05 §4 — TEI license drift; Infinity/vLLM as permissive alternatives).
 - [ ] Walk the README Quickstart top-to-bottom on a clean checkout; fix any command that no longer matches the built artifacts.
 

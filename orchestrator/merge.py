@@ -5,10 +5,22 @@ from .types import DiscoveryResult
 
 def merge_dedup(result_sets: list[list[DiscoveryResult]]) -> list[DiscoveryResult]:
     best: dict[str, DiscoveryResult] = {}
+    counts: dict[str, int] = {}
     for results in result_sets:
         for result in results:
             key = normalize_url(result.url)
+            counts[key] = counts.get(key, 0) + 1
             existing = best.get(key)
             if existing is None or result.score > existing.score:
                 best[key] = result
-    return sorted(best.values(), key=lambda r: (-r.score, normalize_url(r.url)))
+    merged = [
+        DiscoveryResult(
+            result.title,
+            result.url,
+            result.snippet,
+            result.engine,
+            result.score + ((counts[normalize_url(result.url)] - 1) * 0.0001),
+        )
+        for result in best.values()
+    ]
+    return sorted(merged, key=lambda r: (-r.score, normalize_url(r.url)))

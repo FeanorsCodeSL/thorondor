@@ -1,10 +1,25 @@
 """URL normalization helpers."""
 from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
 
+from .url_safety import parse_ip_literal
+
+
+def canonical_host(host: str | None) -> str:
+    if not host:
+        return ""
+    normalized = host.rstrip(".").lower()
+    literal = parse_ip_literal(normalized)
+    if literal is not None:
+        return str(literal)
+    try:
+        return normalized.encode("idna").decode("ascii")
+    except UnicodeError:
+        return ""
+
 
 def host_for(url: str) -> str:
     parsed = urlparse(url)
-    return (parsed.hostname or url).lower()
+    return canonical_host(parsed.hostname)
 
 
 def normalize_url(url: str) -> str:
@@ -13,7 +28,7 @@ def normalize_url(url: str) -> str:
         return url.rstrip("/")
 
     scheme = parsed.scheme.lower() or "https"
-    host = (parsed.hostname or "").lower()
+    host = canonical_host(parsed.hostname)
     port = parsed.port
     include_port = port and not ((scheme == "http" and port == 80) or (scheme == "https" and port == 443))
     netloc = f"{host}:{port}" if include_port else host

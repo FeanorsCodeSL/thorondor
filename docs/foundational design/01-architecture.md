@@ -22,7 +22,7 @@ the internal compose network.
                              │       │       │       │          │
               (optional)     ▼       ▼       ▼       ▼          ▼
               LLM endpoint  SearXNG  Crawl4AI  Chunking   Reranker endpoint
-              (BYO chat)   (bundled) (bundled)  Service   (BYO / bundled)
+              (BYO chat)   (image)  (upstream)  Service   (BYO / bundled)
                                                   │
                                                   ▼
                                           Embedding endpoint
@@ -35,9 +35,9 @@ the internal compose network.
 - **Semantic Chunking Service** — first-party FastAPI app. Stateless,
   CPU-bound. Converts text/markdown into coherent passages. Calls the embedding
   endpoint. Documented in full in [`02-semantic-chunking-service.md`](02-semantic-chunking-service.md).
-- **SearXNG** — bundled, unmodified, opaque. Metasearch over many engines.
-- **Crawl4AI** — bundled. Headless fetch + render + boilerplate strip →
-  markdown.
+- **SearXNG** — upstream image, unmodified, opaque. Metasearch over many engines.
+- **Crawl4AI** — public upstream Dockerized service consumed over HTTP.
+  Headless fetch + render + boilerplate strip → markdown.
 - **Embedding / Reranker / LLM endpoints** — external (BYO) OpenAI-compatible
   HTTP services, or the optional bundled defaults.
 
@@ -61,12 +61,12 @@ by config.
 | 2 | **Discover** | SearXNG client | Issue sub-queries in parallel; collect `{title, url, snippet, engine, score}`. No page content yet. |
 | 3 | **Merge / dedup** | Orchestrator (pure) | Union sub-query result sets, dedup by normalized URL, re-score using SearXNG aggregate ranking. |
 | 4 | **Select / budget** | Selection policy (pure) | Cap to top-N URLs, drop blocklisted / non-crawlable domains, optional cheap snippet-relevance pass. **This protects the expensive crawl stage.** |
-| 5 | **Extract** | Crawl4AI client | Fetch + render + strip → clean markdown. Bounded concurrency, per-URL timeout, failures non-fatal (partial results). |
+| 5 | **Extract** | Crawl4AI client | Fetch + render + strip → clean markdown. Bounded global/per-host concurrency, robots flag, per-URL timeout, failures non-fatal (partial results). |
 | 6 | **Content dedup** | Orchestrator (pure) | Drop near-duplicate bodies (syndicated articles under different URLs). |
 | 7 | **Chunk** | Chunking Service | Each markdown doc → coherent passages carrying `{source_url, title, position}` provenance. |
-| 8 | **Pre-filter** *(optional)* | Orchestrator | If chunk count is large, a cheap in-memory cosine pass narrows to ~50–100 candidates before the reranker. |
+| 8 | **Pre-filter** *(deferred)* | Orchestrator | Future optional stage: if chunk count is large, a cheap in-memory cosine pass can narrow to ~50–100 candidates before the reranker. Not part of the current v1 hot path. |
 | 9 | **Rerank** | Reranker client | Score each surviving passage against the **original user query** (not the sub-queries). |
-| 10 | **Assemble** | Result assembler (pure) | Select top passages by **token budget**, not a fixed count; attach citations from provenance. |
+| 10 | **Assemble** | Result assembler (pure) | Select top passages by **token budget**, not a fixed count; attach citations from provenance and label passage text as untrusted external web content. |
 | 11 | **Return** | Orchestrator | Hand the assembled, cited passages back to the caller. |
 
 ### Stage notes that matter
@@ -74,7 +74,8 @@ by config.
 - **Stage 1 is optional and BYO.** Many RAG systems reuse an in-house LLM
   query-helper for decomposition. Here, the planner defaults to an identity
   transform so the service needs no LLM at all. Set `LLM_ENDPOINT` to enable
-  decomposition/expansion against any OpenAI-compatible chat endpoint.
+  decomposition/expansion against any OpenAI-compatible chat endpoint. Without
+  an LLM planner, `decompose=true` still yields exactly `[query]`.
 - **Stage 4 is the single most important production control.** Crawling is the
   expensive stage. Never crawl the full deduped list. Start with a top-N of
   5–8.
@@ -97,8 +98,8 @@ orchestrator:
   plan(query)                      → [q1, q2, ...]        (or [query])
   for q in sub-queries (parallel): searxng.search(q)      → results
   merged   = merge_dedup(results)
-  selected = selection_policy(merged, max_urls, blocklist)
-  pages    = crawl4ai.extract(selected_urls)              (bounded, partial-ok)
+  selected = selection_policy(merged, max_urls, blocklist, allowlist)
+  pages    = crawl4ai.extract(selected_urls)              (robots, bounded, partial-ok)
   pages    = content_dedup(pages)
   chunks   = chunking.chunk(pages)                         (POST /chunk per doc or batched)
   cands    = prefilter(chunks, query)                      (optional)
@@ -125,7 +126,7 @@ variable. None are hard-coded. This is what makes the project reusable.
 | Reranker | `RERANKER_ENDPOINT`, `RERANKER_MODEL` | `/rerank` (query + documents → scores) | Yes (compose `bundled-models` profile) |
 | LLM (query planner) | `LLM_ENDPOINT`, `LLM_MODEL` | OpenAI `/v1/chat/completions` | No (optional; identity planner if unset) |
 | Discovery | `SEARXNG_URL` | SearXNG JSON API | Yes (bundled SearXNG) |
-| Extraction | `CRAWL4AI_URL` | Crawl4AI HTTP API | Yes (bundled Crawl4AI) |
+| Extraction | `CRAWL4AI_URL` | Crawl4AI HTTP API | Yes (public upstream Docker image) |
 
 **Contract over implementation.** The chunker does not care whether
 `EMBEDDING_ENDPOINT` is a `vLLM`, `text-embeddings-inference` (TEI), `Infinity`,
@@ -187,3 +188,8 @@ affects quality and cost, and are unit-tested in isolation with no network.
 
 Detailed timeouts, retries, and concurrency bounds are in
 [`03-deployment.md`](03-deployment.md).
+
+Thorondor v1 deliberately does **not** add automatic cross-stage retries.
+Discovery/crawl failures are surfaced through the graded failure posture above
+so the caller or agent can decide whether to reword and retry. This avoids
+retry storms against search engines, target sites, and model endpoints.

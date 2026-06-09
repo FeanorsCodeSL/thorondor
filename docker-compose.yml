@@ -25,9 +25,18 @@ services:
       MAX_URLS: "${MAX_URLS:-6}"
       CRAWL_CONCURRENCY: "${CRAWL_CONCURRENCY:-4}"
       CRAWL_TIMEOUT_S: "${CRAWL_TIMEOUT_S:-15}"
+      CRAWL_PER_HOST_CONCURRENCY: "${CRAWL_PER_HOST_CONCURRENCY:-1}"
+      CRAWL_RESPECT_ROBOTS_TXT: "${CRAWL_RESPECT_ROBOTS_TXT:-true}"
       DEFAULT_TOKEN_BUDGET: "${DEFAULT_TOKEN_BUDGET:-4000}"
       CACHE_BACKEND: "${CACHE_BACKEND:-memory}"
       DOMAIN_BLOCKLIST: "${DOMAIN_BLOCKLIST:-}"
+      DOMAIN_ALLOWLIST: "${DOMAIN_ALLOWLIST:-}"
+      ALLOWLIST_ONLY: "${ALLOWLIST_ONLY:-false}"
+      SEARXNG_API_KEY: "${SEARXNG_API_KEY:-}"
+      CRAWL4AI_API_KEY: "${CRAWL4AI_API_KEY:-}"
+      CHUNKER_API_KEY: "${CHUNKER_API_KEY:-}"
+      RERANKER_API_KEY: "${RERANKER_API_KEY:-}"
+      LLM_API_KEY: "${LLM_API_KEY:-}"
     depends_on:
       - searxng
       - crawl4ai
@@ -38,9 +47,11 @@ services:
     build:
       context: ./semantic-chunking-service
       dockerfile: Dockerfile
+    mem_limit: "${CHUNKER_MEM_LIMIT:-768m}"
     environment:
       EMBEDDING_ENDPOINT: "${EMBEDDING_ENDPOINT:-http://embedding:80}"
       EMBEDDING_MODEL: "${EMBEDDING_MODEL:-BAAI/bge-m3}"
+      EMBEDDING_API_KEY: "${EMBEDDING_API_KEY:-}"
       CHUNKER_MAX_SEGMENTS_DP: "${CHUNKER_MAX_SEGMENTS_DP:-10000}"
       REWARD_CACHE_MAX_SIZE: "${REWARD_CACHE_MAX_SIZE:-100000}"
 
@@ -54,7 +65,11 @@ services:
 
   crawl4ai:
     <<: *internal
-    image: unclecode/crawl4ai:latest
+    # Public upstream self-hosted Docker API. Keep this as an image dependency
+    # and integrate over HTTP; do not vendor or build Crawl4AI in this repo.
+    image: unclecode/crawl4ai:0.8.9
+    environment:
+      CRAWL4AI_API_TOKEN: "${CRAWL4AI_API_KEY:-}"
     shm_size: "1g"
 
   embedding:

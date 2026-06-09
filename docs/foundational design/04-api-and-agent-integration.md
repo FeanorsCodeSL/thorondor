@@ -5,14 +5,17 @@
 
 The orchestrator exposes the same pipeline two ways:
 
-- a **REST** endpoint (`POST /search`) for any HTTP caller, and
+- a **REST** endpoint (`POST /v1/search`, with `/search` kept as a compatibility alias) for any HTTP caller, and
 - an **MCP server** exposing a `web_search` tool for MCP-capable agents.
 
 Both call the identical pipeline function; the surfaces are thin.
 
 ---
 
-## 1. REST: `POST /search`
+## 1. REST: `POST /v1/search`
+
+`POST /search` is kept as a compatibility alias during the v1 window. New
+callers should use `/v1/search`.
 
 ### Request
 
@@ -33,7 +36,9 @@ Both call the identical pipeline function; the surfaces are thin.
 }
 ```
 
-Only `query` is required. Everything else has a server default.
+Only `query` is required. Bounds are enforced before discovery or crawl:
+`query` is 1-500 characters, `token_budget` is 1-16000, `max_urls` is
+1-20, and `max_passages` is 1-50.
 
 ### Response
 
@@ -45,7 +50,9 @@ Only `query` is required. Everything else has a server default.
       "text": "On 1 August 2025 the obligations for general-purpose AI models ...",
       "score": 0.913,                // reranker score vs the ORIGINAL query
       "token_count": 312,
-      "citation_id": 1
+      "citation_id": 1,
+      "provenance": "external_web",
+      "trust": "untrusted"
     }
   ],
   "citations": [
@@ -60,13 +67,17 @@ Only `query` is required. Everything else has a server default.
     "chunks_reranked": 88,
     "reranked": true,
     "tokens_returned": 3870,
-    "elapsed_ms": 5210
-  }
+    "elapsed_ms": 5210,
+    "reason": null
+  },
+  "raw_markdown": null,
+  "schema_version": "thorondor.search.v1"
 }
 ```
 
 - **`passages`** are ordered by reranker score and truncated to fit
-  `token_budget`. Each carries a `citation_id` into `citations`.
+  `token_budget`. Each carries a `citation_id` into `citations` and is labeled
+  as untrusted external web content for downstream agents.
 - **`citations`** is the deduplicated source list, so an agent can render
   footnotes without re-deriving provenance.
 - **`stats`** makes the pipeline observable per call (how many URLs were found,
@@ -85,8 +96,8 @@ Only `query` is required. Everything else has a server default.
 }
 ```
 
-`reason` is one of `no_results_from_discovery`, `all_crawls_failed`,
-`no_chunks_after_dedup`. The call still returns `200` with an explanatory
+`reason` is one of `no_results_from_discovery`, `no_urls_after_selection`,
+`all_crawls_failed`, `no_chunks_after_dedup`. The call still returns `200` with an explanatory
 `reason` rather than an opaque error, so an agent can decide whether to reword
 and retry.
 
@@ -106,14 +117,25 @@ function as REST.
 ```python
 # orchestrator/mcp_server.py
 from mcp.server.fastmcp import FastMCP
+from .models import SearchRequest
 from .pipeline import run_search          # shared with the REST handler
 
-mcp = FastMCP("thorondor")
+mcp = FastMCP("thorondor", streamable_http_path="/", stateless_http=True)
 
 
 @mcp.tool()
-async def web_search(query: str, token_budget: int = 4000, max_urls: int = 6) -> dict:
-    """Search the live web and return reranked, citation-bearing passages.
+async def web_search(
+    query: str,
+    token_budget: int | None = None,
+    max_urls: int | None = None,
+    freshness: str | None = None,
+    domains: list[str] | None = None,
+    exclude_domains: list[str] | None = None,
+    decompose: bool | None = None,
+    max_passages: int | None = None,
+    include_raw_markdown: bool | None = None,
+) -> dict:
+    """Search the live web and return the versioned SearchResponse envelope.
 
     Use this when you need current information from the open web. Returns a
     small set of the most relevant passages (already reranked and trimmed to
@@ -122,13 +144,15 @@ async def web_search(query: str, token_budget: int = 4000, max_urls: int = 6) ->
 
     Args:
         query: Natural-language search query.
-        token_budget: Maximum total tokens of passages to return.
-        max_urls: Maximum number of pages to crawl for this query.
+        token_budget: Optional maximum total tokens of passages to return.
+        max_urls: Optional maximum number of pages to select before crawl.
 
     Returns:
-        {"passages": [{"text", "score", "citation_id"}], "citations": [{"id", "url", "title"}]}
+        Full SearchResponse dict: query, passages, citations, stats,
+        raw_markdown, and schema_version. Invalid bounds fail before fan-out.
     """
-    return await run_search(query, token_budget=token_budget, max_urls=max_urls)
+    req = SearchRequest(query=query, token_budget=token_budget, max_urls=max_urls)
+    return (await run_search(req, _get_deps())).model_dump()
 ```
 
 ### Serving REST + MCP from one process
@@ -149,9 +173,10 @@ app = FastAPI(title="thorondor")
 async def healthz():
     return {"status": "ok"}
 
+@app.post("/v1/search", response_model=SearchResponse)
 @app.post("/search", response_model=SearchResponse)
 async def search(req: SearchRequest) -> SearchResponse:
-    return await run_search(**req.model_dump())
+    return await run_search(req, get_deps())
 
 # MCP over streamable HTTP at /mcp for remote agents:
 app.mount("/mcp", mcp.streamable_http_app())
@@ -204,7 +229,7 @@ import httpx
 ORCH = "http://your-host:8080"
 
 def web_search(query: str, token_budget: int = 4000) -> dict:
-    r = httpx.post(f"{ORCH}/search", json={"query": query, "token_budget": token_budget}, timeout=60)
+    r = httpx.post(f"{ORCH}/v1/search", json={"query": query, "token_budget": token_budget}, timeout=60)
     r.raise_for_status()
     return r.json()
 

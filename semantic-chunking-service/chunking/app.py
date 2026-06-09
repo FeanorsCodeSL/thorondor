@@ -35,7 +35,7 @@ def chunk(req: ChunkRequest) -> ChunkResponse:
     try:
         overrides = req.params.model_dump(exclude_none=True) if req.params else None
         params = resolve_strategy(version, overrides)
-    except KeyError as exc:
+    except (KeyError, ValueError) as exc:
         raise HTTPException(status_code=400, detail=str(exc))
 
     text = preclean(req.text, req.source_type.value)
@@ -57,8 +57,21 @@ def chunk(req: ChunkRequest) -> ChunkResponse:
             position=i,
             start_index=r.start_index,
             end_index=r.end_index,
-            metadata={**req.metadata, "strategy_version": version},
+            metadata={
+                **req.metadata,
+                "strategy_version": version,
+                "chunk_strategy": r.chunk_strategy,
+                "embedding_degraded": r.embedding_degraded,
+            },
         )
         for i, r in enumerate(results)
     ]
-    return ChunkResponse(chunks=chunks, strategy_version=version, chunk_count=len(chunks))
+    chunk_strategy = results[0].chunk_strategy if results else version
+    embedding_degraded = any(r.embedding_degraded for r in results)
+    return ChunkResponse(
+        chunks=chunks,
+        strategy_version=version,
+        chunk_count=len(chunks),
+        chunk_strategy=chunk_strategy,
+        embedding_degraded=embedding_degraded,
+    )

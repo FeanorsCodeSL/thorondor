@@ -25,3 +25,31 @@ def test_allowlist_keeps_only_matching_hosts():
         {"b.test"},
     )
     assert [r.url for r in out] == ["https://b.test/x"]
+
+
+def test_blocklist_matches_canonical_host_suffixes():
+    out = SelectionPolicyImpl().select(
+        [
+            _r("https://EVIL.COM./x", 1.0),
+            _r("https://sub.evil.com/x", 0.9),
+            _r("https://safe.com/x", 0.8),
+        ],
+        10,
+        {"evil.com"},
+    )
+
+    assert [r.url for r in out] == ["https://safe.com/x"]
+
+
+def test_allowlist_matches_canonical_host_suffixes():
+    out = SelectionPolicyImpl().select(
+        [
+            _r("https://sub.example.com/x", 1.0),
+            _r("https://other.com/x", 0.9),
+        ],
+        10,
+        set(),
+        {"example.com."},
+    )
+
+    assert [r.url for r in out] == ["https://sub.example.com/x"]

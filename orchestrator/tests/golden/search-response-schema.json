@@ -1,0 +1,253 @@
+{
+  "$defs": {
+    "Citation": {
+      "properties": {
+        "id": {
+          "title": "Id",
+          "type": "integer"
+        },
+        "url": {
+          "title": "Url",
+          "type": "string"
+        },
+        "title": {
+          "title": "Title",
+          "type": "string"
+        },
+        "published": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Published"
+        }
+      },
+      "required": [
+        "id",
+        "url",
+        "title"
+      ],
+      "title": "Citation",
+      "type": "object"
+    },
+    "Passage": {
+      "properties": {
+        "text": {
+          "title": "Text",
+          "type": "string"
+        },
+        "score": {
+          "title": "Score",
+          "type": "number"
+        },
+        "token_count": {
+          "title": "Token Count",
+          "type": "integer"
+        },
+        "citation_id": {
+          "title": "Citation Id",
+          "type": "integer"
+        },
+        "provenance": {
+          "const": "external_web",
+          "default": "external_web",
+          "title": "Provenance",
+          "type": "string"
+        },
+        "trust": {
+          "const": "untrusted",
+          "default": "untrusted",
+          "title": "Trust",
+          "type": "string"
+        }
+      },
+      "required": [
+        "text",
+        "score",
+        "token_count",
+        "citation_id"
+      ],
+      "title": "Passage",
+      "type": "object"
+    },
+    "RawMarkdown": {
+      "properties": {
+        "citation_id": {
+          "title": "Citation Id",
+          "type": "integer"
+        },
+        "markdown": {
+          "title": "Markdown",
+          "type": "string"
+        }
+      },
+      "required": [
+        "citation_id",
+        "markdown"
+      ],
+      "title": "RawMarkdown",
+      "type": "object"
+    },
+    "SearchStats": {
+      "properties": {
+        "sub_queries": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Sub Queries",
+          "type": "array"
+        },
+        "urls_discovered": {
+          "default": 0,
+          "title": "Urls Discovered",
+          "type": "integer"
+        },
+        "urls_selected": {
+          "default": 0,
+          "title": "Urls Selected",
+          "type": "integer"
+        },
+        "urls_crawled_ok": {
+          "default": 0,
+          "title": "Urls Crawled Ok",
+          "type": "integer"
+        },
+        "urls_crawled_failed": {
+          "default": 0,
+          "title": "Urls Crawled Failed",
+          "type": "integer"
+        },
+        "pages_after_dedup": {
+          "default": 0,
+          "title": "Pages After Dedup",
+          "type": "integer"
+        },
+        "pages_deduped": {
+          "default": 0,
+          "title": "Pages Deduped",
+          "type": "integer"
+        },
+        "chunks_produced": {
+          "default": 0,
+          "title": "Chunks Produced",
+          "type": "integer"
+        },
+        "chunks_reranked": {
+          "default": 0,
+          "title": "Chunks Reranked",
+          "type": "integer"
+        },
+        "chunk_strategy": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Chunk Strategy"
+        },
+        "embedding_degraded": {
+          "default": false,
+          "title": "Embedding Degraded",
+          "type": "boolean"
+        },
+        "reranked": {
+          "default": false,
+          "title": "Reranked",
+          "type": "boolean"
+        },
+        "tokens_returned": {
+          "default": 0,
+          "title": "Tokens Returned",
+          "type": "integer"
+        },
+        "elapsed_ms": {
+          "default": 0,
+          "title": "Elapsed Ms",
+          "type": "integer"
+        },
+        "reason": {
+          "anyOf": [
+            {
+              "enum": [
+                "no_results_from_discovery",
+                "no_urls_after_selection",
+                "all_crawls_failed",
+                "no_chunks_after_dedup",
+                "no_chunks_after_rerank"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Reason"
+        }
+      },
+      "title": "SearchStats",
+      "type": "object"
+    }
+  },
+  "properties": {
+    "query": {
+      "title": "Query",
+      "type": "string"
+    },
+    "passages": {
+      "items": {
+        "$ref": "#/$defs/Passage"
+      },
+      "title": "Passages",
+      "type": "array"
+    },
+    "citations": {
+      "items": {
+        "$ref": "#/$defs/Citation"
+      },
+      "title": "Citations",
+      "type": "array"
+    },
+    "stats": {
+      "$ref": "#/$defs/SearchStats"
+    },
+    "raw_markdown": {
+      "anyOf": [
+        {
+          "items": {
+            "$ref": "#/$defs/RawMarkdown"
+          },
+          "type": "array"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Raw Markdown"
+    },
+    "schema_version": {
+      "const": "thorondor.search.v1",
+      "default": "thorondor.search.v1",
+      "title": "Schema Version",
+      "type": "string"
+    }
+  },
+  "required": [
+    "query",
+    "passages",
+    "citations",
+    "stats"
+  ],
+  "title": "SearchResponse",
+  "type": "object"
+}

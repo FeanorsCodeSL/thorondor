@@ -81,7 +81,8 @@ class ClusterSemanticChunker:
                               Signature: (List[str]) -> List[List[float]]
             max_chunk_size: Maximum number of tokens per final chunk.
                           Chroma recommends 400 for recall, 200 for precision.
-            min_chunk_size: Minimum number of tokens per chunk.
+            min_chunk_size: Soft minimum token target per chunk. Final and
+                          degenerate chunks can be smaller.
             initial_segment_size: Token size for initial text splitting.
             length_function: Function to count tokens in text. Defaults to a
                            simple word count (split by spaces).
@@ -154,7 +155,8 @@ class ClusterSemanticChunker:
                 start_index=0,
                 end_index=len(segments[0]),
                 token_count=self._length_function(segments[0]),
-                segment_indices=[0]
+                segment_indices=[0],
+                chunk_strategy="cluster-semantic-single"
             )]
 
         logger.info(
@@ -227,7 +229,11 @@ class ClusterSemanticChunker:
         sim_time = time.perf_counter() - sim_start_time
 
         n = len(segments)
-        avg_similarity = (similarity_matrix.sum() - n) / (n * (n - 1)) if n > 1 else 0
+        diagonal_sum = float(np.trace(similarity_matrix))
+        avg_similarity = (
+            (similarity_matrix.sum() - diagonal_sum) / (n * (n - 1))
+            if n > 1 else 0
+        )
         logger.info(
             f"[ClusterSemantic] Step 4/5 - Similarity matrix complete: "
             f"avg similarity={avg_similarity:.3f}, computed in {sim_time:.2f}s"
@@ -421,7 +427,9 @@ class ClusterSemanticChunker:
             return cumsum[end] - cumsum[start]
 
         # Bounded LRU cache for (start, end) -> reward. For large documents this
-        # could grow to O(n^2) entries; LRU eviction keeps memory bounded.
+        # could grow to O(n^2) entries; LRU eviction keeps memory bounded. This
+        # is intentionally per-DP-run because rewards depend on the current
+        # similarity matrix; do not hoist it to instance or module scope.
         @lru_cache(maxsize=REWARD_CACHE_MAX_SIZE)
         def get_reward(start: int, end: int) -> float:
             """Get cached reward for segment range (LRU-bounded)."""
@@ -623,6 +631,9 @@ class ClusterSemanticChunker:
         results = self._build_chunk_results(
             segments, groupings, segment_positions, segment_lengths
         )
+        for result in results:
+            result.chunk_strategy = "cluster-semantic-greedy-token"
+            result.embedding_degraded = True
         logger.info(
             f"[ClusterSemantic] FALLBACK COMPLETE: Created {len(results)} chunks without semantic analysis"
         )
@@ -659,7 +670,8 @@ class ClusterSemanticChunker:
                 start_index=segment_positions[0][0] if segment_positions else 0,
                 end_index=segment_positions[0][1] if segment_positions else len(segments[0]),
                 token_count=segment_lengths[0],
-                segment_indices=[0]
+                segment_indices=[0],
+                chunk_strategy="cluster-semantic-greedy-semantic"
             )]
 
         if progress_callback:
@@ -708,6 +720,8 @@ class ClusterSemanticChunker:
         results = self._build_chunk_results(
             segments, groupings, segment_positions, segment_lengths
         )
+        for result in results:
+            result.chunk_strategy = "cluster-semantic-greedy-semantic"
 
         logger.info(
             f"[ClusterSemantic] GREEDY SEMANTIC COMPLETE: {n} segments -> {len(results)} chunks "

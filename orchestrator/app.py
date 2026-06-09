@@ -1,16 +1,36 @@
 """FastAPI app for Thorondor."""
 import asyncio
+from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 import httpx
 
 from .models import SearchRequest, SearchResponse
+from .mcp_server import mcp
 from .pipeline import SearchDependencyUnavailable, build_deps_from_settings, run_search
 from .settings import load_settings
 
-app = FastAPI(title="thorondor")
+
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
+    async with mcp.session_manager.run():
+        try:
+            yield
+        finally:
+            await close_runtime_clients()
+
+
+app = FastAPI(title="thorondor", lifespan=lifespan, redirect_slashes=False)
 deps = None
 settings = None
+health_client: httpx.AsyncClient | None = None
+
+
+@app.middleware("http")
+async def route_mcp_without_redirect(request: Request, call_next):
+    if request.scope["path"] == "/mcp":
+        request.scope["path"] = "/mcp/"
+    return await call_next(request)
 
 
 def get_settings():
@@ -27,16 +47,33 @@ def get_deps():
     return deps
 
 
+def get_health_client() -> httpx.AsyncClient:
+    global health_client
+    if health_client is None or health_client.is_closed:
+        health_client = httpx.AsyncClient(
+            timeout=2.0,
+            limits=httpx.Limits(max_connections=8, max_keepalive_connections=4),
+        )
+    return health_client
+
+
+async def close_runtime_clients() -> None:
+    global deps, health_client
+    if deps is not None:
+        close = getattr(deps, "aclose", None)
+        if close is not None:
+            await close()
+        deps = None
+    if health_client is not None:
+        await health_client.aclose()
+        health_client = None
+
+
+@app.post("/v1/search", response_model=SearchResponse)
 @app.post("/search", response_model=SearchResponse)
 async def search(req: SearchRequest) -> SearchResponse:
-    resolved = req.model_copy(
-        update={
-            "token_budget": req.token_budget or get_deps().default_token_budget,
-            "max_urls": req.max_urls or get_deps().default_max_urls,
-        }
-    )
     try:
-        return await run_search(resolved, get_deps())
+        return await run_search(req, get_deps())
     except SearchDependencyUnavailable as exc:
         raise HTTPException(
             status_code=503,
@@ -46,8 +83,7 @@ async def search(req: SearchRequest) -> SearchResponse:
 
 async def _check_url(name: str, url: str) -> tuple[str, bool]:
     try:
-        async with httpx.AsyncClient(timeout=2.0) as client:
-            response = await client.get(url)
+        response = await get_health_client().get(url)
         return name, response.status_code < 500
     except Exception:
         return name, False
@@ -89,8 +125,5 @@ async def healthz():
         _check_url("reranker", _join_url(s.reranker_endpoint, s.reranker_health_path)),
     )
     return {"status": "ok", "dependencies": dict(checks)}
-
-
-from .mcp_server import mcp  # noqa: E402
 
 app.mount("/mcp", mcp.streamable_http_app())

@@ -4,6 +4,10 @@ Thorondor is a local semantic web-search stack. The orchestrator discovers web
 results, crawls selected pages, sends page text to the semantic chunker, reranks
 the chunks, and returns cited passages through REST and MCP.
 
+Crawling is delegated to the public upstream Crawl4AI self-hosted Docker API
+(`github.com/unclecode/crawl4ai`, image `unclecode/crawl4ai:0.8.9`) over the
+internal Compose network. Thorondor does not vendor or build Crawl4AI source.
+
 ## Repository Layout
 
 - `orchestrator/` - FastAPI REST and MCP service for the search pipeline.
@@ -62,7 +66,7 @@ $body = @{
   token_budget = 4000
 } | ConvertTo-Json
 
-Invoke-RestMethod http://localhost:8080/search `
+Invoke-RestMethod http://localhost:8080/v1/search `
   -Method Post `
   -ContentType "application/json" `
   -Body $body
@@ -81,7 +85,8 @@ http://localhost:8080/mcp
 ```
 
 The exposed tool is `web_search`. It returns the same citation-bearing passage
-shape as `POST /search`.
+shape as `POST /v1/search`. The legacy `/search` path remains available as a
+compatibility alias.
 
 ## Agent Skill
 
@@ -112,8 +117,10 @@ Important variables:
 
 - `EMBEDDING_ENDPOINT` and `EMBEDDING_MODEL` configure the chunker's `/v1/embeddings` server.
 - `RERANKER_ENDPOINT`, `RERANKER_MODEL`, `RERANKER_PATH`, and `RERANKER_HEALTH_PATH` configure reranking.
-- `MAX_URLS`, `CRAWL_CONCURRENCY`, `CRAWL_TIMEOUT_S`, and `DEFAULT_TOKEN_BUDGET` tune pipeline cost and latency.
-- `DOMAIN_BLOCKLIST` applies a comma-separated host blocklist before crawl.
+- `MAX_URLS`, `CRAWL_CONCURRENCY`, `CRAWL_PER_HOST_CONCURRENCY`, `CRAWL_TIMEOUT_S`, and `DEFAULT_TOKEN_BUDGET` tune pipeline cost and latency.
+- `DOMAIN_BLOCKLIST` applies a comma-separated host blocklist before crawl; `DOMAIN_ALLOWLIST` plus `ALLOWLIST_ONLY=true` restricts all crawls to operator-approved hosts.
+- `CRAWL_RESPECT_ROBOTS_TXT=true` passes Crawl4AI's `check_robots_txt` option.
+- `*_API_KEY` variables send optional bearer tokens to SearXNG, Crawl4AI, chunker, reranker, LLM, and embedding seams.
 - `LLAMACPP_IMAGE`, `LLAMACPP_EMBEDDING_MODEL`, and `LLAMACPP_RERANKER_MODEL` select the local llama.cpp image and GGUF files.
 
 The llama.cpp override uses `ghcr.io/ggml-org/llama.cpp:server`, `/v1/embeddings`

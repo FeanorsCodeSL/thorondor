@@ -102,6 +102,20 @@ copies it onto every emitted chunk. This is what lets one contract serve both a
 crawled web page (`source_url`, `title`) and a local document (`document_id`,
 `file_name`) without the chunker knowing the difference.
 
+Contract notes for `cluster-semantic@1`:
+
+- `token` means whitespace-delimited word, so chunk budgets are approximate.
+  Moving to a model tokenizer is a `cluster-semantic@2` change with regenerated
+  goldens, not a silent `@1` edit.
+- `min_chunk_tokens` is a soft floor; final chunks and degenerate cases may be
+  smaller. `max_chunk_tokens` is enforced except when a single segment is already
+  oversized and cannot be split further.
+- `start_index` and `end_index` are best-effort character offsets into the
+  pre-cleaned input. They may not round-trip exactly after whitespace
+  normalization.
+- Invalid public params are rejected: `initial_segment_tokens <=
+  max_chunk_tokens` and `min_chunk_tokens <= max_chunk_tokens`.
+
 ### Response
 
 ```jsonc
@@ -117,7 +131,9 @@ crawled web page (`source_url`, `title`) and a local document (`document_id`,
     }
   ],
   "strategy_version": "cluster-semantic@1",
-  "chunk_count": 1
+  "chunk_count": 1,
+  "chunk_strategy": "cluster-semantic",
+  "embedding_degraded": false
 }
 ```
 
@@ -1191,10 +1207,11 @@ class ClusterSemanticChunker:
 
 ## 7. Extracted core — `chunking/embedding_function.py`
 
-OpenAI-compatible `/v1/embeddings` client. **Logic preserved exactly.** The only
-change from the reference implementation: the two `get_required_env(...)` calls
-now use a local `require_env` from `settings.py` instead of a host-application
-helper, and the docstring no longer names a specific server.
+OpenAI-compatible `/v1/embeddings` client. `EMBEDDING_ENDPOINT` is a full base
+URL: the client preserves scheme, host, optional port, and path. If the endpoint
+already ends in `/embeddings`, it is treated as the complete request URL;
+otherwise the client appends `/v1/embeddings` (or `/embeddings` when the path
+already ends in `/v1`).
 
 ```python
 """
@@ -1207,8 +1224,8 @@ Infinity, Ollama, ...).
 """
 import logging
 import time
-from typing import Callable, List, Optional, Tuple
-from urllib.parse import urlparse
+from typing import Callable, List, Optional
+from urllib.parse import urlparse, urlunparse
 
 import httpx
 
@@ -1217,17 +1234,36 @@ from .settings import require_env
 logger = logging.getLogger(__name__)
 
 
-def _get_embedding_endpoint() -> Tuple[str, str]:
-    """Get (hostname, port) parsed from the EMBEDDING_ENDPOINT env var."""
-    endpoint = require_env("EMBEDDING_ENDPOINT")
-    parsed = urlparse(endpoint)
+def _normalize_embedding_endpoint(endpoint: str) -> str:
+    """Normalize an embedding endpoint while preserving scheme, host, and path."""
+    raw = endpoint.strip().rstrip("/")
+    parsed = urlparse(raw if "://" in raw else f"http://{raw}")
     if not parsed.hostname:
         raise ValueError(f"EMBEDDING_ENDPOINT URL is missing hostname: {endpoint}")
-    host = parsed.hostname
-    if not parsed.port:
-        raise ValueError(f"EMBEDDING_ENDPOINT URL is missing port: {endpoint}")
-    port = str(parsed.port)
-    return host, port
+    return urlunparse((
+        parsed.scheme or "http",
+        parsed.netloc,
+        parsed.path.rstrip("/"),
+        "",
+        "",
+        "",
+    )).rstrip("/")
+
+
+def _get_embedding_endpoint() -> str:
+    """Get the normalized base URL from the EMBEDDING_ENDPOINT env var."""
+    return _normalize_embedding_endpoint(require_env("EMBEDDING_ENDPOINT"))
+
+
+def _embedding_api_url(base_url: str) -> str:
+    """Return the OpenAI-compatible embeddings URL for a normalized base URL."""
+    base = base_url.rstrip("/")
+    path = urlparse(base).path.rstrip("/")
+    if path.endswith("/embeddings"):
+        return base
+    if path.endswith("/v1"):
+        return f"{base}/embeddings"
+    return f"{base}/v1/embeddings"
 
 
 def _get_embedding_model() -> str:
@@ -1263,16 +1299,21 @@ class EmbeddingFunction:
         self._progress_callback = None
         self._timeout = timeout
 
-        if host is None or port is None:
-            env_host, env_port = _get_embedding_endpoint()
-            host = host or env_host
-            port = port or env_port
-
-        self._host = host
-        self._base_url = f"http://{host}:{port}"
+        if host is None and port is None:
+            self._base_url = _get_embedding_endpoint()
+            parsed = urlparse(self._base_url)
+            self._host = parsed.hostname or self._base_url
+        else:
+            if host is None or port is None:
+                parsed = urlparse(_get_embedding_endpoint())
+                host = host or parsed.hostname
+                port = port or str(parsed.port or (443 if parsed.scheme == "https" else 80))
+            self._host = host or ""
+            self._base_url = f"http://{self._host}:{port}"
+        self._embeddings_url = _embedding_api_url(self._base_url)
 
         logger.info(
-            f"[Embedding] Initialized: model={self._model}, endpoint={self._base_url}, batch_size={batch_size}"
+            f"[Embedding] Initialized: model={self._model}, endpoint={self._embeddings_url}, batch_size={batch_size}"
         )
 
     @property
@@ -1352,7 +1393,7 @@ class EmbeddingFunction:
 
         with httpx.Client(timeout=self._timeout) as client:
             response = client.post(
-                f"{self._base_url}/v1/embeddings",
+                self._embeddings_url,
                 json={"model": self._model, "input": texts}
             )
 
@@ -1442,13 +1483,10 @@ class EmbeddingFunction:
             return False
 ```
 
-> **Known limitation carried over from the reference impl.** The client
-> reconstructs the base URL as `http://{host}:{port}`, so it ignores any
-> URL scheme (always `http`) and any path prefix in `EMBEDDING_ENDPOINT`. For
-> most self-hosted servers (vLLM, TEI, Ollama on `host:port`) this is fine. If
-> you need `https` or a path-prefixed endpoint, change `__init__` to keep and
-> use the full endpoint URL directly. This is a one-line generalization and a
-> good first enhancement, but it is **not** required to preserve the algorithm.
+> **Endpoint shape.** `EMBEDDING_ENDPOINT` is a full base URL. The client
+> preserves scheme, host, port, and path, then posts to `/v1/embeddings` unless
+> the configured URL already ends in `/embeddings`. Set `EMBEDDING_API_KEY` to
+> send `Authorization: Bearer ...` to a token-protected embedding server.
 
 ---
 
@@ -1661,7 +1699,9 @@ def chunk(req: ChunkRequest) -> ChunkResponse:
 
 `/chunk` is a synchronous `def`, so FastAPI runs it in its threadpool — the
 blocking `httpx` embedding calls and numpy/DP work do not stall the event loop.
-For higher concurrency, scale replicas horizontally (the service is stateless).
+The request path does not use progress callbacks because the process-global
+embedder must remain stateless across concurrent calls. For higher concurrency,
+scale replicas horizontally (the service is stateless).
 
 ### `requirements.txt`
 
@@ -1690,6 +1730,15 @@ The chunker is the one piece whose behavior must not drift. Two test layers:
    - segment count `> CHUNKER_MAX_SEGMENTS_DP` → greedy-semantic path,
    - embedding function raises / returns wrong count → token-based fallback,
    - constraints with no admissible segmentation → DP-no-solution fallback.
+
+Golden files are regenerated deliberately with:
+
+```powershell
+C:\Users\Sergio\AppData\Local\Programs\Python\Python313\python.exe scripts\gen_cluster_semantic_golden.py
+```
+
+Review the JSON diff before accepting it. Boundary-altering behavior should
+normally create a new `strategy_version` instead of rewriting `@1` goldens.
 
 ```python
 # tests/test_parity.py  (sketch)

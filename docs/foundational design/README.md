@@ -26,7 +26,7 @@ query
   → comprehensive response          passages + citations + provenance
 ```
 
-Two of the stages are open-source containers run as opaque dependencies
+Two of the stages are upstream containers run as opaque dependencies
 (**SearXNG** for discovery, **Crawl4AI** for extraction). One is a first-party
 service this project extracts and ships: the **semantic chunking service**,
 which converts crawled markdown into globally-coherent passages using a dynamic
@@ -63,7 +63,7 @@ self-hosted:
 | **Orchestrator** | First-party (FastAPI) | Coordinates the pipeline; exposes REST `/search` + an MCP `web_search` tool | First-party |
 | **Semantic Chunking Service** | First-party (FastAPI) | Markdown/text → coherent passages (cluster-semantic DP chunker) | First-party |
 | **SearXNG** | Bundled container | Discovery (query → URLs) | AGPL-3.0 — run unmodified, opaque |
-| **Crawl4AI** | Bundled container | Extraction (URL → markdown) | Apache-2.0 |
+| **Crawl4AI** | Public upstream Docker image | Extraction (URL → markdown) | Apache-2.0 |
 | **Embedding endpoint** | Bring-your-own (optional bundled default) | Segment embeddings for the chunker + optional pre-filter | depends on model server |
 | **Reranker endpoint** | Bring-your-own (optional bundled default) | Relevance scoring of passages | depends on model server |
 | **LLM endpoint** (optional) | Bring-your-own | Query decomposition / expansion | depends on model server |
@@ -74,12 +74,12 @@ self-hosted:
 > version:
 
 ```bash
-# 1. Zero-dependency local run: bundles SearXNG, Crawl4AI, a default
+# 1. Zero-dependency local run: starts SearXNG, Crawl4AI, a default
 #    embedding server and a default reranker server.
 docker compose --profile bundled-models up
 
 # 2. Production run: bring your own embedding + reranker endpoints,
-#    bundle only SearXNG + Crawl4AI + the first-party services.
+#    start only SearXNG + Crawl4AI + the first-party services.
 cp .env.example .env        # set EMBEDDING_ENDPOINT, RERANKER_ENDPOINT, ...
 docker compose up
 
@@ -109,8 +109,8 @@ An MCP-capable agent points at the orchestrator's MCP endpoint and gets a
   reranked, and discarded per call. There is no vector database in the hot path
   (an optional short-TTL cache is the only state). If you want a persistent
   knowledge base, that is a different system.
-- **Not a crawler framework.** Crawl4AI does the crawling; this project
-  orchestrates it.
+- **Not a crawler framework.** Crawl4AI is a public upstream containerized
+  service; this project orchestrates it over HTTP.
 - **Not a model server.** Embedding and reranking are external endpoints
   (yours, or the optional bundled defaults).
 

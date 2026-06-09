@@ -4,6 +4,8 @@ from typing import Any, Dict, List, Optional
 
 from pydantic import BaseModel, Field
 
+MAX_CHUNK_TEXT_CHARS = 200_000
+
 
 class SourceType(str, Enum):
     DOCUMENT = "DOCUMENT"
@@ -17,7 +19,7 @@ class ChunkParams(BaseModel):
 
 
 class ChunkRequest(BaseModel):
-    text: str
+    text: str = Field(min_length=1, max_length=MAX_CHUNK_TEXT_CHARS)
     source_type: SourceType = SourceType.DOCUMENT
     strategy_version: Optional[str] = None
     params: Optional[ChunkParams] = None
@@ -37,3 +39,5 @@ class ChunkResponse(BaseModel):
     chunks: List[ChunkOut]
     strategy_version: str
     chunk_count: int
+    chunk_strategy: str
+    embedding_degraded: bool = False

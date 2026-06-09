@@ -7,9 +7,10 @@ Works with any server that speaks /v1/embeddings (vLLM, text-embeddings-inferenc
 Infinity, Ollama, ...).
 """
 import logging
+import os
 import time
-from typing import Callable, List, Optional, Tuple
-from urllib.parse import urlparse
+from typing import Callable, List, Optional
+from urllib.parse import urlparse, urlunparse
 
 import httpx
 
@@ -18,17 +19,36 @@ from .settings import require_env
 logger = logging.getLogger(__name__)
 
 
-def _get_embedding_endpoint() -> Tuple[str, str]:
-    """Get (hostname, port) parsed from the EMBEDDING_ENDPOINT env var."""
-    endpoint = require_env("EMBEDDING_ENDPOINT")
-    parsed = urlparse(endpoint)
+def _normalize_embedding_endpoint(endpoint: str) -> str:
+    """Normalize an embedding endpoint while preserving scheme, host, and path."""
+    raw = endpoint.strip().rstrip("/")
+    parsed = urlparse(raw if "://" in raw else f"http://{raw}")
     if not parsed.hostname:
         raise ValueError(f"EMBEDDING_ENDPOINT URL is missing hostname: {endpoint}")
-    host = parsed.hostname
-    if not parsed.port:
-        raise ValueError(f"EMBEDDING_ENDPOINT URL is missing port: {endpoint}")
-    port = str(parsed.port)
-    return host, port
+    return urlunparse((
+        parsed.scheme or "http",
+        parsed.netloc,
+        parsed.path.rstrip("/"),
+        "",
+        "",
+        "",
+    )).rstrip("/")
+
+
+def _get_embedding_endpoint() -> str:
+    """Get the normalized base URL from the EMBEDDING_ENDPOINT env var."""
+    return _normalize_embedding_endpoint(require_env("EMBEDDING_ENDPOINT"))
+
+
+def _embedding_api_url(base_url: str) -> str:
+    """Return the OpenAI-compatible embeddings URL for a normalized base URL."""
+    base = base_url.rstrip("/")
+    path = urlparse(base).path.rstrip("/")
+    if path.endswith("/embeddings"):
+        return base
+    if path.endswith("/v1"):
+        return f"{base}/embeddings"
+    return f"{base}/v1/embeddings"
 
 
 def _get_embedding_model() -> str:
@@ -57,23 +77,30 @@ class EmbeddingFunction:
         host: Optional[str] = None,
         port: Optional[str] = None,
         batch_size: int = DEFAULT_EMBEDDING_BATCH_SIZE,
-        timeout: float = 60.0
+        timeout: float = 60.0,
+        api_key: Optional[str] = None,
     ):
         self._model = model or _get_embedding_model()
         self._batch_size = batch_size
         self._progress_callback = None
         self._timeout = timeout
+        self._api_key = api_key or os.environ.get("EMBEDDING_API_KEY")
 
-        if host is None or port is None:
-            env_host, env_port = _get_embedding_endpoint()
-            host = host or env_host
-            port = port or env_port
-
-        self._host = host
-        self._base_url = f"http://{host}:{port}"
+        if host is None and port is None:
+            self._base_url = _get_embedding_endpoint()
+            parsed = urlparse(self._base_url)
+            self._host = parsed.hostname or self._base_url
+        else:
+            if host is None or port is None:
+                parsed = urlparse(_get_embedding_endpoint())
+                host = host or parsed.hostname
+                port = port or str(parsed.port or (443 if parsed.scheme == "https" else 80))
+            self._host = host or ""
+            self._base_url = f"http://{self._host}:{port}"
+        self._embeddings_url = _embedding_api_url(self._base_url)
 
         logger.info(
-            f"[Embedding] Initialized: model={self._model}, endpoint={self._base_url}, batch_size={batch_size}"
+            f"[Embedding] Initialized: model={self._model}, endpoint={self._embeddings_url}, batch_size={batch_size}"
         )
 
     @property
@@ -152,8 +179,10 @@ class EmbeddingFunction:
         batch_start_time = time.perf_counter()
 
         with httpx.Client(timeout=self._timeout) as client:
+            headers = {"Authorization": f"Bearer {self._api_key}"} if self._api_key else None
             response = client.post(
-                f"{self._base_url}/v1/embeddings",
+                self._embeddings_url,
+                headers=headers,
                 json={"model": self._model, "input": texts}
             )
 

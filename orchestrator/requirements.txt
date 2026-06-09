@@ -2,4 +2,5 @@ fastapi
 uvicorn[standard]
 httpx
 pydantic>=2
-mcp
+# Validated locally with mcp==1.27.2; keep the Phase 0 target range narrow.
+mcp>=1.27,<1.28

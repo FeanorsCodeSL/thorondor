@@ -12,3 +12,13 @@ def test_duplicate_urls_keep_highest_score_and_sort_desc():
         [_r("https://a.test/x", 0.9)],
     ])
     assert [r.url for r in out] == ["https://a.test/x", "https://b.test"]
+
+
+def test_corroborated_url_beats_equal_max_single_source_url():
+    out = merge_dedup([
+        [_r("https://solo.test", 0.5), _r("https://many.test", 0.5)],
+        [_r("https://many.test/", 0.5)],
+        [_r("https://many.test?utm_source=x", 0.5)],
+    ])
+
+    assert [r.url for r in out][:2] == ["https://many.test", "https://solo.test"]

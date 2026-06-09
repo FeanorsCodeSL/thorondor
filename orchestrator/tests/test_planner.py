@@ -14,3 +14,18 @@ def test_llm_planner_falls_back_on_error(monkeypatch):
     monkeypatch.setattr(httpx, "AsyncClient", lambda *a, **k: real_async_client(transport=transport))
 
     assert anyio.run(LlmPlanner("http://llm:80", "m").plan, "q") == ["q"]
+
+
+def test_llm_planner_sends_api_key(monkeypatch):
+    seen = {}
+
+    def handler(req):
+        seen["authorization"] = req.headers.get("authorization")
+        return httpx.Response(200, json={"choices": [{"message": {"content": "[\"q\"]"}}]})
+
+    transport = httpx.MockTransport(handler)
+    real_async_client = httpx.AsyncClient
+    monkeypatch.setattr(httpx, "AsyncClient", lambda *a, **k: real_async_client(transport=transport))
+
+    assert anyio.run(LlmPlanner("http://llm:80", "m", api_key="secret").plan, "q") == ["q"]
+    assert seen["authorization"] == "Bearer secret"

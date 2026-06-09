@@ -25,6 +25,8 @@ class ChunkResult:
     end_index: int
     token_count: int = 0
     segment_indices: List[int] = field(default_factory=list)
+    chunk_strategy: str = "cluster-semantic-dp"
+    embedding_degraded: bool = False
 
     def __len__(self) -> int:
         """Return the length of the chunk text."""

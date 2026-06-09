@@ -19,14 +19,15 @@ hard way.
 | Orchestrator | First-party | Your choice (MIT/Apache-2.0 recommended) | None — you own it |
 | Semantic Chunking Service | First-party | Your choice | None — you own it (see §2 on attribution) |
 | **SearXNG** | Bundled container | **AGPL-3.0** | **Network copyleft.** Run unmodified as an opaque dependency. See §3. |
-| Crawl4AI | Bundled container | Apache-2.0 | Permissive — attribution/NOTICE only |
+| Crawl4AI | Public upstream Docker image | Apache-2.0 | Permissive — attribution/NOTICE only; consume over HTTP, do not vendor source |
 | Embedding model server | BYO / bundled | **varies by server** | Verify the server you bundle. See §4. |
 | Reranker model server | BYO / bundled | **varies by server** | Verify the server you bundle. See §4. |
 | Embedding model (e.g. BGE-M3) | weights | permissive (MIT on the BAAI card) | Verify model card; attribution |
 | Reranker model (e.g. bge-reranker-v2-m3) | weights | permissive (MIT/Apache on card) | Verify model card; attribution |
 | FastAPI / Uvicorn / httpx / numpy / Pydantic | pip deps | MIT / BSD / Apache-2.0 | Permissive |
 
-The **core profile** (first-party + SearXNG + Crawl4AI) plus permissive Python
+The **core stack** (first-party services + upstream SearXNG/Crawl4AI images)
+plus permissive Python
 deps is clean to self-host and to publish, provided the SearXNG boundary in §3
 is honored. The **bundled-models profile** adds model servers whose license you
 must confirm (§4).
@@ -104,8 +105,10 @@ This tool fetches publicly accessible web pages on demand. For a publishable,
 compliance-facing product:
 
 - **Respect `robots.txt` and rate limits.** Configure Crawl4AI accordingly and
-  keep `CRAWL_CONCURRENCY` conservative. The selection gate (stage 4) exists
-  partly to keep crawl volume low and polite.
+  keep `CRAWL_CONCURRENCY` conservative. Crawl4AI is a separate upstream
+  containerized service; configure it through its documented API/env surface or
+  enforce policy at the network boundary, not by vendoring its source. The
+  selection gate (stage 4) exists partly to keep crawl volume low and polite.
 - **Honor site terms of service.** Some sites prohibit automated access; provide
   `DOMAIN_BLOCKLIST` / `exclude_domains` so operators can comply, and an
   allowlist mode for locked-down deployments.

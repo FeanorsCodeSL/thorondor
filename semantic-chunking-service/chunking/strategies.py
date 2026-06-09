@@ -30,9 +30,15 @@ def resolve_strategy(
     if base is None:
         raise KeyError(f"Unknown strategy_version: {version!r}")
     if not overrides:
-        return base
-    return StrategyParams(
-        max_chunk_tokens=overrides.get("max_chunk_tokens", base.max_chunk_tokens),
-        min_chunk_tokens=overrides.get("min_chunk_tokens", base.min_chunk_tokens),
-        initial_segment_tokens=overrides.get("initial_segment_tokens", base.initial_segment_tokens),
-    )
+        params = base
+    else:
+        params = StrategyParams(
+            max_chunk_tokens=overrides.get("max_chunk_tokens", base.max_chunk_tokens),
+            min_chunk_tokens=overrides.get("min_chunk_tokens", base.min_chunk_tokens),
+            initial_segment_tokens=overrides.get("initial_segment_tokens", base.initial_segment_tokens),
+        )
+    if params.initial_segment_tokens > params.max_chunk_tokens:
+        raise ValueError("initial_segment_tokens must be <= max_chunk_tokens")
+    if params.min_chunk_tokens > params.max_chunk_tokens:
+        raise ValueError("min_chunk_tokens must be <= max_chunk_tokens")
+    return params

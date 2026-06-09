@@ -30,7 +30,10 @@ Everything runs as containers under one `docker-compose.yaml`. Two compose
 ```
 
 Only the orchestrator port is published. SearXNG, Crawl4AI, the chunker, and the
-model servers are reachable only on the internal compose network.
+model servers are reachable only on the internal compose network. Crawl4AI is a
+public upstream Dockerized service (`github.com/unclecode/crawl4ai`) consumed
+through its self-hosted HTTP API; Thorondor must not vendor or build Crawl4AI
+source.
 
 ---
 
@@ -102,10 +105,18 @@ services:
       # Pipeline knobs:
       MAX_URLS:           "${MAX_URLS:-6}"
       CRAWL_CONCURRENCY:  "${CRAWL_CONCURRENCY:-4}"
+      CRAWL_PER_HOST_CONCURRENCY: "${CRAWL_PER_HOST_CONCURRENCY:-1}"
       CRAWL_TIMEOUT_S:    "${CRAWL_TIMEOUT_S:-15}"
+      CRAWL_RESPECT_ROBOTS_TXT: "${CRAWL_RESPECT_ROBOTS_TXT:-true}"
       DEFAULT_TOKEN_BUDGET: "${DEFAULT_TOKEN_BUDGET:-4000}"
       CACHE_BACKEND:      "${CACHE_BACKEND:-memory}"
       DOMAIN_BLOCKLIST:   "${DOMAIN_BLOCKLIST:-}"
+      DOMAIN_ALLOWLIST:   "${DOMAIN_ALLOWLIST:-}"
+      ALLOWLIST_ONLY:     "${ALLOWLIST_ONLY:-false}"
+      RERANKER_API_KEY:   "${RERANKER_API_KEY:-}"
+      LLM_API_KEY:        "${LLM_API_KEY:-}"
+      CRAWL4AI_API_KEY:   "${CRAWL4AI_API_KEY:-}"
+      CHUNKER_API_KEY:    "${CHUNKER_API_KEY:-}"
     depends_on: [searxng, crawl4ai, chunker]
 
   chunker:
@@ -114,6 +125,7 @@ services:
     environment:
       EMBEDDING_ENDPOINT: "${EMBEDDING_ENDPOINT}"   # OpenAI /v1/embeddings
       EMBEDDING_MODEL:    "${EMBEDDING_MODEL}"
+      EMBEDDING_API_KEY:  "${EMBEDDING_API_KEY:-}"
       CHUNKER_MAX_SEGMENTS_DP: "${CHUNKER_MAX_SEGMENTS_DP:-10000}"
       REWARD_CACHE_MAX_SIZE:   "${REWARD_CACHE_MAX_SIZE:-100000}"
 
@@ -127,7 +139,10 @@ services:
 
   crawl4ai:
     <<: *internal
-    image: unclecode/crawl4ai:latest        # Apache-2.0
+    # Public upstream self-hosted Docker API; keep as image-only dependency.
+    image: unclecode/crawl4ai:0.8.9         # Apache-2.0
+    environment:
+      CRAWL4AI_API_TOKEN: "${CRAWL4AI_API_KEY:-}"
     shm_size: "1g"                          # headless browser needs shared memory
 
   # ---- bundled-models profile: optional, zero-dependency local defaults ----
@@ -158,11 +173,10 @@ RERANKER_ENDPOINT=http://reranker:80
 RERANKER_MODEL=BAAI/bge-reranker-v2-m3
 ```
 
-> **Why the chunker reads `EMBEDDING_ENDPOINT` as `host:port`.** The extracted
-> `EmbeddingFunction` parses host+port and calls `http://host:port/v1/embeddings`
-> (see [`02`](02-semantic-chunking-service.md) §7). Give it the server's base
-> URL with an explicit port. For `https`/path-prefixed endpoints, apply the
-> one-line generalization noted in `02` §7.
+> **Embedding endpoint shape.** The chunker treats `EMBEDDING_ENDPOINT` as a full
+> base URL. It preserves scheme, port, and path, then calls `/v1/embeddings`
+> unless the configured endpoint already ends in `/embeddings`. Set
+> `EMBEDDING_API_KEY` to send `Authorization: Bearer ...`.
 
 ---
 
@@ -181,17 +195,22 @@ RERANKER_MODEL=BAAI/bge-reranker-v2-m3
 | `LLM_MODEL` | no | — | Chat model id for the planner |
 | `MAX_URLS` | no | `6` | Stage-4 selection cap (URLs crawled per call) |
 | `CRAWL_CONCURRENCY` | no | `4` | Max parallel Crawl4AI fetches |
+| `CRAWL_PER_HOST_CONCURRENCY` | no | `1` | Max parallel Crawl4AI fetches per target host |
 | `CRAWL_TIMEOUT_S` | no | `15` | Per-URL crawl timeout; failures are non-fatal |
+| `CRAWL_RESPECT_ROBOTS_TXT` | no | `true` | Passed to Crawl4AI as `check_robots_txt` |
 | `DEFAULT_TOKEN_BUDGET` | no | `4000` | Assembly budget when caller omits `token_budget` |
 | `CACHE_BACKEND` | no | `memory` | `memory` \| `redis` \| `none` |
 | `REDIS_URL` | if redis | — | Cache backend connection |
 | `DOMAIN_BLOCKLIST` | no | empty | Comma-separated domains to drop at selection |
+| `DOMAIN_ALLOWLIST` | no | empty | Operator allowlist used when `ALLOWLIST_ONLY=true` |
+| `ALLOWLIST_ONLY` | no | `false` | Restrict all crawls to `DOMAIN_ALLOWLIST` |
+| `*_API_KEY` | no | empty | Optional bearer tokens for SearXNG, Crawl4AI, chunker, reranker, LLM, and embedding seams |
 
 ### Chunking service
 
 | Var | Required | Default | Meaning |
 |---|---|---|---|
-| `EMBEDDING_ENDPOINT` | yes | — | OpenAI-compatible embedding server base URL (`host:port`) |
+| `EMBEDDING_ENDPOINT` | yes | — | OpenAI-compatible embedding server base URL |
 | `EMBEDDING_MODEL` | yes | — | Embedding model id sent in the request body |
 | `CHUNKER_MAX_SEGMENTS_DP` | no | `10000` | Above this segment count → greedy-semantic O(N) path |
 | `REWARD_CACHE_MAX_SIZE` | no | `100000` | DP reward LRU cache bound |
@@ -262,3 +281,11 @@ the same embedding/reranker endpoints.
   posture in [`01-architecture.md`](01-architecture.md) §7 is observable.
 - `depends_on` orders startup but does not wait for readiness; the orchestrator
   must tolerate a not-yet-ready dependency and degrade per §7 rather than crash.
+
+## 9. Retry posture
+
+The v1 orchestrator does not automatically retry discovery, crawl, chunker, or
+model calls. Timeouts and partial results are surfaced in the response stats and
+`reason` field instead. This is intentional: autonomous agents can retry with a
+refined query, while the service avoids multiplying load against search engines,
+target sites, and BYO model endpoints during outages.

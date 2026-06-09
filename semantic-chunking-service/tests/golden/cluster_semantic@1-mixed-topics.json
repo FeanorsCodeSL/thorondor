@@ -1,0 +1,30 @@
+[
+  {
+    "text": "Eagle scans bright cliffs.",
+    "tokens": 4,
+    "segments": [
+      0
+    ]
+  },
+  {
+    "text": "Quantum gates rotate phases.",
+    "tokens": 4,
+    "segments": [
+      1
+    ]
+  },
+  {
+    "text": "Eagle guards high nests.",
+    "tokens": 4,
+    "segments": [
+      2
+    ]
+  },
+  {
+    "text": "Quantum circuits bind qubits.",
+    "tokens": 4,
+    "segments": [
+      3
+    ]
+  }
+]

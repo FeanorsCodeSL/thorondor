@@ -16,6 +16,7 @@ class Page:
     url: str
     title: str
     markdown: str
+    source_id: int | None = None
 
 
 @dataclass
@@ -25,9 +26,28 @@ class Chunk:
     source_url: str
     title: str
     position: int
+    source_id: int | None = None
+    chunk_strategy: str | None = None
+    embedding_degraded: bool = False
 
 
 @dataclass
 class ScoredChunk:
     chunk: Chunk
     score: float
+
+
+@dataclass
+class AssembledPassage:
+    text: str
+    score: float
+    token_count: int
+    citation_id: int
+
+
+@dataclass
+class AssembledCitation:
+    id: int
+    url: str
+    title: str
+    source_id: int | None = None

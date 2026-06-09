@@ -1,6 +1,10 @@
 """Pure URL selection policy."""
-from .normalize import host_for
+from .normalize import canonical_host, host_for
 from .types import DiscoveryResult
+
+
+def _matches_host(host: str, pattern: str) -> bool:
+    return host == pattern or host.endswith(f".{pattern}")
 
 
 class SelectionPolicyImpl:
@@ -11,12 +15,16 @@ class SelectionPolicyImpl:
         blocklist: set[str],
         allowlist: set[str] | None = None,
     ) -> list[DiscoveryResult]:
-        blocked = {host.lower() for host in blocklist}
-        allowed = {host.lower() for host in allowlist} if allowlist else None
+        blocked = {canonical_host(host) for host in blocklist}
+        blocked.discard("")
+        allowed = {canonical_host(host) for host in allowlist} if allowlist is not None else None
+        if allowed is not None:
+            allowed.discard("")
         candidates = [
             result
             for result in results
-            if host_for(result.url) not in blocked
-            and (allowed is None or host_for(result.url) in allowed)
+            if (host := host_for(result.url))
+            and not any(_matches_host(host, item) for item in blocked)
+            and (allowed is None or any(_matches_host(host, item) for item in allowed))
         ]
         return sorted(candidates, key=lambda r: (-r.score, r.url))[:max_urls]

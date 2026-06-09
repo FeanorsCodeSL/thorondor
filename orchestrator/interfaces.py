@@ -1,8 +1,7 @@
 """Protocols for orchestrator pipeline stages."""
 from typing import Protocol
 
-from .models import Citation, Passage
-from .types import Chunk, DiscoveryResult, Page, ScoredChunk
+from .types import AssembledCitation, AssembledPassage, Chunk, DiscoveryResult, Page, ScoredChunk
 
 
 class QueryPlanner(Protocol):
@@ -41,4 +40,4 @@ class ResultAssembler(Protocol):
         scored: list[ScoredChunk],
         token_budget: int,
         max_passages: int | None,
-    ) -> tuple[list[Passage], list[Citation]]: ...
+    ) -> tuple[list[AssembledPassage], list[AssembledCitation]]: ...
