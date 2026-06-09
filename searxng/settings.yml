@@ -1,0 +1,13 @@
+use_default_settings: true
+
+search:
+  formats:
+    - html
+    - json
+
+server:
+  bind_address: "0.0.0.0"
+  port: 8080
+
+# For agent-loop reliability, operators can configure API-backed engines here
+# (for example Brave Search with an API key) while keeping SearXNG unmodified.

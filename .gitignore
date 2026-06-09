@@ -2,11 +2,13 @@
 # After running git rm --cached .env, new .env files won't be tracked
 .env
 .env.local
+.env.llamacpp
 .env.production
 .env.*.local
 secrets.env
 # Keep template for documentation
 !secrets.template.env
+!.env.llamacpp.example
 
 
 # Build results
@@ -24,7 +26,9 @@ obj/
 *.lscache
 
 # Local agent/tooling state
-.agents/
+.agents/*
+!.agents/skills/
+!.agents/skills/**
 .claude/
 .codegraph/
 .ruff_cache/
@@ -56,6 +60,9 @@ certs/ghcr-config.json
 *.pyc
 __pycache__/
 .venv/
+
+# Local model weights
+models/
 
 # SonarQube
 .sonarqube/

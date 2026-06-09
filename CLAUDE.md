@@ -175,7 +175,9 @@ pytest                                         # focused tests beside each servi
 
 ## Relationship to the workspace
 
-`thorondor` is a new sibling under `C:\git\FEANORS-CODE` and is **not yet listed** in
-that workspace's root `CLAUDE.md` router. If asked to register it there (and in the
-shared SonarQube scanner scripts under `sonarQube/`), follow the rules in the root
-`CLAUDE.md`.
+`thorondor` is an **independent** sibling under `C:\git\FEANORS-CODE` — like
+`Mirrormere` and `amon-hen`, it is **not part of the TENGWAR ecosystem** and does
+**not** inherit the workspace's Spanish-first or gold-brand conventions. It is an
+English-first, generic developer tool. It is registered in the root `CLAUDE.md`
+router. If it later warrants quality-gate coverage, register it in the shared
+SonarQube scanner scripts under `sonarQube/` per the rules in the root `CLAUDE.md`.
