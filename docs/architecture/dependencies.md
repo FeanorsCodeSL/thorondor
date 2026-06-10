@@ -30,6 +30,9 @@ Dashed border = optional component (not started unless `LLM_ENDPOINT` is configu
 
 | Image | Pinned Tag / SHA | Architecture | License | Purpose |
 |---|---|---|---|---|
+| `ghcr.io/feanorscodesl/thorondor-orchestrator` | release tag or digest | amd64, arm64 | MIT | First-party REST/MCP orchestration service |
+| `ghcr.io/feanorscodesl/thorondor-chunker` | release tag or digest | amd64, arm64 | MIT | First-party semantic chunking service |
+| `ghcr.io/feanorscodesl/thorondor-egress-proxy` | release tag or digest | amd64, arm64 | MIT | First-party SSRF-filtering egress proxy |
 | `searxng/searxng` | `@sha256:02d441bbb647b7be422d21041420115cddadac4644368f67c7c7f407bbe72e22` | amd64, arm64 | AGPL-3.0 | Multi-engine URL discovery |
 | `unclecode/crawl4ai` | `@sha256:b243f684ad20f71ee108ab3fc3f31f3349eb5b31a9947b9e563d868417141aad` | amd64 | Apache-2.0 | JavaScript-capable page crawling |
 | `ghcr.io/huggingface/text-embeddings-inference` | `@sha256:b3e0169969c0dc4b22ab6bf6ad5699374d4cb720fc43fb66868a679586ea806f` | amd64, arm64 | Apache-2.0 | Embedding + reranking (`bundled-models` profile) |
@@ -37,6 +40,10 @@ Dashed border = optional component (not started unless `LLM_ENDPOINT` is configu
 | `python:3.13-slim` | tag-pinned official image | amd64, arm64 | PSF License | Base for first-party Python services |
 
 > Note: first-party service Dockerfiles run as non-root users. The Python base image remains an official version tag so maintainers can receive routine patch updates; production distributors who need byte-for-byte reproducibility should pin that base image to a vetted digest in their downstream build.
+
+The `publish-images` workflow is the source of the first-party GHCR images. It
+publishes multi-arch manifests and records digest refs in the release artifact
+`THORONDOR_IMAGE_DIGESTS.md`.
 
 ## 3. Python Package Inventory
 

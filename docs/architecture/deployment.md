@@ -42,6 +42,46 @@ docker compose `
   up -d
 ```
 
+### Production image slice — `docker-compose.production.yml`
+
+`docker-compose.production.yml` is the source-free deployment slice for
+Tengwar-style production hosts. It has no `build:` blocks and starts no
+embedding or reranker containers. Instead, it consumes:
+
+- `THORONDOR_ORCHESTRATOR_IMAGE`
+- `THORONDOR_CHUNKER_IMAGE`
+- `THORONDOR_EGRESS_PROXY_IMAGE`
+- `THORONDOR_SEARXNG_IMAGE`
+- `THORONDOR_CRAWL4AI_IMAGE`
+
+The first three are first-party GHCR images published by the `publish-images`
+workflow. Use the digest refs from the release asset when promoting to
+production, for example:
+
+```text
+THORONDOR_ORCHESTRATOR_IMAGE=ghcr.io/feanorscodesl/thorondor-orchestrator@sha256:...
+```
+
+The SearXNG and Crawl4AI refs are pinned upstream images by default. If the
+production host cannot pull Docker Hub directly, mirror those exact pinned
+images into GHCR and update `THORONDOR_SEARXNG_IMAGE` and
+`THORONDOR_CRAWL4AI_IMAGE`.
+
+The production slice joins Tengwar's external network through
+`THORONDOR_APP_NETWORK` (default `app-network`) and expects model servers named
+`embedding` and `reranker` on that network. It also expects a copied SearXNG
+config directory via `THORONDOR_SEARXNG_CONFIG_DIR`; do not mount the Thorondor
+source tree on the production host.
+
+Validate the production config with:
+
+```powershell
+docker compose `
+  --env-file .env --env-file .env.production `
+  -f docker-compose.production.yml `
+  config
+```
+
 ## 2. Environment Files
 
 ### `.env`
@@ -69,6 +109,14 @@ Copy-Item .env.llamacpp.example .env.llamacpp
 ```
 
 Edit `LLAMACPP_EMBEDDING_MODEL` and `LLAMACPP_RERANKER_MODEL` if your GGUF files have different names.
+
+### `.env.production`
+
+Production image overlay for `docker-compose.production.yml`. Copy from
+`.env.production.example`, then replace the first-party image tag refs with the
+digest refs emitted by the GitHub release workflow. This file also changes
+production service URLs so the orchestrator uses `thorondor-chunker` and
+Crawl4AI uses `thorondor-egress-proxy`.
 
 ### Strict key-presence validation
 
@@ -156,6 +204,26 @@ In investigation mode, asserts all standard checks plus that `url_diagnostics` i
 A passing run exits with code 0 and prints each request/response JSON pair. A failing run calls `Write-Error`, which throws a terminating error and sets exit code 1. The deploy script propagates this failure to its own exit code.
 
 ## 6. Upgrading
+
+**Publish first-party production images:**
+
+Create and push a release tag such as `v0.1.0`, or run the `publish-images`
+workflow manually with `image_tag=0.1.0`. The workflow builds
+`thorondor-orchestrator`, `thorondor-chunker`, and `thorondor-egress-proxy` for
+`linux/amd64` and `linux/arm64`, pushes them to GHCR, and emits digest refs in
+`THORONDOR_IMAGE_DIGESTS.md`.
+
+**Promote a production image release:**
+
+Update `.env.production` or Tengwar's environment store with the new digest
+refs, then rerun:
+
+```powershell
+docker compose `
+  --env-file .env --env-file .env.production `
+  -f docker-compose.production.yml `
+  up -d
+```
 
 **Pull updated external images:**
 

@@ -7,8 +7,10 @@ $Root = Resolve-Path (Join-Path $PSScriptRoot "..")
 $RuntimeFiles = @(
     "docker-compose.yml",
     "docker-compose.llamacpp.yml",
+    "docker-compose.production.yml",
     ".env.example",
-    ".env.llamacpp.example"
+    ".env.llamacpp.example",
+    ".env.production.example"
 )
 
 $latestHits = @()
@@ -56,6 +58,35 @@ $composeText = Get-Content $composePath -Raw
 if ($composeText -notmatch "image:\s+unclecode/crawl4ai@sha256:") {
     Write-Error "docker-compose.yml: crawl4ai image must be pinned by digest."
     exit 1
+}
+
+$productionComposePath = Join-Path $Root "docker-compose.production.yml"
+$productionBuildHits = @(Select-String -Path $productionComposePath -Pattern "^\s+build:\s*$")
+if ($productionBuildHits.Count -gt 0) {
+    $productionBuildHits | ForEach-Object { Write-Error "$($_.Path):$($_.LineNumber): $($_.Line)" }
+    Write-Error "docker-compose.production.yml must consume published images only."
+    exit 1
+}
+
+$productionEnvText = Get-Content (Join-Path $Root ".env.production.example") -Raw
+$requiredFirstPartyImages = @{
+    "THORONDOR_ORCHESTRATOR_IMAGE" = "ghcr.io/feanorscodesl/thorondor-orchestrator"
+    "THORONDOR_CHUNKER_IMAGE" = "ghcr.io/feanorscodesl/thorondor-chunker"
+    "THORONDOR_EGRESS_PROXY_IMAGE" = "ghcr.io/feanorscodesl/thorondor-egress-proxy"
+}
+foreach ($entry in $requiredFirstPartyImages.GetEnumerator()) {
+    $pattern = "(?m)^$($entry.Key)=$([regex]::Escape($entry.Value))(:|@sha256:)"
+    if ($productionEnvText -notmatch $pattern) {
+        Write-Error ".env.production.example: $($entry.Key) must point at $($entry.Value) by tag or digest."
+        exit 1
+    }
+}
+
+foreach ($imageVar in @("THORONDOR_SEARXNG_IMAGE", "THORONDOR_CRAWL4AI_IMAGE")) {
+    if ($productionEnvText -notmatch "(?m)^${imageVar}=.+@sha256:") {
+        Write-Error ".env.production.example: ${imageVar} must be pinned by digest."
+        exit 1
+    }
 }
 
 foreach ($dockerfile in @("orchestrator/Dockerfile", "semantic-chunking-service/Dockerfile", "ssrf-proxy/Dockerfile")) {

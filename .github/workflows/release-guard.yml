@@ -46,3 +46,10 @@ jobs:
             -f docker-compose.llamacpp.yml \
             --profile llamacpp-models \
             config >/dev/null
+      - name: Validate production Compose config
+        run: |
+          docker compose \
+            --env-file .env.example \
+            --env-file .env.production.example \
+            -f docker-compose.production.yml \
+            config >/dev/null

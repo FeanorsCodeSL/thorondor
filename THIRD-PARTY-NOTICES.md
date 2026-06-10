@@ -35,6 +35,15 @@ Crawl4AI is consumed as a **public upstream self-hosted Docker API over HTTP**.
 Its source is not vendored or patched in this repository. Apache-2.0 license:
 https://www.apache.org/licenses/LICENSE-2.0
 
+### Production mirroring note
+
+`docker-compose.production.yml` keeps SearXNG and Crawl4AI as image-reference
+variables so operators can mirror the pinned upstream images into GHCR when a
+production host is not allowed to pull Docker Hub directly. Mirroring an
+unmodified image does not make it first-party Thorondor source; keep upstream
+license notices, source-availability obligations, and generated SBOMs attached
+to the exact mirrored artifacts.
+
 ### Hugging Face Text Embeddings Inference — Apache-2.0
 
 Referenced image license verified against upstream LICENSE file at time of pin.
