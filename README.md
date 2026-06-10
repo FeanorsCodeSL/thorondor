@@ -1,5 +1,7 @@
 # Thorondor
 
+> **Public alpha:** Thorondor is ready for local self-hosted evaluation, but it is not a managed production service. It does not include built-in endpoint authentication or rate limiting; expose it only behind your own proxy/security layer.
+
 A self-hosted, data-sovereign semantic web-search service for agents — discovers URLs through SearXNG, crawls pages via Crawl4AI, chunks content with a first-party semantic chunker, reranks passages against the original query, and returns cited evidence through REST and MCP with no mandatory hosted vendor.
 
 ## What It Is
