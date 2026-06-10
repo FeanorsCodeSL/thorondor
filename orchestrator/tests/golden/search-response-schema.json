@@ -112,6 +112,13 @@
           "title": "Urls Selected",
           "type": "integer"
         },
+        "url_diagnostics": {
+          "items": {
+            "$ref": "#/$defs/UrlDiagnostic"
+          },
+          "title": "Url Diagnostics",
+          "type": "array"
+        },
         "urls_crawled_ok": {
           "default": 0,
           "title": "Urls Crawled Ok",
@@ -132,15 +139,101 @@
           "title": "Pages Deduped",
           "type": "integer"
         },
+        "pages_cleaned": {
+          "default": 0,
+          "title": "Pages Cleaned",
+          "type": "integer"
+        },
+        "markdown_chars_before": {
+          "default": 0,
+          "title": "Markdown Chars Before",
+          "type": "integer"
+        },
+        "markdown_chars_after": {
+          "default": 0,
+          "title": "Markdown Chars After",
+          "type": "integer"
+        },
+        "markdown_blocks_dropped": {
+          "default": 0,
+          "title": "Markdown Blocks Dropped",
+          "type": "integer"
+        },
+        "markdown_cleaner_version": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Markdown Cleaner Version"
+        },
         "chunks_produced": {
           "default": 0,
           "title": "Chunks Produced",
           "type": "integer"
         },
+        "chunks_prefiltered": {
+          "default": 0,
+          "title": "Chunks Prefiltered",
+          "type": "integer"
+        },
+        "chunks_sent_to_reranker": {
+          "default": 0,
+          "title": "Chunks Sent To Reranker",
+          "type": "integer"
+        },
+        "prefilter_strategy": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Prefilter Strategy"
+        },
+        "reranker_batches": {
+          "default": 0,
+          "title": "Reranker Batches",
+          "type": "integer"
+        },
+        "reranker_batches_failed": {
+          "default": 0,
+          "title": "Reranker Batches Failed",
+          "type": "integer"
+        },
+        "reranker_floor_filled": {
+          "default": false,
+          "title": "Reranker Floor Filled",
+          "type": "boolean"
+        },
         "chunks_reranked": {
           "default": 0,
           "title": "Chunks Reranked",
           "type": "integer"
+        },
+        "passages_dropped_below_threshold": {
+          "default": 0,
+          "title": "Passages Dropped Below Threshold",
+          "type": "integer"
+        },
+        "relevance_threshold_policy": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Relevance Threshold Policy"
         },
         "chunk_strategy": {
           "anyOf": [
@@ -195,6 +288,63 @@
         }
       },
       "title": "SearchStats",
+      "type": "object"
+    },
+    "UrlDiagnostic": {
+      "properties": {
+        "url": {
+          "title": "Url",
+          "type": "string"
+        },
+        "title": {
+          "title": "Title",
+          "type": "string"
+        },
+        "engine": {
+          "title": "Engine",
+          "type": "string"
+        },
+        "discovery_score": {
+          "title": "Discovery Score",
+          "type": "number"
+        },
+        "selected": {
+          "title": "Selected",
+          "type": "boolean"
+        },
+        "selection_reason": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Selection Reason"
+        },
+        "filtered_reason": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Filtered Reason"
+        }
+      },
+      "required": [
+        "url",
+        "title",
+        "engine",
+        "discovery_score",
+        "selected"
+      ],
+      "title": "UrlDiagnostic",
       "type": "object"
     }
   },

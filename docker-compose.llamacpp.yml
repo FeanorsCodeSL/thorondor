@@ -4,43 +4,43 @@ services:
   orchestrator:
     environment:
       RERANKER_ENDPOINT: "http://reranker:8080"
-      RERANKER_MODEL: "${LLAMACPP_RERANKER_ALIAS:-bge-reranker-v2-m3}"
+      RERANKER_MODEL: "${LLAMACPP_RERANKER_ALIAS}"
       RERANKER_PATH: "/reranking"
       RERANKER_HEALTH_PATH: "/health"
 
   chunker:
     environment:
       EMBEDDING_ENDPOINT: "http://embedding:8080"
-      EMBEDDING_MODEL: "${LLAMACPP_EMBEDDING_ALIAS:-bge-m3}"
+      EMBEDDING_MODEL: "${LLAMACPP_EMBEDDING_ALIAS}"
 
   embedding:
     profiles: ["llamacpp-models"]
-    image: "${LLAMACPP_IMAGE:-ghcr.io/ggml-org/llama.cpp:server}"
+    image: "${LLAMACPP_IMAGE}"
     volumes:
       - ./models:/models:ro
     command:
       - "-m"
-      - "${LLAMACPP_EMBEDDING_MODEL:-/models/bge-m3.gguf}"
+      - "${LLAMACPP_EMBEDDING_MODEL}"
       - "--host"
       - "0.0.0.0"
       - "--port"
       - "8080"
       - "--embedding"
       - "--pooling"
-      - "${LLAMACPP_EMBEDDING_POOLING:-cls}"
+      - "${LLAMACPP_EMBEDDING_POOLING}"
       - "-ub"
-      - "${LLAMACPP_UBATCH:-8192}"
+      - "${LLAMACPP_UBATCH}"
       - "-c"
-      - "${LLAMACPP_EMBEDDING_CONTEXT:-8192}"
+      - "${LLAMACPP_EMBEDDING_CONTEXT}"
 
   reranker:
     profiles: ["llamacpp-models"]
-    image: "${LLAMACPP_IMAGE:-ghcr.io/ggml-org/llama.cpp:server}"
+    image: "${LLAMACPP_IMAGE}"
     volumes:
       - ./models:/models:ro
     command:
       - "-m"
-      - "${LLAMACPP_RERANKER_MODEL:-/models/bge-reranker-v2-m3.gguf}"
+      - "${LLAMACPP_RERANKER_MODEL}"
       - "--host"
       - "0.0.0.0"
       - "--port"
@@ -49,5 +49,9 @@ services:
       - "--pooling"
       - "rank"
       - "--reranking"
+      - "-b"
+      - "${LLAMACPP_BATCH}"
+      - "-ub"
+      - "${LLAMACPP_UBATCH}"
       - "-c"
-      - "${LLAMACPP_RERANKER_CONTEXT:-8192}"
+      - "${LLAMACPP_RERANKER_CONTEXT}"

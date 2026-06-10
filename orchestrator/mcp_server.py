@@ -26,6 +26,7 @@ def _get_deps():
 @mcp.tool()
 async def web_search(
     query: str,
+    search_profile: Literal["quick", "research", "deep"] | None = None,
     token_budget: int | None = None,
     max_urls: int | None = None,
     freshness: Literal["day", "week", "month", "year"] | None = None,
@@ -45,16 +46,21 @@ async def web_search(
     Args:
         query: The user's original information need. Reranking always scores
             against this query, not any discovery sub-query.
+        search_profile: Optional default profile. `quick` is for narrow factual
+            lookup, `research` broadens URL/passages/token defaults for normal
+            investigation, and `deep` uses the largest bounded defaults.
         token_budget: Optional maximum returned passage budget. If omitted,
-            the server default is used. This controls assembly, not crawling.
+            the profile or server default is used. This controls assembly, not
+            crawling.
         max_urls: Optional cap on selected URLs before crawl. If omitted, the
-            server default is used.
+            profile or server default is used.
         freshness: Optional discovery freshness hint: day, week, month, year.
         domains: Optional domain allowlist for this call.
         exclude_domains: Optional domain blocklist for this call.
         decompose: Whether to let the optional query planner split/expand the
             query. If omitted, the REST default is used.
-        max_passages: Optional returned passage count cap after token budgeting.
+        max_passages: Optional returned chunk/passage count cap after token
+            budgeting. It is not a page count.
         include_raw_markdown: Include raw markdown for returned citations when
             the caller needs source-preserving evidence.
 
@@ -66,6 +72,7 @@ async def web_search(
     """
     request_data = {
         "query": query,
+        "search_profile": search_profile,
         "token_budget": token_budget,
         "max_urls": max_urls,
         "freshness": freshness,

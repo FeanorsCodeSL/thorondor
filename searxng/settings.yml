@@ -1,4 +1,11 @@
-use_default_settings: true
+use_default_settings:
+  engines:
+    keep_only:
+      - bing
+      - mojeek
+      - qwant
+      - startpage
+      - yep
 
 search:
   formats:
@@ -8,6 +15,18 @@ search:
 server:
   bind_address: "0.0.0.0"
   port: 8080
+
+engines:
+  - name: bing
+    disabled: false
+  - name: mojeek
+    disabled: false
+  - name: qwant
+    disabled: false
+  - name: startpage
+    disabled: false
+  - name: yep
+    disabled: false
 
 # For agent-loop reliability, operators can configure API-backed engines here
 # (for example Brave Search with an API key) while keeping SearXNG unmodified.

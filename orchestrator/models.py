@@ -8,6 +8,7 @@ MAX_TOKEN_BUDGET = 16_000
 MAX_SELECTED_URLS = 20
 MAX_PASSAGES = 50
 
+SearchProfile = Literal["quick", "research", "deep"]
 ReasonCode = Literal[
     "no_results_from_discovery",
     "no_urls_after_selection",
@@ -33,6 +34,16 @@ class Citation(BaseModel):
     published: str | None = None
 
 
+class UrlDiagnostic(BaseModel):
+    url: str
+    title: str
+    engine: str
+    discovery_score: float
+    selected: bool
+    selection_reason: str | None = None
+    filtered_reason: str | None = None
+
+
 class RawMarkdown(BaseModel):
     citation_id: int
     markdown: str
@@ -44,12 +55,26 @@ class SearchStats(BaseModel):
     sub_queries: list[str] = Field(default_factory=list)
     urls_discovered: int = 0
     urls_selected: int = 0
+    url_diagnostics: list[UrlDiagnostic] = Field(default_factory=list)
     urls_crawled_ok: int = 0
     urls_crawled_failed: int = 0
     pages_after_dedup: int = 0
     pages_deduped: int = 0
+    pages_cleaned: int = 0
+    markdown_chars_before: int = 0
+    markdown_chars_after: int = 0
+    markdown_blocks_dropped: int = 0
+    markdown_cleaner_version: str | None = None
     chunks_produced: int = 0
+    chunks_prefiltered: int = 0
+    chunks_sent_to_reranker: int = 0
+    prefilter_strategy: str | None = None
+    reranker_batches: int = 0
+    reranker_batches_failed: int = 0
+    reranker_floor_filled: bool = False
     chunks_reranked: int = 0
+    passages_dropped_below_threshold: int = 0
+    relevance_threshold_policy: str | None = None
     chunk_strategy: str | None = None
     embedding_degraded: bool = False
     reranked: bool = False
@@ -60,6 +85,7 @@ class SearchStats(BaseModel):
 
 class SearchRequest(BaseModel):
     query: str = Field(min_length=1, max_length=MAX_QUERY_CHARS)
+    search_profile: SearchProfile | None = None
     token_budget: int | None = Field(default=None, ge=1, le=MAX_TOKEN_BUDGET)
     max_urls: int | None = Field(default=None, ge=1, le=MAX_SELECTED_URLS)
     max_passages: int | None = Field(default=None, ge=1, le=MAX_PASSAGES)

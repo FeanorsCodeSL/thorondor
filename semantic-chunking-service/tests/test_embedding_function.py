@@ -2,6 +2,7 @@ import httpx
 import pytest
 
 import chunking.embedding_function as ef
+from chunking.observability import reset_request_id, set_request_id
 
 
 class _Resp:
@@ -48,7 +49,7 @@ def fake_http(monkeypatch):
 
 
 def test_batches_and_preserves_order(fake_http):
-    fn = ef.EmbeddingFunction(model="m", host="h", port="1", batch_size=2)
+    fn = ef.EmbeddingFunction(endpoint="http://h:1", model="m", batch_size=2, timeout_s=60)
 
     out = fn(["a", "bb", "ccc", "dddd", "e"])
 
@@ -66,7 +67,7 @@ def test_non_200_raises(monkeypatch):
     monkeypatch.setattr(httpx, "Client", _Err)
 
     with pytest.raises(RuntimeError):
-        ef.EmbeddingFunction(model="m", host="h", port="1")(["x"])
+        ef.EmbeddingFunction(endpoint="http://h:1", model="m", batch_size=64, timeout_s=60)(["x"])
 
 
 @pytest.mark.parametrize(
@@ -81,8 +82,7 @@ def test_non_200_raises(monkeypatch):
 def test_endpoint_url_preserves_scheme_path_and_default_port(
     monkeypatch, fake_http, endpoint, expected_url
 ):
-    monkeypatch.setenv("EMBEDDING_ENDPOINT", endpoint)
-    fn = ef.EmbeddingFunction(model="m")
+    fn = ef.EmbeddingFunction(endpoint=endpoint, model="m", batch_size=64, timeout_s=60)
 
     fn(["x"])
 
@@ -90,13 +90,48 @@ def test_endpoint_url_preserves_scheme_path_and_default_port(
 
 
 def test_endpoint_parsing_requires_host(monkeypatch):
-    monkeypatch.setenv("EMBEDDING_ENDPOINT", "https:///missing-host")
-
     with pytest.raises(ValueError):
-        ef._get_embedding_endpoint()
+        ef.EmbeddingFunction(endpoint="https:///missing-host", model="m", batch_size=64, timeout_s=60)
 
 
 def test_embedding_api_key_is_sent_as_bearer_header(fake_http):
-    ef.EmbeddingFunction(model="m", host="h", port="1", api_key="secret")(["x"])
+    ef.EmbeddingFunction(
+        endpoint="http://h:1",
+        model="m",
+        batch_size=64,
+        timeout_s=60,
+        api_key="secret",
+    )(["x"])
 
     assert fake_http.posts[0]["headers"] == {"Authorization": "Bearer secret"}
+
+
+def test_embedding_request_id_is_forwarded(fake_http):
+    token = set_request_id("req-embed")
+    try:
+        ef.EmbeddingFunction(endpoint="http://h:1", model="m", batch_size=64, timeout_s=60)(["x"])
+    finally:
+        reset_request_id(token)
+
+    assert fake_http.posts[0]["headers"] == {"X-Request-ID": "req-embed"}
+
+
+def test_embedding_error_log_omits_upstream_body(monkeypatch, caplog):
+    class _Err(_FakeClient):
+        def post(self, url, json, headers=None):
+            return _Resp({}, status_code=500, text="secret upstream body")
+
+    monkeypatch.setattr(httpx, "Client", _Err)
+
+    with pytest.raises(RuntimeError):
+        ef.EmbeddingFunction(
+            endpoint="http://user:pass@example.test:1",
+            model="m",
+            batch_size=64,
+            timeout_s=60,
+        )(["x"])
+
+    error_messages = [record.getMessage() for record in caplog.records if record.levelname == "ERROR"]
+    assert error_messages
+    assert "secret upstream body" not in "\n".join(error_messages)
+    assert "user:pass" not in "\n".join(error_messages)

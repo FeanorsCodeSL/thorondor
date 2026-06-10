@@ -3,16 +3,16 @@ import asyncio
 from collections import defaultdict
 import logging
 from urllib.parse import urljoin, urlparse
+from collections.abc import Callable
 
 import httpx
 
+from ..observability import redact_url, request_id_headers
 from ..types import Page
-from ..url_safety import is_safe_crawl_url
 
 logger = logging.getLogger(__name__)
 
 REDIRECT_STATUS_CODES = {301, 302, 303, 307, 308}
-MAX_PREFLIGHT_REDIRECTS = 5
 
 
 class Crawl4aiExtractor:
@@ -21,19 +21,31 @@ class Crawl4aiExtractor:
         base_url: str,
         concurrency: int,
         timeout_s: float,
+        respect_robots_txt: bool,
+        per_host_concurrency: int,
+        validate_redirects: bool,
+        max_preflight_redirects: int,
+        url_safety: Callable[[str], bool],
         client: httpx.AsyncClient | None = None,
-        respect_robots_txt: bool = True,
-        per_host_concurrency: int = 1,
         api_key: str | None = None,
-        validate_redirects: bool = True,
     ):
+        if concurrency < 1:
+            raise ValueError("concurrency must be >= 1")
+        if timeout_s <= 0:
+            raise ValueError("timeout_s must be > 0")
+        if per_host_concurrency < 1:
+            raise ValueError("per_host_concurrency must be >= 1")
+        if max_preflight_redirects < 1:
+            raise ValueError("max_preflight_redirects must be >= 1")
         self.base_url = base_url.rstrip("/")
         self.concurrency = concurrency
         self.timeout_s = timeout_s
         self.respect_robots_txt = respect_robots_txt
-        self.per_host_concurrency = max(1, per_host_concurrency)
+        self.per_host_concurrency = per_host_concurrency
         self.api_key = api_key
         self.validate_redirects = validate_redirects
+        self.max_preflight_redirects = max_preflight_redirects
+        self.url_safety = url_safety
         timeout = httpx.Timeout(
             self.timeout_s,
             connect=min(5.0, self.timeout_s),
@@ -43,7 +55,7 @@ class Crawl4aiExtractor:
         )
         self._client = client or httpx.AsyncClient(
             timeout=timeout,
-            limits=httpx.Limits(max_connections=max(1, concurrency), max_keepalive_connections=max(1, concurrency)),
+            limits=httpx.Limits(max_connections=concurrency, max_keepalive_connections=concurrency),
         )
         self._owns_client = client is None
 
@@ -86,22 +98,41 @@ class Crawl4aiExtractor:
                 return markdown
             return item.get("content") or item.get("fit_markdown") or item.get("raw_markdown") or ""
 
+        def _html_from_result(item: dict, payload: dict) -> str | None:
+            markdown = item.get("markdown") or payload.get("markdown")
+            if isinstance(markdown, dict):
+                value = markdown.get("fit_html")
+                if isinstance(value, str) and value.strip():
+                    return value
+            for key in ("fit_html", "cleaned_html", "html"):
+                value = item.get(key) or payload.get(key)
+                if isinstance(value, str) and value.strip():
+                    return value
+            return None
+
         async def _preflight_redirects(client: httpx.AsyncClient, url: str) -> str | None:
             if not self.validate_redirects:
                 return url
             current = url
-            for _ in range(MAX_PREFLIGHT_REDIRECTS):
-                response = await client.head(current, follow_redirects=False)
+            for _ in range(self.max_preflight_redirects):
+                response = await client.head(
+                    current,
+                    follow_redirects=False,
+                    headers=request_id_headers(),
+                )
                 if response.status_code not in REDIRECT_STATUS_CODES:
                     return current
                 location = response.headers.get("location")
                 if not location:
                     return None
                 current = urljoin(current, location)
-                if not is_safe_crawl_url(current):
-                    logger.warning("Crawl preflight dropped for %s: unsafe redirect target", url)
+                if not self.url_safety(current):
+                    logger.warning(
+                        "Crawl preflight dropped for %s: unsafe redirect target",
+                        redact_url(url),
+                    )
                     return None
-            logger.warning("Crawl preflight dropped for %s: redirect chain too deep", url)
+            logger.warning("Crawl preflight dropped for %s: redirect chain too deep", redact_url(url))
             return None
 
         async def one(
@@ -117,29 +148,35 @@ class Crawl4aiExtractor:
                         if crawl_url is None:
                             return None
                         headers = {"Authorization": f"Bearer {self.api_key}"} if self.api_key else None
+                        headers = request_id_headers(headers)
                         response = await client.post(
                             f"{self.base_url}/crawl",
                             json=_crawl_payload(crawl_url),
                             headers=headers,
                         )
                         if response.status_code != 200:
-                            logger.warning("Crawl failed for %s: status %s", url, response.status_code)
+                            logger.warning(
+                                "Crawl failed for %s: status %s",
+                                redact_url(url),
+                                response.status_code,
+                            )
                             return None
                         payload = response.json()
                         for item in _result_items(payload):
                             if item.get("success") is False:
                                 continue
                             final_url = item.get("redirected_url") or item.get("url")
-                            if final_url and final_url != url and not is_safe_crawl_url(final_url):
-                                logger.warning("Crawl dropped for %s: unsafe final URL", url)
+                            if final_url and final_url != url and not self.url_safety(final_url):
+                                logger.warning("Crawl dropped for %s: unsafe final URL", redact_url(url))
                                 return None
                             markdown = _markdown_from_result(item, payload)
+                            html = _html_from_result(item, payload)
                             metadata = item.get("metadata") if isinstance(item.get("metadata"), dict) else {}
                             title = item.get("title") or metadata.get("title") or url
-                            return Page(url=url, title=title, markdown=markdown) if markdown else None
+                            return Page(url=url, title=title, markdown=markdown, html=html) if markdown else None
                         return None
                     except Exception as exc:
-                        logger.warning("Crawl failed for %s: %s", url, exc)
+                        logger.warning("Crawl failed for %s: %s", redact_url(url), exc.__class__.__name__)
                         return None
 
         host_semaphores: dict[str, asyncio.Semaphore] = defaultdict(

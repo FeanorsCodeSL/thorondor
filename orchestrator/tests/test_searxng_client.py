@@ -3,6 +3,7 @@ import httpx
 import pytest
 
 from orchestrator.clients.searxng_client import DiscoveryUnavailable, SearxngDiscovery
+from orchestrator.observability import reset_request_id, set_request_id
 
 
 def test_parses_searxng_json_and_freshness(monkeypatch):
@@ -56,6 +57,7 @@ def test_api_key_is_sent_as_bearer_header(monkeypatch):
 
     def handler(req):
         seen["authorization"] = req.headers.get("authorization")
+        seen["x_real_ip"] = req.headers.get("x-real-ip")
         return httpx.Response(200, json={"results": []})
 
     transport = httpx.MockTransport(handler)
@@ -65,3 +67,24 @@ def test_api_key_is_sent_as_bearer_header(monkeypatch):
     anyio.run(SearxngDiscovery("http://searxng:8080", api_key="secret").search, "q")
 
     assert seen["authorization"] == "Bearer secret"
+    assert seen["x_real_ip"] == "127.0.0.1"
+
+
+def test_request_id_is_forwarded(monkeypatch):
+    seen = {}
+
+    def handler(req):
+        seen["request_id"] = req.headers.get("x-request-id")
+        return httpx.Response(200, json={"results": []})
+
+    transport = httpx.MockTransport(handler)
+    real_async_client = httpx.AsyncClient
+    monkeypatch.setattr(httpx, "AsyncClient", lambda *a, **k: real_async_client(transport=transport))
+
+    token = set_request_id("req-101")
+    try:
+        anyio.run(SearxngDiscovery("http://searxng:8080").search, "q")
+    finally:
+        reset_request_id(token)
+
+    assert seen["request_id"] == "req-101"

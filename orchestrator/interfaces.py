@@ -1,7 +1,7 @@
 """Protocols for orchestrator pipeline stages."""
 from typing import Protocol
 
-from .types import AssembledCitation, AssembledPassage, Chunk, DiscoveryResult, Page, ScoredChunk
+from .types import AssembledCitation, AssembledPassage, Chunk, CleanedPage, DiscoveryResult, Page, PrefilteredChunks, ScoredChunk
 
 
 class QueryPlanner(Protocol):
@@ -19,6 +19,7 @@ class SelectionPolicy(Protocol):
         max_urls: int,
         blocklist: set[str],
         allowlist: set[str] | None = None,
+        query: str | None = None,
     ) -> list[DiscoveryResult]: ...
 
 
@@ -26,8 +27,16 @@ class ContentExtractor(Protocol):
     async def extract(self, urls: list[str]) -> list[Page]: ...
 
 
+class MarkdownCleaner(Protocol):
+    def clean(self, page: Page) -> CleanedPage: ...
+
+
 class SemanticChunker(Protocol):
     async def chunk(self, pages: list[Page]) -> list[Chunk]: ...
+
+
+class CandidatePrefilter(Protocol):
+    def filter(self, query: str, chunks: list[Chunk]) -> PrefilteredChunks: ...
 
 
 class Reranker(Protocol):

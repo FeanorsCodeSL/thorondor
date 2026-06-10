@@ -101,3 +101,9 @@ def test_web_markdown_preclean_strips_image_lines(client):
 
 def test_healthz_reports_embedding(client):
     assert client.get("/healthz").json() == {"status": "ok", "embedding": True}
+
+
+def test_request_id_header_is_echoed(client):
+    response = client.get("/healthz", headers={"X-Request-ID": "chunk-req"})
+
+    assert response.headers["X-Request-ID"] == "chunk-req"

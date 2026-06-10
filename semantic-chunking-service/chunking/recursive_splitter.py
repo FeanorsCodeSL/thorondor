@@ -4,6 +4,9 @@ Recursive Character Text Splitter for initial segment creation.
 This splitter recursively splits text using a hierarchy of separators,
 ensuring that segments respect natural text boundaries like paragraphs,
 sentences, and words.
+
+The separator hierarchy is LangChain-inspired, but this is a first-party
+implementation and does not vendor LangChain source.
 """
 import logging
 import re

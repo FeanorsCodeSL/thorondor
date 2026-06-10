@@ -1,9 +1,44 @@
 import anyio
 import httpx
+import ipaddress
 import json
 import time
 
 from orchestrator.clients.crawl4ai_client import Crawl4aiExtractor
+from orchestrator.observability import reset_request_id, set_request_id
+from orchestrator.url_safety import UrlSafetyPolicy, is_safe_crawl_url
+
+
+def _extractor(**kwargs) -> Crawl4aiExtractor:
+    policy = UrlSafetyPolicy(
+        blocked_ip_categories={
+            "loopback",
+            "link_local",
+            "private",
+            "reserved",
+            "multicast",
+            "unspecified",
+        },
+        blocked_special_ips={
+            ipaddress.ip_address("169.254.169.254"),
+            ipaddress.ip_address("fd00:ec2::254"),
+        },
+        nat64_networks=[ipaddress.ip_network("64:ff9b::/96")],
+        six_to_four_networks=[ipaddress.ip_network("2002::/16")],
+        ipv4_compat_networks=[ipaddress.ip_network("::/96")],
+    )
+    values = {
+        "base_url": "http://crawl4ai:11235",
+        "concurrency": 1,
+        "timeout_s": 1,
+        "respect_robots_txt": True,
+        "per_host_concurrency": 1,
+        "validate_redirects": False,
+        "max_preflight_redirects": 5,
+        "url_safety": lambda url: is_safe_crawl_url(url, policy),
+    }
+    values.update(kwargs)
+    return Crawl4aiExtractor(**values)
 
 
 def test_partial_failures_do_not_sink_batch(monkeypatch):
@@ -31,7 +66,7 @@ def test_partial_failures_do_not_sink_batch(monkeypatch):
     monkeypatch.setattr(httpx, "AsyncClient", lambda *a, **k: real_async_client(transport=transport))
 
     out = anyio.run(
-        Crawl4aiExtractor("http://crawl4ai:11235", 2, 1, validate_redirects=False).extract,
+        _extractor(concurrency=2).extract,
         ["https://good", "https://bad"],
     )
 
@@ -56,6 +91,7 @@ def test_uses_crawl4ai_docker_api_payload(monkeypatch):
                         "url": payload["urls"][0],
                         "metadata": {"title": "Good"},
                         "markdown": {"raw_markdown": "content"},
+                        "cleaned_html": "<article>content</article>",
                     }
                 ],
             },
@@ -66,18 +102,12 @@ def test_uses_crawl4ai_docker_api_payload(monkeypatch):
     monkeypatch.setattr(httpx, "AsyncClient", lambda *a, **k: real_async_client(transport=transport))
 
     out = anyio.run(
-        Crawl4aiExtractor(
-            "http://crawl4ai:11235",
-            1,
-            1,
-            respect_robots_txt=True,
-            api_key="crawl-secret",
-            validate_redirects=False,
-        ).extract,
+        _extractor(api_key="crawl-secret").extract,
         ["https://good"],
     )
 
     assert out and out[0].markdown == "content"
+    assert out[0].html == "<article>content</article>"
     assert seen == [
         {"authorization": "Bearer crawl-secret"},
         {
@@ -88,6 +118,43 @@ def test_uses_crawl4ai_docker_api_payload(monkeypatch):
             },
         }
     ]
+
+
+def test_request_id_is_forwarded_to_crawl4ai(monkeypatch):
+    seen = {}
+
+    def handler(req):
+        seen["request_id"] = req.headers.get("x-request-id")
+        payload = json.loads(req.content)
+        return httpx.Response(
+            200,
+            json={
+                "success": True,
+                "results": [
+                    {
+                        "success": True,
+                        "url": payload["urls"][0],
+                        "metadata": {"title": "Good"},
+                        "markdown": {"raw_markdown": "content"},
+                    }
+                ],
+            },
+        )
+
+    transport = httpx.MockTransport(handler)
+    real_async_client = httpx.AsyncClient
+    monkeypatch.setattr(httpx, "AsyncClient", lambda *a, **k: real_async_client(transport=transport))
+
+    token = set_request_id("req-crawl")
+    try:
+        anyio.run(
+            _extractor().extract,
+            ["https://good"],
+        )
+    finally:
+        reset_request_id(token)
+
+    assert seen["request_id"] == "req-crawl"
 
 
 def test_can_disable_crawl4ai_robots_flag(monkeypatch):
@@ -115,13 +182,7 @@ def test_can_disable_crawl4ai_robots_flag(monkeypatch):
     monkeypatch.setattr(httpx, "AsyncClient", lambda *a, **k: real_async_client(transport=transport))
 
     anyio.run(
-        Crawl4aiExtractor(
-            "http://crawl4ai:11235",
-            1,
-            1,
-            respect_robots_txt=False,
-            validate_redirects=False,
-        ).extract,
+        _extractor(respect_robots_txt=False).extract,
         ["https://good"],
     )
 
@@ -150,7 +211,7 @@ def test_unsafe_redirected_url_is_dropped(monkeypatch):
     monkeypatch.setattr(httpx, "AsyncClient", lambda *a, **k: real_async_client(transport=transport))
 
     out = anyio.run(
-        Crawl4aiExtractor("http://crawl4ai:11235", 1, 1, validate_redirects=False).extract,
+        _extractor().extract,
         ["https://safe.example/start"],
     )
 
@@ -172,7 +233,7 @@ def test_http_redirect_to_internal_target_drops_before_crawl4ai_post(monkeypatch
     monkeypatch.setattr(httpx, "AsyncClient", lambda *a, **k: real_async_client(transport=transport))
 
     out = anyio.run(
-        Crawl4aiExtractor("http://crawl4ai:11235", 1, 1).extract,
+        _extractor(validate_redirects=True).extract,
         ["https://safe.example/start"],
     )
 
@@ -207,7 +268,7 @@ def test_extract_returns_completed_pages_within_overall_deadline(monkeypatch):
 
     started = time.perf_counter()
     out = anyio.run(
-        Crawl4aiExtractor("http://crawl4ai:11235", 2, 0.05, validate_redirects=False).extract,
+        _extractor(concurrency=2, timeout_s=0.05).extract,
         ["https://fast.example", "https://slow.example"],
     )
 
@@ -231,7 +292,7 @@ def test_concurrency_is_bounded(monkeypatch):
     monkeypatch.setattr(httpx, "AsyncClient", lambda *a, **k: real_async_client(transport=transport))
 
     anyio.run(
-        Crawl4aiExtractor("http://crawl4ai:11235", 1, 1, validate_redirects=False).extract,
+        _extractor().extract,
         ["u1", "u2", "u3"],
     )
 
@@ -271,12 +332,7 @@ def test_per_host_concurrency_is_bounded(monkeypatch):
     monkeypatch.setattr(httpx, "AsyncClient", lambda *a, **k: real_async_client(transport=transport))
 
     anyio.run(
-        Crawl4aiExtractor(
-            "http://crawl4ai:11235",
-            concurrency=3,
-            timeout_s=1,
-            per_host_concurrency=1,
-        ).extract,
+        _extractor(concurrency=3, validate_redirects=True).extract,
         ["https://a.test/1", "https://a.test/2", "https://b.test/1"],
     )
 

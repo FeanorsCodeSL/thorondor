@@ -66,9 +66,24 @@ def test_stage_clients_reuse_one_async_client_per_instance(monkeypatch):
 
     async def exercise():
         discovery = SearxngDiscovery("http://searxng:8080")
-        extractor = Crawl4aiExtractor("http://crawl4ai:11235", 2, 1)
+        extractor = Crawl4aiExtractor(
+            "http://crawl4ai:11235",
+            2,
+            1,
+            respect_robots_txt=True,
+            per_host_concurrency=1,
+            validate_redirects=False,
+            max_preflight_redirects=5,
+            url_safety=lambda _url: True,
+        )
         chunker = ChunkerClient("http://chunker:8000")
-        reranker = RerankerClient("http://reranker:80", "m")
+        reranker = RerankerClient(
+            "http://reranker:80",
+            "m",
+            path="/rerank",
+            batch_size=32,
+            timeout_s=30.0,
+        )
         planner = LlmPlanner("http://llm:80", "m")
 
         for _ in range(2):

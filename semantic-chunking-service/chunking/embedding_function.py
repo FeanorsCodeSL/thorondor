@@ -7,14 +7,13 @@ Works with any server that speaks /v1/embeddings (vLLM, text-embeddings-inferenc
 Infinity, Ollama, ...).
 """
 import logging
-import os
 import time
 from typing import Callable, List, Optional
 from urllib.parse import urlparse, urlunparse
 
 import httpx
 
-from .settings import require_env
+from .observability import redact_url, request_id_headers
 
 logger = logging.getLogger(__name__)
 
@@ -35,11 +34,6 @@ def _normalize_embedding_endpoint(endpoint: str) -> str:
     )).rstrip("/")
 
 
-def _get_embedding_endpoint() -> str:
-    """Get the normalized base URL from the EMBEDDING_ENDPOINT env var."""
-    return _normalize_embedding_endpoint(require_env("EMBEDDING_ENDPOINT"))
-
-
 def _embedding_api_url(base_url: str) -> str:
     """Return the OpenAI-compatible embeddings URL for a normalized base URL."""
     base = base_url.rstrip("/")
@@ -51,14 +45,6 @@ def _embedding_api_url(base_url: str) -> str:
     return f"{base}/v1/embeddings"
 
 
-def _get_embedding_model() -> str:
-    return require_env("EMBEDDING_MODEL")
-
-
-# Batch size for embedding with heartbeat callbacks
-DEFAULT_EMBEDDING_BATCH_SIZE = 64
-
-
 class EmbeddingFunction:
     """
     Embedding function using an OpenAI-compatible embedding API.
@@ -67,40 +53,37 @@ class EmbeddingFunction:
     embedding_function parameter, calling the /v1/embeddings endpoint.
 
     Usage:
-        embed_fn = EmbeddingFunction()
+        embed_fn = EmbeddingFunction(
+            endpoint=settings.embedding_endpoint,
+            model=settings.embedding_model,
+            batch_size=settings.embedding_batch_size,
+            timeout_s=settings.embedding_timeout_s,
+            api_key=settings.embedding_api_key,
+        )
         embeddings = embed_fn(["text 1", "text 2", "text 3"])
     """
 
     def __init__(
         self,
-        model: Optional[str] = None,
-        host: Optional[str] = None,
-        port: Optional[str] = None,
-        batch_size: int = DEFAULT_EMBEDDING_BATCH_SIZE,
-        timeout: float = 60.0,
+        endpoint: str,
+        model: str,
+        batch_size: int,
+        timeout_s: float,
         api_key: Optional[str] = None,
     ):
-        self._model = model or _get_embedding_model()
+        self._model = model
         self._batch_size = batch_size
         self._progress_callback = None
-        self._timeout = timeout
-        self._api_key = api_key or os.environ.get("EMBEDDING_API_KEY")
-
-        if host is None and port is None:
-            self._base_url = _get_embedding_endpoint()
-            parsed = urlparse(self._base_url)
-            self._host = parsed.hostname or self._base_url
-        else:
-            if host is None or port is None:
-                parsed = urlparse(_get_embedding_endpoint())
-                host = host or parsed.hostname
-                port = port or str(parsed.port or (443 if parsed.scheme == "https" else 80))
-            self._host = host or ""
-            self._base_url = f"http://{self._host}:{port}"
+        self._timeout = timeout_s
+        self._api_key = api_key
+        self._base_url = _normalize_embedding_endpoint(endpoint)
+        parsed = urlparse(self._base_url)
+        self._host = parsed.hostname or self._base_url
         self._embeddings_url = _embedding_api_url(self._base_url)
 
         logger.info(
-            f"[Embedding] Initialized: model={self._model}, endpoint={self._embeddings_url}, batch_size={batch_size}"
+            f"[Embedding] Initialized: model={self._model}, "
+            f"endpoint={redact_url(self._embeddings_url)}, batch_size={self._batch_size}"
         )
 
     @property
@@ -180,6 +163,7 @@ class EmbeddingFunction:
 
         with httpx.Client(timeout=self._timeout) as client:
             headers = {"Authorization": f"Bearer {self._api_key}"} if self._api_key else None
+            headers = request_id_headers(headers)
             response = client.post(
                 self._embeddings_url,
                 headers=headers,
@@ -189,12 +173,12 @@ class EmbeddingFunction:
             batch_elapsed = time.perf_counter() - batch_start_time
 
             if response.status_code != 200:
-                error_text = response.text
                 logger.error(
                     f"[Embedding] Batch {batch_num} FAILED after {batch_elapsed:.2f}s: "
-                    f"{error_text} (status code: {response.status_code})"
+                    f"status={response.status_code} endpoint={redact_url(self._embeddings_url)}"
                 )
-                raise RuntimeError(f"{error_text} (status code: {response.status_code})")
+                logger.debug("[Embedding] Upstream error body: %s", response.text)
+                raise RuntimeError(f"embedding upstream status {response.status_code}")
 
             data = response.json()
             # OpenAI format: {"data": [{"embedding": [...], "index": 0}, ...]}

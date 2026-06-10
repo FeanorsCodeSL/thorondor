@@ -4,6 +4,7 @@ import httpx
 import pytest
 
 from orchestrator.clients.chunker_client import ChunkerClient, ChunkerUnavailable
+from orchestrator.observability import reset_request_id, set_request_id
 from orchestrator.types import Page
 
 
@@ -98,3 +99,23 @@ def test_api_key_is_sent_as_bearer_header(monkeypatch):
     )
 
     assert seen["authorization"] == "Bearer secret"
+
+
+def test_request_id_is_forwarded(monkeypatch):
+    seen = {}
+
+    def handler(req):
+        seen["request_id"] = req.headers.get("x-request-id")
+        return httpx.Response(200, json={"chunks": []})
+
+    transport = httpx.MockTransport(handler)
+    real_async_client = httpx.AsyncClient
+    monkeypatch.setattr(httpx, "AsyncClient", lambda *a, **k: real_async_client(transport=transport))
+
+    token = set_request_id("req-456")
+    try:
+        anyio.run(ChunkerClient("http://chunker:8000").chunk, [Page("https://a.test", "A", "md")])
+    finally:
+        reset_request_id(token)
+
+    assert seen["request_id"] == "req-456"

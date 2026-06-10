@@ -5,38 +5,86 @@ x-internal: &internal
   networks: [internal]
 
 services:
+  egress-proxy:
+    restart: unless-stopped
+    build:
+      context: ./ssrf-proxy
+      dockerfile: Dockerfile
+    networks: [internal, egress]
+    environment:
+      PROXY_LOG_LEVEL: "${PROXY_LOG_LEVEL}"
+      PROXY_HOST: "${PROXY_HOST}"
+      PROXY_PORT: "${PROXY_PORT}"
+      PROXY_MAX_HEADER_BYTES: "${PROXY_MAX_HEADER_BYTES}"
+      PROXY_READ_CHUNK_BYTES: "${PROXY_READ_CHUNK_BYTES}"
+      PROXY_RELAY_CHUNK_BYTES: "${PROXY_RELAY_CHUNK_BYTES}"
+      PROXY_BLOCKED_IP_CATEGORIES: "${PROXY_BLOCKED_IP_CATEGORIES}"
+      PROXY_BLOCKED_SPECIAL_IPS: "${PROXY_BLOCKED_SPECIAL_IPS}"
+      PROXY_NAT64_NETWORKS: "${PROXY_NAT64_NETWORKS}"
+      PROXY_SIX_TO_FOUR_NETWORKS: "${PROXY_SIX_TO_FOUR_NETWORKS}"
+      PROXY_IPV4_COMPAT_NETWORKS: "${PROXY_IPV4_COMPAT_NETWORKS}"
+
   orchestrator:
     <<: *internal
+    networks: [internal, egress]
     build:
       context: .
       dockerfile: orchestrator/Dockerfile
     ports:
-      - "8080:8080"
+      - "${ORCHESTRATOR_PORT}:8080"
     environment:
-      SEARXNG_URL: "http://searxng:8080"
-      CRAWL4AI_URL: "http://crawl4ai:11235"
-      CHUNKER_URL: "http://chunker:8000"
-      RERANKER_ENDPOINT: "${RERANKER_ENDPOINT:-http://reranker:80}"
-      RERANKER_MODEL: "${RERANKER_MODEL:-BAAI/bge-reranker-v2-m3}"
-      RERANKER_PATH: "${RERANKER_PATH:-/rerank}"
-      RERANKER_HEALTH_PATH: "${RERANKER_HEALTH_PATH:-/health}"
-      LLM_ENDPOINT: "${LLM_ENDPOINT:-}"
-      LLM_MODEL: "${LLM_MODEL:-}"
-      MAX_URLS: "${MAX_URLS:-6}"
-      CRAWL_CONCURRENCY: "${CRAWL_CONCURRENCY:-4}"
-      CRAWL_TIMEOUT_S: "${CRAWL_TIMEOUT_S:-15}"
-      CRAWL_PER_HOST_CONCURRENCY: "${CRAWL_PER_HOST_CONCURRENCY:-1}"
-      CRAWL_RESPECT_ROBOTS_TXT: "${CRAWL_RESPECT_ROBOTS_TXT:-true}"
-      DEFAULT_TOKEN_BUDGET: "${DEFAULT_TOKEN_BUDGET:-4000}"
-      CACHE_BACKEND: "${CACHE_BACKEND:-memory}"
-      DOMAIN_BLOCKLIST: "${DOMAIN_BLOCKLIST:-}"
-      DOMAIN_ALLOWLIST: "${DOMAIN_ALLOWLIST:-}"
-      ALLOWLIST_ONLY: "${ALLOWLIST_ONLY:-false}"
-      SEARXNG_API_KEY: "${SEARXNG_API_KEY:-}"
-      CRAWL4AI_API_KEY: "${CRAWL4AI_API_KEY:-}"
-      CHUNKER_API_KEY: "${CHUNKER_API_KEY:-}"
-      RERANKER_API_KEY: "${RERANKER_API_KEY:-}"
-      LLM_API_KEY: "${LLM_API_KEY:-}"
+      LOG_LEVEL: "${LOG_LEVEL}"
+      SEARXNG_URL: "${SEARXNG_URL}"
+      CRAWL4AI_URL: "${CRAWL4AI_URL}"
+      CHUNKER_URL: "${CHUNKER_URL}"
+      RERANKER_ENDPOINT: "${RERANKER_ENDPOINT}"
+      RERANKER_MODEL: "${RERANKER_MODEL}"
+      RERANKER_PATH: "${RERANKER_PATH}"
+      RERANKER_HEALTH_PATH: "${RERANKER_HEALTH_PATH}"
+      RERANKER_BATCH_SIZE: "${RERANKER_BATCH_SIZE}"
+      RERANKER_TIMEOUT_S: "${RERANKER_TIMEOUT_S}"
+      LLM_ENDPOINT: "${LLM_ENDPOINT?}"
+      LLM_MODEL: "${LLM_MODEL?}"
+      MAX_URLS: "${MAX_URLS}"
+      CRAWL_CONCURRENCY: "${CRAWL_CONCURRENCY}"
+      CRAWL_TIMEOUT_S: "${CRAWL_TIMEOUT_S}"
+      CRAWL_PER_HOST_CONCURRENCY: "${CRAWL_PER_HOST_CONCURRENCY}"
+      CRAWL_RESPECT_ROBOTS_TXT: "${CRAWL_RESPECT_ROBOTS_TXT}"
+      CRAWL_VALIDATE_REDIRECTS: "${CRAWL_VALIDATE_REDIRECTS}"
+      CRAWL_MAX_PREFLIGHT_REDIRECTS: "${CRAWL_MAX_PREFLIGHT_REDIRECTS}"
+      DEFAULT_TOKEN_BUDGET: "${DEFAULT_TOKEN_BUDGET}"
+      RELEVANCE_SCORE_FLOOR: "${RELEVANCE_SCORE_FLOOR}"
+      DOMAIN_BLOCKLIST: "${DOMAIN_BLOCKLIST?}"
+      DOMAIN_ALLOWLIST: "${DOMAIN_ALLOWLIST?}"
+      ALLOWLIST_ONLY: "${ALLOWLIST_ONLY}"
+      SEARXNG_API_KEY: "${SEARXNG_API_KEY?}"
+      CRAWL4AI_API_KEY: "${CRAWL4AI_API_KEY?}"
+      CHUNKER_API_KEY: "${CHUNKER_API_KEY?}"
+      RERANKER_API_KEY: "${RERANKER_API_KEY?}"
+      LLM_API_KEY: "${LLM_API_KEY?}"
+      HEALTHCHECK_TIMEOUT_S: "${HEALTHCHECK_TIMEOUT_S}"
+      HEALTHCHECK_MAX_CONNECTIONS: "${HEALTHCHECK_MAX_CONNECTIONS}"
+      HEALTHCHECK_MAX_KEEPALIVE_CONNECTIONS: "${HEALTHCHECK_MAX_KEEPALIVE_CONNECTIONS}"
+      MARKDOWN_EXTRACTOR: "${MARKDOWN_EXTRACTOR}"
+      MARKDOWN_EXTRACTOR_FAVOR_RECALL: "${MARKDOWN_EXTRACTOR_FAVOR_RECALL}"
+      MARKDOWN_EXTRACTOR_INCLUDE_COMMENTS: "${MARKDOWN_EXTRACTOR_INCLUDE_COMMENTS}"
+      MARKDOWN_EXTRACTOR_INCLUDE_TABLES: "${MARKDOWN_EXTRACTOR_INCLUDE_TABLES}"
+      MARKDOWN_EXTRACTOR_DEDUPLICATE: "${MARKDOWN_EXTRACTOR_DEDUPLICATE}"
+      MAX_SUBQUERIES: "${MAX_SUBQUERIES}"
+      SEARCH_PROFILE_QUICK_TOKEN_BUDGET: "${SEARCH_PROFILE_QUICK_TOKEN_BUDGET}"
+      SEARCH_PROFILE_QUICK_MAX_URLS: "${SEARCH_PROFILE_QUICK_MAX_URLS}"
+      SEARCH_PROFILE_QUICK_MAX_PASSAGES: "${SEARCH_PROFILE_QUICK_MAX_PASSAGES}"
+      SEARCH_PROFILE_RESEARCH_TOKEN_BUDGET: "${SEARCH_PROFILE_RESEARCH_TOKEN_BUDGET}"
+      SEARCH_PROFILE_RESEARCH_MAX_URLS: "${SEARCH_PROFILE_RESEARCH_MAX_URLS}"
+      SEARCH_PROFILE_RESEARCH_MAX_PASSAGES: "${SEARCH_PROFILE_RESEARCH_MAX_PASSAGES}"
+      SEARCH_PROFILE_DEEP_TOKEN_BUDGET: "${SEARCH_PROFILE_DEEP_TOKEN_BUDGET}"
+      SEARCH_PROFILE_DEEP_MAX_URLS: "${SEARCH_PROFILE_DEEP_MAX_URLS}"
+      SEARCH_PROFILE_DEEP_MAX_PASSAGES: "${SEARCH_PROFILE_DEEP_MAX_PASSAGES}"
+      URL_SAFETY_BLOCKED_IP_CATEGORIES: "${URL_SAFETY_BLOCKED_IP_CATEGORIES}"
+      URL_SAFETY_BLOCKED_SPECIAL_IPS: "${URL_SAFETY_BLOCKED_SPECIAL_IPS}"
+      URL_SAFETY_NAT64_NETWORKS: "${URL_SAFETY_NAT64_NETWORKS}"
+      URL_SAFETY_SIX_TO_FOUR_NETWORKS: "${URL_SAFETY_SIX_TO_FOUR_NETWORKS}"
+      URL_SAFETY_IPV4_COMPAT_NETWORKS: "${URL_SAFETY_IPV4_COMPAT_NETWORKS}"
     depends_on:
       - searxng
       - crawl4ai
@@ -47,42 +95,71 @@ services:
     build:
       context: ./semantic-chunking-service
       dockerfile: Dockerfile
-    mem_limit: "${CHUNKER_MEM_LIMIT:-768m}"
+    mem_limit: "${CHUNKER_MEM_LIMIT}"
     environment:
-      EMBEDDING_ENDPOINT: "${EMBEDDING_ENDPOINT:-http://embedding:80}"
-      EMBEDDING_MODEL: "${EMBEDDING_MODEL:-BAAI/bge-m3}"
-      EMBEDDING_API_KEY: "${EMBEDDING_API_KEY:-}"
-      CHUNKER_MAX_SEGMENTS_DP: "${CHUNKER_MAX_SEGMENTS_DP:-10000}"
-      REWARD_CACHE_MAX_SIZE: "${REWARD_CACHE_MAX_SIZE:-100000}"
+      LOG_LEVEL: "${CHUNKER_LOG_LEVEL}"
+      CHUNKER_DEFAULT_STRATEGY_VERSION: "${CHUNKER_DEFAULT_STRATEGY_VERSION}"
+      EMBEDDING_ENDPOINT: "${EMBEDDING_ENDPOINT}"
+      EMBEDDING_MODEL: "${EMBEDDING_MODEL}"
+      EMBEDDING_API_KEY: "${EMBEDDING_API_KEY?}"
+      EMBEDDING_BATCH_SIZE: "${EMBEDDING_BATCH_SIZE}"
+      EMBEDDING_TIMEOUT_S: "${EMBEDDING_TIMEOUT_S}"
+      CHUNKER_MAX_SEGMENTS_DP: "${CHUNKER_MAX_SEGMENTS_DP}"
+      REWARD_CACHE_MAX_SIZE: "${REWARD_CACHE_MAX_SIZE}"
 
   searxng:
     <<: *internal
-    image: searxng/searxng:latest
+    image: searxng/searxng@sha256:02d441bbb647b7be422d21041420115cddadac4644368f67c7c7f407bbe72e22
+    networks: [internal, egress]
     volumes:
-      - ./searxng:/etc/searxng:ro
+      - ./searxng:/etc/searxng
     environment:
-      SEARXNG_BASE_URL: "http://searxng:8080/"
+      SEARXNG_BASE_URL: "${SEARXNG_BASE_URL}"
+      SEARXNG_SECRET: "${SEARXNG_SECRET}"
 
   crawl4ai:
     <<: *internal
+    networks: [internal, egress]
     # Public upstream self-hosted Docker API. Keep this as an image dependency
     # and integrate over HTTP; do not vendor or build Crawl4AI in this repo.
     image: unclecode/crawl4ai:0.8.9
     environment:
-      CRAWL4AI_API_TOKEN: "${CRAWL4AI_API_KEY:-}"
+      CRAWL4AI_API_TOKEN: "${CRAWL4AI_API_KEY?}"
+      HTTP_PROXY: "${CRAWL4AI_HTTP_PROXY}"
+      HTTPS_PROXY: "${CRAWL4AI_HTTPS_PROXY}"
+      ALL_PROXY: "${CRAWL4AI_ALL_PROXY}"
+      http_proxy: "${CRAWL4AI_HTTP_PROXY}"
+      https_proxy: "${CRAWL4AI_HTTPS_PROXY}"
+      all_proxy: "${CRAWL4AI_ALL_PROXY}"
+      NO_PROXY: "${CRAWL4AI_NO_PROXY?}"
+      no_proxy: "${CRAWL4AI_NO_PROXY?}"
     shm_size: "1g"
+    healthcheck:
+      test:
+        - "CMD-SHELL"
+        - "redis-cli ping > /dev/null && NO_PROXY=localhost,127.0.0.1,::1 no_proxy=localhost,127.0.0.1,::1 curl -f http://localhost:11235/health"
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 5s
+    depends_on:
+      - egress-proxy
 
   embedding:
     <<: *internal
     profiles: ["bundled-models"]
-    image: ghcr.io/huggingface/text-embeddings-inference:latest
-    command: ["--model-id", "BAAI/bge-m3"]
+    image: ghcr.io/huggingface/text-embeddings-inference@sha256:b3e0169969c0dc4b22ab6bf6ad5699374d4cb720fc43fb66868a679586ea806f
+    networks: [internal, egress]
+    command: ["--model-id", "${EMBEDDING_MODEL}"]
 
   reranker:
     <<: *internal
     profiles: ["bundled-models"]
-    image: ghcr.io/huggingface/text-embeddings-inference:latest
-    command: ["--model-id", "BAAI/bge-reranker-v2-m3"]
+    image: ghcr.io/huggingface/text-embeddings-inference@sha256:b3e0169969c0dc4b22ab6bf6ad5699374d4cb720fc43fb66868a679586ea806f
+    networks: [internal, egress]
+    command: ["--model-id", "${RERANKER_MODEL}"]
 
 networks:
-  internal: {}
+  internal:
+    internal: true
+  egress: {}

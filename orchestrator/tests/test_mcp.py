@@ -27,16 +27,18 @@ def test_web_search_rejects_invalid_bounds_before_fanout():
     mcpmod.set_deps(fakes.deps(discovery=fakes.DownDiscovery()))
 
     with pytest.raises(ValidationError):
-        anyio.run(mcpmod.web_search, "x", None, 999)
+        anyio.run(lambda: mcpmod.web_search("x", max_urls=999))
 
 
 def test_app_exposes_mcp_mount():
     assert any(getattr(route, "path", None) == "/mcp" for route in app.routes)
 
 
-def test_streamable_http_initialize_tools_list_and_call_at_public_mcp():
+def test_streamable_http_initialize_tools_list_and_call_at_public_mcp(monkeypatch):
     async def exercise():
-        mcpmod.set_deps(fakes.deps())
+        deps = fakes.deps()
+        monkeypatch.setattr(appmod, "deps", deps)
+        mcpmod.set_deps(deps)
 
         def client_factory(headers=None, timeout=None, auth=None):
             return httpx.AsyncClient(
@@ -72,6 +74,11 @@ def test_streamable_http_initialize_tools_list_and_call_at_public_mcp():
         (
             "custom budget/urls",
             {"query": "x", "token_budget": 8, "max_urls": 1},
+            fakes.deps(),
+        ),
+        (
+            "search profile",
+            {"query": "x", "search_profile": "research"},
             fakes.deps(),
         ),
         (

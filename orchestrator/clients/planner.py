@@ -3,6 +3,8 @@ import json
 
 import httpx
 
+from ..observability import request_id_headers
+
 MAX_PLANNED_SUBQUERIES = 3
 
 
@@ -28,6 +30,7 @@ class LlmPlanner:
 
     async def plan(self, query: str) -> list[str]:
         headers = {"Authorization": f"Bearer {self.api_key}"} if self.api_key else None
+        headers = request_id_headers(headers)
         try:
             response = await self._client.post(
                 f"{self.endpoint}/v1/chat/completions",

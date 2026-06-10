@@ -1,6 +1,7 @@
 """Semantic chunking service client."""
 import httpx
 
+from ..observability import request_id_headers
 from ..types import Chunk, Page
 
 
@@ -25,6 +26,7 @@ class ChunkerClient:
     async def chunk(self, pages: list[Page]) -> list[Chunk]:
         chunks: list[Chunk] = []
         headers = {"Authorization": f"Bearer {self.api_key}"} if self.api_key else None
+        headers = request_id_headers(headers)
         try:
             for page in pages:
                 response = await self._client.post(

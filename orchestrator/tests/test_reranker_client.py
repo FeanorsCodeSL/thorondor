@@ -3,6 +3,7 @@ import httpx
 import pytest
 
 from orchestrator.clients.reranker_client import RerankerClient, RerankerUnavailable
+from orchestrator.observability import reset_request_id, set_request_id
 from orchestrator.types import Chunk
 
 
@@ -14,6 +15,18 @@ def _chunks():
     ]
 
 
+def _reranker(**kwargs) -> RerankerClient:
+    values = {
+        "endpoint": "http://reranker:80",
+        "model": "m",
+        "path": "/rerank",
+        "batch_size": 32,
+        "timeout_s": 30.0,
+    }
+    values.update(kwargs)
+    return RerankerClient(**values)
+
+
 def test_maps_scores_by_index(monkeypatch):
     transport = httpx.MockTransport(
         lambda req: httpx.Response(200, json={"results": [{"index": 1, "score": 0.9}, {"index": 0, "score": 0.2}]})
@@ -21,7 +34,7 @@ def test_maps_scores_by_index(monkeypatch):
     real_async_client = httpx.AsyncClient
     monkeypatch.setattr(httpx, "AsyncClient", lambda *a, **k: real_async_client(transport=transport))
 
-    out = anyio.run(RerankerClient("http://reranker:80", "m").rerank, "q", _chunks())
+    out = anyio.run(_reranker().rerank, "q", _chunks())
 
     assert out[0].chunk.text == "b"
     assert out[0].score == 0.9
@@ -36,7 +49,7 @@ def test_indexless_response_maps_positionally(monkeypatch):
     real_async_client = httpx.AsyncClient
     monkeypatch.setattr(httpx, "AsyncClient", lambda *a, **k: real_async_client(transport=transport))
 
-    out = anyio.run(RerankerClient("http://reranker:80", "m").rerank, "q", _chunks())
+    out = anyio.run(_reranker().rerank, "q", _chunks())
 
     assert [(item.chunk.text, item.score) for item in out] == [("a", 0.9), ("b", 0.4), ("c", 0.1)]
 
@@ -46,7 +59,7 @@ def test_partial_response_floor_scores_missing_chunks(monkeypatch):
     real_async_client = httpx.AsyncClient
     monkeypatch.setattr(httpx, "AsyncClient", lambda *a, **k: real_async_client(transport=transport))
 
-    out = anyio.run(RerankerClient("http://reranker:80", "m").rerank, "q", _chunks())
+    out = anyio.run(_reranker().rerank, "q", _chunks())
 
     assert [item.chunk.text for item in out] == ["c", "a", "b"]
     assert len(out) == 3
@@ -60,7 +73,7 @@ def test_empty_results_raise_unavailable(monkeypatch):
     monkeypatch.setattr(httpx, "AsyncClient", lambda *a, **k: real_async_client(transport=transport))
 
     with pytest.raises(RerankerUnavailable):
-        anyio.run(RerankerClient("http://reranker:80", "m").rerank, "q", _chunks())
+        anyio.run(_reranker().rerank, "q", _chunks())
 
 
 def test_malformed_result_raises_unavailable(monkeypatch):
@@ -69,7 +82,7 @@ def test_malformed_result_raises_unavailable(monkeypatch):
     monkeypatch.setattr(httpx, "AsyncClient", lambda *a, **k: real_async_client(transport=transport))
 
     with pytest.raises(RerankerUnavailable):
-        anyio.run(RerankerClient("http://reranker:80", "m").rerank, "q", _chunks())
+        anyio.run(_reranker().rerank, "q", _chunks())
 
 
 def test_non_200_raises(monkeypatch):
@@ -78,7 +91,7 @@ def test_non_200_raises(monkeypatch):
     monkeypatch.setattr(httpx, "AsyncClient", lambda *a, **k: real_async_client(transport=transport))
 
     with pytest.raises(RerankerUnavailable):
-        anyio.run(RerankerClient("http://reranker:80", "m").rerank, "q", _chunks())
+        anyio.run(_reranker().rerank, "q", _chunks())
 
 
 def test_custom_path_and_relevance_score_shape(monkeypatch):
@@ -92,7 +105,7 @@ def test_custom_path_and_relevance_score_shape(monkeypatch):
     real_async_client = httpx.AsyncClient
     monkeypatch.setattr(httpx, "AsyncClient", lambda *a, **k: real_async_client(transport=transport))
 
-    out = anyio.run(RerankerClient("http://reranker:8080", "m", "/reranking").rerank, "q", _chunks())
+    out = anyio.run(_reranker(endpoint="http://reranker:8080", path="/reranking").rerank, "q", _chunks())
 
     assert seen["path"] == "/reranking"
     assert out[0].score == 0.7
@@ -110,6 +123,86 @@ def test_api_key_is_sent_as_bearer_header(monkeypatch):
     real_async_client = httpx.AsyncClient
     monkeypatch.setattr(httpx, "AsyncClient", lambda *a, **k: real_async_client(transport=transport))
 
-    anyio.run(RerankerClient("http://reranker:80", "m", api_key="secret").rerank, "q", _chunks())
+    anyio.run(_reranker(api_key="secret").rerank, "q", _chunks())
 
     assert seen["authorization"] == "Bearer secret"
+
+
+def test_request_id_is_forwarded(monkeypatch):
+    seen = {}
+
+    def handler(req):
+        seen["request_id"] = req.headers.get("x-request-id")
+        return httpx.Response(200, json={"results": [{"index": 0, "score": 0.7}]})
+
+    transport = httpx.MockTransport(handler)
+    real_async_client = httpx.AsyncClient
+    monkeypatch.setattr(httpx, "AsyncClient", lambda *a, **k: real_async_client(transport=transport))
+
+    token = set_request_id("req-789")
+    try:
+        anyio.run(_reranker().rerank, "q", _chunks())
+    finally:
+        reset_request_id(token)
+
+    assert seen["request_id"] == "req-789"
+
+
+def test_batches_requests_and_maps_local_indexes_to_global_chunks():
+    seen_document_batches = []
+
+    def handler(req):
+        import json
+
+        documents = json.loads(req.content)["documents"]
+        seen_document_batches.append(documents)
+        return httpx.Response(200, json={"results": [{"index": len(documents) - 1, "score": 0.9}]})
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    reranker = _reranker(client=client, batch_size=2)
+
+    out = anyio.run(reranker.rerank, "q", _chunks())
+
+    assert seen_document_batches == [["a", "b"], ["c"]]
+    assert [item.chunk.text for item in out[:2]] == ["b", "c"]
+    assert reranker.last_batches == 2
+    assert reranker.last_batches_failed == 0
+    assert reranker.last_floor_filled is True
+    assert reranker.last_scored_count == 2
+
+
+def test_partial_batch_failure_keeps_successful_scores_and_floor_fills_failed_batch():
+    calls = 0
+
+    def handler(req):
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            return httpx.Response(500, json={})
+        return httpx.Response(200, json={"results": [{"index": 0, "score": 0.9}, {"index": 1, "score": 0.8}]})
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    reranker = _reranker(client=client, batch_size=2)
+    chunks = _chunks() + [Chunk("d", 1, "u4", "T4", 0)]
+
+    out = anyio.run(reranker.rerank, "q", chunks)
+
+    assert len(out) == 4
+    assert reranker.last_batches == 2
+    assert reranker.last_batches_failed == 1
+    assert reranker.last_floor_filled is True
+    assert reranker.last_scored_count == 2
+    assert [item.chunk.text for item in out[:2]] == ["a", "b"]
+    assert out[2].score == out[3].score
+    assert out[2].score < out[1].score
+
+
+def test_all_batch_failures_raise_unavailable():
+    client = httpx.AsyncClient(transport=httpx.MockTransport(lambda req: httpx.Response(500, json={})))
+    reranker = _reranker(client=client, batch_size=2)
+
+    with pytest.raises(RerankerUnavailable):
+        anyio.run(reranker.rerank, "q", _chunks())
+
+    assert reranker.last_batches == 2
+    assert reranker.last_batches_failed == 2

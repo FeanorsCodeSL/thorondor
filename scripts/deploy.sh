@@ -13,6 +13,25 @@ if [ ! -f .env ]; then
   cp .env.example .env
 fi
 
+ensure_env_value() {
+  local key="$1"
+  local value
+
+  if grep -Eq "^${key}=.+" .env; then
+    return
+  fi
+
+  value="$(head -c 48 /dev/urandom | base64 | tr -dc 'a-zA-Z0-9' | head -c 48)"
+  if grep -Eq "^${key}=" .env; then
+    sed -i.bak "s|^${key}=.*|${key}=${value}|" .env
+    rm -f .env.bak
+  else
+    printf '\n%s=%s\n' "$key" "$value" >> .env
+  fi
+}
+
+ensure_env_value SEARXNG_SECRET
+
 compose=(docker compose -f "$COMPOSE_FILE")
 if [ -n "$PROFILE" ]; then
   compose+=(--profile "$PROFILE")

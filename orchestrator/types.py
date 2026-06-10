@@ -17,6 +17,17 @@ class Page:
     title: str
     markdown: str
     source_id: int | None = None
+    original_markdown: str | None = None
+    html: str | None = None
+
+
+@dataclass
+class CleanedPage:
+    page: Page
+    chars_before: int
+    chars_after: int
+    blocks_dropped: int
+    cleaner_version: str
 
 
 @dataclass
@@ -35,6 +46,14 @@ class Chunk:
 class ScoredChunk:
     chunk: Chunk
     score: float
+
+
+@dataclass
+class PrefilteredChunks:
+    chunks: list[Chunk]
+    chunks_prefiltered: int
+    chunks_sent_to_reranker: int
+    prefilter_strategy: str
 
 
 @dataclass

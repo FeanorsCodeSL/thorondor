@@ -5,12 +5,10 @@ from typing import Dict, Optional
 
 @dataclass(frozen=True)
 class StrategyParams:
-    max_chunk_tokens: int = 400
-    min_chunk_tokens: int = 50
-    initial_segment_tokens: int = 50
+    max_chunk_tokens: int
+    min_chunk_tokens: int
+    initial_segment_tokens: int
 
-
-DEFAULT_STRATEGY_VERSION = "cluster-semantic@1"
 
 _STRATEGIES: Dict[str, StrategyParams] = {
     "cluster-semantic@1": StrategyParams(
@@ -22,11 +20,11 @@ _STRATEGIES: Dict[str, StrategyParams] = {
 
 
 def resolve_strategy(
-    version: Optional[str],
+    version: str,
     overrides: Optional[Dict[str, int]] = None,
 ) -> StrategyParams:
     """Resolve a strategy version to its params, applying optional overrides."""
-    base = _STRATEGIES.get(version or DEFAULT_STRATEGY_VERSION)
+    base = _STRATEGIES.get(version)
     if base is None:
         raise KeyError(f"Unknown strategy_version: {version!r}")
     if not overrides:

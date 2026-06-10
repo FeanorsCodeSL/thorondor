@@ -4,8 +4,15 @@ from .clients.reranker_client import RerankerUnavailable
 from .clients.searxng_client import DiscoveryUnavailable
 from .pipeline import PipelineDeps
 from .assembly import ResultAssemblerImpl
+from .markdown_cleaner import MarkdownCleanerImpl
+from .prefilter import CandidatePrefilterImpl
 from .selection import SelectionPolicyImpl
 from .types import AssembledCitation, AssembledPassage, Chunk, DiscoveryResult, Page, ScoredChunk
+from .types import PrefilteredChunks
+
+
+def _fake_extract(html: str, **_kwargs) -> str:
+    return html
 
 
 class FakePlanner:
@@ -69,6 +76,7 @@ class FakeSelector:
         max_urls: int,
         blocklist: set[str],
         allowlist: set[str] | None = None,
+        query: str | None = None,
     ) -> list[DiscoveryResult]:
         if self.subset is not None:
             return self.subset[:max_urls]
@@ -82,6 +90,7 @@ class EmptySelector:
         max_urls: int,
         blocklist: set[str],
         allowlist: set[str] | None = None,
+        query: str | None = None,
     ) -> list[DiscoveryResult]:
         return []
 
@@ -93,6 +102,7 @@ class DownSelector:
         max_urls: int,
         blocklist: set[str],
         allowlist: set[str] | None = None,
+        query: str | None = None,
     ) -> list[DiscoveryResult]:
         raise RuntimeError("selector down")
 
@@ -145,6 +155,27 @@ class PartialChunker:
 class DownChunker:
     async def chunk(self, pages: list[Page]) -> list[Chunk]:
         raise ChunkerUnavailable("down")
+
+
+class FakeCandidatePrefilter:
+    def filter(self, query: str, chunks: list[Chunk]) -> PrefilteredChunks:
+        return PrefilteredChunks(chunks, 0, len(chunks), "fake-prefilter")
+
+
+class EmptyCandidatePrefilter:
+    def filter(self, query: str, chunks: list[Chunk]) -> PrefilteredChunks:
+        return PrefilteredChunks([], len(chunks), 0, "fake-prefilter")
+
+
+class PartialCandidatePrefilter:
+    def filter(self, query: str, chunks: list[Chunk]) -> PrefilteredChunks:
+        kept = chunks[:1]
+        return PrefilteredChunks(kept, len(chunks) - len(kept), len(kept), "fake-prefilter")
+
+
+class DownCandidatePrefilter:
+    def filter(self, query: str, chunks: list[Chunk]) -> PrefilteredChunks:
+        raise RuntimeError("prefilter down")
 
 
 class FakeReranker:
@@ -241,12 +272,29 @@ def deps(**overrides) -> PipelineDeps:
         "discovery": FakeDiscovery(),
         "selector": SelectionPolicyImpl(),
         "extractor": FakeExtractor(),
+        "markdown_cleaner": MarkdownCleanerImpl(
+            extractor=_fake_extract,
+            extractor_name="fake-extractor",
+            extractor_version="test",
+            favor_recall=True,
+            include_comments=False,
+            include_tables=True,
+            deduplicate=True,
+        ),
         "chunker": FakeChunker(),
+        "candidate_prefilter": CandidatePrefilterImpl(),
         "reranker": FakeReranker(),
         "assembler": ResultAssemblerImpl(),
         "default_token_budget": 4000,
         "default_max_urls": 6,
+        "max_subqueries": 3,
+        "profile_defaults": {
+            "quick": {"token_budget": 2000, "max_urls": 5, "max_passages": 5},
+            "research": {"token_budget": 8000, "max_urls": 12, "max_passages": 20},
+            "deep": {"token_budget": 16000, "max_urls": 20, "max_passages": 40},
+        },
         "blocklist": set(),
+        "relevance_score_floor": 0.0,
         "domain_allowlist": set(),
         "allowlist_only": False,
         "url_safety": list,

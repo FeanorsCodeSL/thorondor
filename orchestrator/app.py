@@ -5,14 +5,17 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException, Request
 import httpx
 
+from .clients.searxng_client import SEARXNG_INTERNAL_HEADERS
 from .models import SearchRequest, SearchResponse
 from .mcp_server import mcp
+from .observability import configure_json_logging, new_request_id, reset_request_id, set_request_id
 from .pipeline import SearchDependencyUnavailable, build_deps_from_settings, run_search
 from .settings import load_settings
 
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
+    get_deps()
     async with mcp.session_manager.run():
         try:
             yield
@@ -30,13 +33,21 @@ health_client: httpx.AsyncClient | None = None
 async def route_mcp_without_redirect(request: Request, call_next):
     if request.scope["path"] == "/mcp":
         request.scope["path"] = "/mcp/"
-    return await call_next(request)
+    request_id = request.headers.get("X-Request-ID") or new_request_id()
+    token = set_request_id(request_id)
+    try:
+        response = await call_next(request)
+        response.headers["X-Request-ID"] = request_id
+        return response
+    finally:
+        reset_request_id(token)
 
 
 def get_settings():
     global settings
     if settings is None:
         settings = load_settings()
+        configure_json_logging(settings.log_level)
     return settings
 
 
@@ -50,9 +61,13 @@ def get_deps():
 def get_health_client() -> httpx.AsyncClient:
     global health_client
     if health_client is None or health_client.is_closed:
+        s = get_settings()
         health_client = httpx.AsyncClient(
-            timeout=2.0,
-            limits=httpx.Limits(max_connections=8, max_keepalive_connections=4),
+            timeout=s.healthcheck_timeout_s,
+            limits=httpx.Limits(
+                max_connections=s.healthcheck_max_connections,
+                max_keepalive_connections=s.healthcheck_max_keepalive_connections,
+            ),
         )
     return health_client
 
@@ -81,12 +96,23 @@ async def search(req: SearchRequest) -> SearchResponse:
         ) from exc
 
 
-async def _check_url(name: str, url: str) -> tuple[str, bool]:
+async def _check_url(name: str, url: str, headers: dict[str, str] | None = None) -> tuple[str, bool]:
     try:
-        response = await get_health_client().get(url)
+        response = await get_health_client().get(url, headers=headers)
         return name, response.status_code < 500
     except Exception:
         return name, False
+
+
+async def _check_chunker(url: str) -> tuple[tuple[str, bool], tuple[str, bool]]:
+    try:
+        response = await get_health_client().get(url)
+        if response.status_code >= 500:
+            return ("chunker", False), ("embedding", False)
+        payload = response.json()
+        return ("chunker", True), ("embedding", bool(payload.get("embedding", False)))
+    except Exception:
+        return ("chunker", False), ("embedding", False)
 
 
 def _join_url(base_url: str, path: str) -> str:
@@ -96,34 +122,28 @@ def _join_url(base_url: str, path: str) -> str:
 
 @app.get("/healthz")
 async def healthz():
-    if deps is not None:
-        return {
-            "status": "ok",
-            "dependencies": {
-                "searxng": True,
-                "crawl4ai": True,
-                "chunker": True,
-                "reranker": True,
-            },
-        }
-    try:
-        s = get_settings()
-    except RuntimeError:
-        return {
-            "status": "ok",
-            "dependencies": {
-                "searxng": False,
-                "crawl4ai": False,
-                "chunker": False,
-                "reranker": False,
-            },
-        }
-    checks = await asyncio.gather(
-        _check_url("searxng", f"{s.searxng_url.rstrip('/')}/search?q=health&format=json"),
-        _check_url("crawl4ai", f"{s.crawl4ai_url.rstrip('/')}/healthz"),
-        _check_url("chunker", f"{s.chunker_url.rstrip('/')}/healthz"),
+    s = get_settings()
+    searxng, crawl4ai, chunker_pair, reranker = await asyncio.gather(
+        _check_url(
+            "searxng",
+            f"{s.searxng_url.rstrip('/')}/search?q=health&format=json",
+            SEARXNG_INTERNAL_HEADERS,
+        ),
+        _check_url("crawl4ai", f"{s.crawl4ai_url.rstrip('/')}/health"),
+        _check_chunker(f"{s.chunker_url.rstrip('/')}/healthz"),
         _check_url("reranker", _join_url(s.reranker_endpoint, s.reranker_health_path)),
     )
-    return {"status": "ok", "dependencies": dict(checks)}
+    chunker, embedding = chunker_pair
+    dependencies = dict([searxng, crawl4ai, chunker, embedding, reranker])
+    return {
+        "status": "ok" if all(dependencies.values()) else "degraded",
+        "dependencies": dependencies,
+        "hard_failures": [
+            name for name in ("searxng", "chunker") if not dependencies[name]
+        ],
+        "degraded_dependencies": [
+            name for name in ("crawl4ai", "embedding", "reranker") if not dependencies[name]
+        ],
+    }
 
 app.mount("/mcp", mcp.streamable_http_app())

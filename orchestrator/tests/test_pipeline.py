@@ -3,11 +3,13 @@ import pytest
 
 from orchestrator import fakes
 from orchestrator.clients.chunker_client import ChunkerUnavailable
+from orchestrator.clients.reranker_client import RerankerClient
 from orchestrator.clients.searxng_client import DiscoveryUnavailable
 from orchestrator.models import SearchRequest
+from orchestrator.prefilter import CandidatePrefilterImpl
 from orchestrator.pipeline import SearchDependencyUnavailable, run_search
-from orchestrator.types import Chunk, DiscoveryResult, Page
-from orchestrator.url_safety import filter_safe_discovery_results
+from orchestrator.types import Chunk, DiscoveryResult, Page, ScoredChunk
+from orchestrator.url_safety import UrlSafetyPolicy, filter_safe_discovery_results
 
 
 class _StaticDiscovery:
@@ -54,6 +56,18 @@ class _DuplicateBodyExtractor:
         return [Page(url, url, "same markdown body") for url in urls]
 
 
+class _ChromeExtractor:
+    async def extract(self, urls: list[str]) -> list[Page]:
+        return [
+            Page(
+                urls[0],
+                "chrome",
+                "Navigation Menu\nSearch\n# Article\nThis is the article body about the query.",
+                html="# Article\nThis is the article body about the query.",
+            )
+        ]
+
+
 class _FallbackChunker:
     async def chunk(self, pages: list[Page]) -> list[Chunk]:
         return [
@@ -71,6 +85,62 @@ class _FallbackChunker:
         ]
 
 
+class _RecordingChunker:
+    def __init__(self):
+        self.texts: list[str] = []
+
+    async def chunk(self, pages: list[Page]) -> list[Chunk]:
+        self.texts.extend(page.markdown for page in pages)
+        return [
+            Chunk(
+                text=page.markdown,
+                token_count=len(page.markdown.split()),
+                source_url=page.url,
+                title=page.title,
+                position=0,
+                source_id=page.source_id,
+            )
+            for page in pages
+        ]
+
+
+class _ManyChunker:
+    async def chunk(self, pages: list[Page]) -> list[Chunk]:
+        chunks: list[Chunk] = []
+        for page in pages:
+            for position in range(10):
+                text = "Oppenheimer was born in New York City" if position == 3 else f"filler {position}"
+                chunks.append(
+                    Chunk(
+                        text=text,
+                        token_count=len(text.split()),
+                        source_url=page.url,
+                        title=page.title,
+                        position=position,
+                        source_id=page.source_id,
+                    )
+                )
+        return chunks
+
+
+class _FixedChunker:
+    async def chunk(self, pages: list[Page]) -> list[Chunk]:
+        return [
+            Chunk("strong answer", 2, pages[0].url, pages[0].title, 0, pages[0].source_id),
+            Chunk("zero score", 2, pages[0].url, pages[0].title, 1, pages[0].source_id),
+            Chunk("negative score", 2, pages[0].url, pages[0].title, 2, pages[0].source_id),
+        ]
+
+
+class _MixedScoreReranker:
+    async def rerank(self, query: str, chunks: list[Chunk]) -> list[ScoredChunk]:
+        return [
+            ScoredChunk(chunks[0], 1.2),
+            ScoredChunk(chunks[1], 0.0),
+            ScoredChunk(chunks[2], -0.4),
+        ]
+
+
 def _mock_resolver(monkeypatch, mapping: dict[str, list[str]] | None = None):
     from orchestrator import url_safety
 
@@ -84,6 +154,29 @@ def _mock_resolver(monkeypatch, mapping: dict[str, list[str]] | None = None):
     monkeypatch.setattr(url_safety, "resolve_host_ips", resolve)
 
 
+def _url_safety():
+    from orchestrator import url_safety
+
+    policy = UrlSafetyPolicy(
+        blocked_ip_categories={
+            "loopback",
+            "link_local",
+            "private",
+            "reserved",
+            "multicast",
+            "unspecified",
+        },
+        blocked_special_ips={
+            url_safety.ipaddress.ip_address("169.254.169.254"),
+            url_safety.ipaddress.ip_address("fd00:ec2::254"),
+        },
+        nat64_networks=[url_safety.ipaddress.ip_network("64:ff9b::/96")],
+        six_to_four_networks=[url_safety.ipaddress.ip_network("2002::/16")],
+        ipv4_compat_networks=[url_safety.ipaddress.ip_network("::/96")],
+    )
+    return lambda results: filter_safe_discovery_results(results, policy)
+
+
 def test_happy_path_returns_cited_budgeted_passages():
     deps = fakes.deps()
     resp = anyio.run(run_search, SearchRequest(query="eu ai act 2025"), deps)
@@ -93,6 +186,34 @@ def test_happy_path_returns_cited_budgeted_passages():
     assert all(p.citation_id in {c.id for c in resp.citations} for p in resp.passages)
     assert {p.provenance for p in resp.passages} == {"external_web"}
     assert {p.trust for p in resp.passages} == {"untrusted"}
+
+
+def test_search_profile_supplies_defaults_when_request_omits_explicit_caps():
+    discovery = _StaticDiscovery([f"https://{index}.test/article" for index in range(15)])
+
+    resp = anyio.run(
+        run_search,
+        SearchRequest(query="x", search_profile="research"),
+        fakes.deps(discovery=discovery, relevance_score_floor=None),
+    )
+
+    assert resp.stats.urls_selected == 12
+    assert len(resp.passages) == 12
+    assert resp.stats.tokens_returned <= 8000
+
+
+def test_explicit_caps_override_search_profile_defaults():
+    discovery = _StaticDiscovery([f"https://{index}.test/article" for index in range(15)])
+
+    resp = anyio.run(
+        run_search,
+        SearchRequest(query="x", search_profile="research", max_urls=3, max_passages=2, token_budget=10),
+        fakes.deps(discovery=discovery),
+    )
+
+    assert resp.stats.urls_selected == 3
+    assert len(resp.passages) == 2
+    assert resp.stats.tokens_returned <= 10
 
 
 def test_importable_fake_selector_and_assembler_can_isolate_pipeline_branches():
@@ -124,6 +245,11 @@ def test_fakes_cover_all_protocol_seams_for_down_empty_partial_modes():
         "chunker": (fakes.DownChunker, fakes.EmptyChunker, fakes.PartialChunker),
         "reranker": (fakes.DownReranker, fakes.EmptyReranker, fakes.PartialReranker),
         "assembler": (fakes.DownAssembler, fakes.EmptyAssembler, fakes.PartialAssembler),
+        "candidate_prefilter": (
+            fakes.DownCandidatePrefilter,
+            fakes.EmptyCandidatePrefilter,
+            fakes.PartialCandidatePrefilter,
+        ),
     }
 
     assert all(all(item is not None for item in variants) for variants in expected.values())
@@ -235,6 +361,116 @@ def test_partial_crawl_and_dedup_counts_are_reported():
     assert resp.stats.embedding_degraded is True
 
 
+def test_selected_url_diagnostics_are_reported():
+    resp = anyio.run(
+        run_search,
+        SearchRequest(query="x", max_urls=1),
+        fakes.deps(
+            discovery=_StaticDiscovery(["https://a.test", "https://b.test"]),
+        ),
+    )
+
+    assert resp.stats.url_diagnostics
+    assert any(item.selected for item in resp.stats.url_diagnostics)
+    assert any(item.filtered_reason == "rank_cap" for item in resp.stats.url_diagnostics)
+
+
+def test_candidate_prefilter_limits_chunks_sent_to_reranker_and_reports_stats():
+    resp = anyio.run(
+        run_search,
+        SearchRequest(query="Where was Oppenheimer born?", max_urls=2),
+        fakes.deps(
+            discovery=_StaticDiscovery(["https://a.test/article", "https://b.test/article"]),
+            chunker=_ManyChunker(),
+            candidate_prefilter=CandidatePrefilterImpl(max_candidates=5),
+        ),
+    )
+
+    assert resp.stats.chunks_produced == 20
+    assert resp.stats.chunks_sent_to_reranker == 5
+    assert resp.stats.chunks_prefiltered == 15
+    assert resp.stats.prefilter_strategy == "lexical-source-preserving@1"
+    assert any("New York City" in passage.text for passage in resp.passages)
+
+
+def test_partial_reranker_batch_failure_reports_stats_and_keeps_results():
+    calls = 0
+
+    def handler(req):
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            import httpx
+
+            return httpx.Response(500, json={})
+        import httpx
+
+        return httpx.Response(200, json={"results": [{"index": 0, "score": 0.9}, {"index": 1, "score": 0.8}]})
+
+    import httpx
+
+    reranker = RerankerClient(
+        "http://reranker:80",
+        "m",
+        path="/rerank",
+        client=httpx.AsyncClient(transport=httpx.MockTransport(handler)),
+        batch_size=2,
+        timeout_s=30.0,
+    )
+
+    resp = anyio.run(
+        run_search,
+        SearchRequest(query="x", max_urls=1),
+        fakes.deps(
+            discovery=_StaticDiscovery(["https://a.test/article"]),
+            chunker=_ManyChunker(),
+            candidate_prefilter=CandidatePrefilterImpl(max_candidates=4),
+            reranker=reranker,
+        ),
+    )
+
+    assert resp.passages
+    assert resp.stats.reranked is True
+    assert resp.stats.reranker_batches == 2
+    assert resp.stats.reranker_batches_failed == 1
+    assert resp.stats.reranker_floor_filled is True
+    assert resp.stats.chunks_reranked == 2
+
+
+def test_relevance_floor_returns_fewer_passages_instead_of_padding_weak_chunks():
+    resp = anyio.run(
+        run_search,
+        SearchRequest(query="x", max_passages=3),
+        fakes.deps(
+            discovery=_StaticDiscovery(["https://a.test/article"]),
+            chunker=_FixedChunker(),
+            reranker=_MixedScoreReranker(),
+        ),
+    )
+
+    assert [passage.text for passage in resp.passages] == ["strong answer"]
+    assert resp.stats.passages_dropped_below_threshold == 2
+    assert resp.stats.relevance_threshold_policy == "score>0.0"
+    assert resp.stats.reason is None
+
+
+def test_relevance_floor_is_not_applied_to_reranker_degraded_fallback():
+    resp = anyio.run(
+        run_search,
+        SearchRequest(query="x", max_passages=3),
+        fakes.deps(
+            discovery=_StaticDiscovery(["https://a.test/article"]),
+            chunker=_FixedChunker(),
+            reranker=fakes.DownReranker(),
+        ),
+    )
+
+    assert len(resp.passages) == 3
+    assert resp.stats.reranked is False
+    assert resp.stats.passages_dropped_below_threshold == 0
+    assert resp.stats.relevance_threshold_policy is None
+
+
 def test_page_dedup_count_is_reported():
     resp = anyio.run(
         run_search,
@@ -302,6 +538,25 @@ def test_raw_markdown_uses_source_id_not_url_matching():
     ]
 
 
+def test_chunking_receives_cleaned_markdown_but_raw_markdown_returns_original():
+    chunker = _RecordingChunker()
+
+    resp = anyio.run(
+        run_search,
+        SearchRequest(query="x", include_raw_markdown=True),
+        fakes.deps(
+            discovery=_StaticDiscovery(["https://a.test/article"]),
+            extractor=_ChromeExtractor(),
+            chunker=chunker,
+        ),
+    )
+
+    assert chunker.texts == ["# Article\nThis is the article body about the query."]
+    assert resp.raw_markdown[0].markdown == "Navigation Menu\nSearch\n# Article\nThis is the article body about the query."
+    assert resp.stats.pages_cleaned == 1
+    assert resp.stats.markdown_blocks_dropped == 0
+
+
 @pytest.mark.parametrize(
     "unsafe_url,resolved",
     [
@@ -323,7 +578,7 @@ def test_unsafe_seed_urls_drop_before_selection_and_extraction(monkeypatch, unsa
         fakes.deps(
             discovery=_StaticDiscovery([unsafe_url]),
             extractor=extractor,
-            url_safety=filter_safe_discovery_results,
+            url_safety=_url_safety(),
         ),
     )
 
@@ -342,7 +597,7 @@ def test_safe_public_seed_url_still_selects_and_crawls(monkeypatch):
         fakes.deps(
             discovery=_StaticDiscovery(["https://safe.example/article"]),
             extractor=extractor,
-            url_safety=filter_safe_discovery_results,
+            url_safety=_url_safety(),
         ),
     )
 
@@ -371,7 +626,7 @@ def test_unsafe_schemes_and_schemeless_candidates_drop_before_extraction(monkeyp
         fakes.deps(
             discovery=_StaticDiscovery([candidate]),
             extractor=extractor,
-            url_safety=filter_safe_discovery_results,
+            url_safety=_url_safety(),
         ),
     )
 
@@ -398,7 +653,7 @@ def test_encoded_loopback_hosts_drop_before_extraction(monkeypatch, candidate):
         fakes.deps(
             discovery=_StaticDiscovery([candidate]),
             extractor=extractor,
-            url_safety=filter_safe_discovery_results,
+            url_safety=_url_safety(),
         ),
     )
 

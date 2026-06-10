@@ -16,6 +16,48 @@ if (-not (Test-Path ".env")) {
     Copy-Item ".env.example" ".env"
 }
 
+function New-SecretValue {
+    $bytes = New-Object byte[] 32
+    $rng = [System.Security.Cryptography.RandomNumberGenerator]::Create()
+    try {
+        $rng.GetBytes($bytes)
+    }
+    finally {
+        $rng.Dispose()
+    }
+    return ([Convert]::ToBase64String($bytes) -replace "[+/=]", "")
+}
+
+function Ensure-DotEnvValue {
+    param(
+        [string]$Path,
+        [string]$Key,
+        [string]$Value
+    )
+
+    $lines = @(Get-Content $Path)
+    $updated = $false
+    for ($index = 0; $index -lt $lines.Count; $index++) {
+        if ($lines[$index] -match "^$([regex]::Escape($Key))=(.*)$") {
+            if ([string]::IsNullOrWhiteSpace($Matches[1])) {
+                $lines[$index] = "$Key=$Value"
+                $updated = $true
+            }
+            else {
+                return
+            }
+        }
+    }
+
+    if (-not $updated) {
+        $lines += "$Key=$Value"
+    }
+
+    Set-Content -Path $Path -Value $lines
+}
+
+Ensure-DotEnvValue -Path ".env" -Key "SEARXNG_SECRET" -Value (New-SecretValue)
+
 function New-ComposeArgs {
     param(
         [string[]]$Files,

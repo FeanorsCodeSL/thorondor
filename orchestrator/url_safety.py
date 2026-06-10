@@ -1,5 +1,6 @@
 """Impure URL safety checks for crawl candidates."""
 from collections.abc import Iterable
+from dataclasses import dataclass
 import ipaddress
 import socket
 from urllib.parse import urlparse
@@ -7,21 +8,39 @@ from urllib.parse import urlparse
 from .types import DiscoveryResult
 
 
-METADATA_IPS = {
-    ipaddress.ip_address("169.254.169.254"),
-    ipaddress.ip_address("fd00:ec2::254"),
+IP_CATEGORY_CHECKS = {
+    "loopback": lambda ip: ip.is_loopback,
+    "link_local": lambda ip: ip.is_link_local,
+    "private": lambda ip: ip.is_private,
+    "reserved": lambda ip: ip.is_reserved,
+    "multicast": lambda ip: ip.is_multicast,
+    "unspecified": lambda ip: ip.is_unspecified,
 }
 
-NAT64_NETWORK = ipaddress.ip_network("64:ff9b::/96")
-SIX_TO_FOUR_NETWORK = ipaddress.ip_network("2002::/16")
-V4_COMPAT_NETWORK = ipaddress.ip_network("::/96")
+
+@dataclass(frozen=True)
+class UrlSafetyPolicy:
+    blocked_ip_categories: set[str]
+    blocked_special_ips: set[ipaddress.IPv4Address | ipaddress.IPv6Address]
+    nat64_networks: list[ipaddress.IPv6Network]
+    six_to_four_networks: list[ipaddress.IPv6Network]
+    ipv4_compat_networks: list[ipaddress.IPv6Network]
+
+    def __post_init__(self) -> None:
+        invalid_categories = self.blocked_ip_categories - set(IP_CATEGORY_CHECKS)
+        if invalid_categories:
+            names = ", ".join(sorted(invalid_categories))
+            raise RuntimeError(f"URL_SAFETY_BLOCKED_IP_CATEGORIES contains unsupported categories: {names}")
 
 
-def filter_safe_discovery_results(results: Iterable[DiscoveryResult]) -> list[DiscoveryResult]:
-    return [result for result in results if is_safe_crawl_url(result.url)]
+def filter_safe_discovery_results(
+    results: Iterable[DiscoveryResult],
+    policy: UrlSafetyPolicy,
+) -> list[DiscoveryResult]:
+    return [result for result in results if is_safe_crawl_url(result.url, policy)]
 
 
-def is_safe_crawl_url(url: str) -> bool:
+def is_safe_crawl_url(url: str, policy: UrlSafetyPolicy) -> bool:
     try:
         parsed = urlparse(url)
     except ValueError:
@@ -36,14 +55,14 @@ def is_safe_crawl_url(url: str) -> bool:
 
     literal = parse_ip_literal(host)
     if literal is not None:
-        return _is_safe_ip(literal)
+        return _is_safe_ip(literal, policy)
 
     try:
         resolved = resolve_host_ips(host)
     except OSError:
         return False
 
-    return bool(resolved) and all(_is_safe_ip(ip) for ip in resolved)
+    return bool(resolved) and all(_is_safe_ip(ip, policy) for ip in resolved)
 
 
 def resolve_host_ips(host: str) -> list[ipaddress.IPv4Address | ipaddress.IPv6Address]:
@@ -107,32 +126,29 @@ def _ipv4_from_int(value: int, bits: int) -> ipaddress.IPv4Address | None:
     return ipaddress.IPv4Address(value)
 
 
-def _is_safe_ip(ip: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
-    return all(_is_safe_ip_candidate(candidate) for candidate in _expand_ip_candidates(ip))
+def _is_safe_ip(ip: ipaddress.IPv4Address | ipaddress.IPv6Address, policy: UrlSafetyPolicy) -> bool:
+    return all(_is_safe_ip_candidate(candidate, policy) for candidate in _expand_ip_candidates(ip, policy))
 
 
 def _expand_ip_candidates(
     ip: ipaddress.IPv4Address | ipaddress.IPv6Address,
+    policy: UrlSafetyPolicy,
 ) -> list[ipaddress.IPv4Address | ipaddress.IPv6Address]:
     candidates: list[ipaddress.IPv4Address | ipaddress.IPv6Address] = [ip]
     if isinstance(ip, ipaddress.IPv6Address):
         if ip.ipv4_mapped is not None:
             candidates.append(ip.ipv4_mapped)
-        elif ip in NAT64_NETWORK or ip in V4_COMPAT_NETWORK:
+        elif any(ip in network for network in policy.nat64_networks + policy.ipv4_compat_networks):
             candidates.append(ipaddress.IPv4Address(int(ip) & 0xFFFFFFFF))
-        elif ip in SIX_TO_FOUR_NETWORK:
+        elif any(ip in network for network in policy.six_to_four_networks):
             candidates.append(ipaddress.IPv4Address((int(ip) >> 80) & 0xFFFFFFFF))
     return candidates
 
 
-def _is_safe_ip_candidate(ip: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
-    if ip in METADATA_IPS:
+def _is_safe_ip_candidate(
+    ip: ipaddress.IPv4Address | ipaddress.IPv6Address,
+    policy: UrlSafetyPolicy,
+) -> bool:
+    if ip in policy.blocked_special_ips:
         return False
-    return not (
-        ip.is_loopback
-        or ip.is_link_local
-        or ip.is_private
-        or ip.is_reserved
-        or ip.is_multicast
-        or ip.is_unspecified
-    )
+    return not any(IP_CATEGORY_CHECKS[category](ip) for category in policy.blocked_ip_categories)

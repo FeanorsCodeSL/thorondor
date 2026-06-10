@@ -10,6 +10,7 @@ from orchestrator.models import MAX_QUERY_CHARS, MAX_SELECTED_URLS, MAX_TOKEN_BU
 def test_search_request_defaults():
     req = SearchRequest(query="x")
     assert req.decompose is True
+    assert req.search_profile is None
     assert req.token_budget is None
     assert req.max_urls is None
     assert req.max_passages is None
@@ -22,6 +23,11 @@ def test_search_request_defaults():
 def test_invalid_freshness_rejected():
     with pytest.raises(ValidationError):
         SearchRequest(query="x", freshness="hour")
+
+
+def test_invalid_search_profile_rejected():
+    with pytest.raises(ValidationError):
+        SearchRequest(query="x", search_profile="wide")
 
 
 @pytest.mark.parametrize(

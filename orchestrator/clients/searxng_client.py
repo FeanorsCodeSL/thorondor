@@ -1,11 +1,15 @@
 """SearXNG discovery client."""
 import httpx
 
+from ..observability import request_id_headers
 from ..types import DiscoveryResult
 
 
 class DiscoveryUnavailable(Exception):
     pass
+
+
+SEARXNG_INTERNAL_HEADERS = {"X-Real-IP": "127.0.0.1"}
 
 
 class SearxngDiscovery:
@@ -26,7 +30,10 @@ class SearxngDiscovery:
         params = {"q": subquery, "format": "json"}
         if freshness:
             params["time_range"] = freshness
-        headers = {"Authorization": f"Bearer {self.api_key}"} if self.api_key else None
+        headers = dict(SEARXNG_INTERNAL_HEADERS)
+        if self.api_key:
+            headers["Authorization"] = f"Bearer {self.api_key}"
+        headers = request_id_headers(headers)
         try:
             response = await self._client.get(f"{self.base_url}/search", params=params, headers=headers)
         except Exception as exc:

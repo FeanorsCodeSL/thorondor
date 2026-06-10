@@ -1,0 +1,13 @@
+name: release-guard
+
+on:
+  pull_request:
+  push:
+
+jobs:
+  release-guard:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check pinned runtime images and SearXNG boundary
+        run: bash scripts/check-release-guard.sh

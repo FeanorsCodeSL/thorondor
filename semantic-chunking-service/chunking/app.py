@@ -1,21 +1,42 @@
 """FastAPI wrapper for the semantic chunking service."""
 import logging
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 
+from .settings import load_settings
 from .cluster_semantic import ClusterSemanticChunker
 from .embedding_function import EmbeddingFunction
 from .models import ChunkOut, ChunkRequest, ChunkResponse
-from .strategies import DEFAULT_STRATEGY_VERSION, resolve_strategy
+from .observability import new_request_id, reset_request_id, set_request_id
+from .strategies import resolve_strategy
 from .textprep import preclean
 
-logging.basicConfig(level=logging.INFO)
+settings = load_settings()
+logging.basicConfig(level=settings.log_level)
 logger = logging.getLogger("chunking-service")
 
 app = FastAPI(title="Semantic Chunking Service")
 
 # One embedding client per process; it batches calls to the BYO endpoint.
-_embedder = EmbeddingFunction()
+_embedder = EmbeddingFunction(
+    endpoint=settings.embedding_endpoint,
+    model=settings.embedding_model,
+    batch_size=settings.embedding_batch_size,
+    timeout_s=settings.embedding_timeout_s,
+    api_key=settings.embedding_api_key,
+)
+
+
+@app.middleware("http")
+async def request_id_middleware(request: Request, call_next):
+    request_id = request.headers.get("X-Request-ID") or new_request_id()
+    token = set_request_id(request_id)
+    try:
+        response = await call_next(request)
+        response.headers["X-Request-ID"] = request_id
+        return response
+    finally:
+        reset_request_id(token)
 
 
 def _length(text: str) -> int:
@@ -31,7 +52,7 @@ def healthz():
 
 @app.post("/chunk", response_model=ChunkResponse)
 def chunk(req: ChunkRequest) -> ChunkResponse:
-    version = req.strategy_version or DEFAULT_STRATEGY_VERSION
+    version = req.strategy_version or settings.default_strategy_version
     try:
         overrides = req.params.model_dump(exclude_none=True) if req.params else None
         params = resolve_strategy(version, overrides)
