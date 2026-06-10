@@ -7,8 +7,10 @@ cd "$ROOT_DIR"
 runtime_files=(
   docker-compose.yml
   docker-compose.llamacpp.yml
+  docker-compose.production.yml
   .env.example
   .env.llamacpp.example
+  .env.production.example
 )
 
 if grep -n ':latest' "${runtime_files[@]}"; then
@@ -35,6 +37,32 @@ if ! grep -Eq 'image:[[:space:]]+unclecode/crawl4ai@sha256:' docker-compose.yml;
   echo "docker-compose.yml: crawl4ai image must be pinned by digest." >&2
   exit 1
 fi
+
+if grep -nE '^[[:space:]]+build:[[:space:]]*$' docker-compose.production.yml; then
+  echo "docker-compose.production.yml must consume published images only." >&2
+  exit 1
+fi
+
+declare -A first_party_images=(
+  [THORONDOR_ORCHESTRATOR_IMAGE]='ghcr.io/feanorscodesl/thorondor-orchestrator'
+  [THORONDOR_CHUNKER_IMAGE]='ghcr.io/feanorscodesl/thorondor-chunker'
+  [THORONDOR_EGRESS_PROXY_IMAGE]='ghcr.io/feanorscodesl/thorondor-egress-proxy'
+)
+
+for image_var in "${!first_party_images[@]}"; do
+  image_ref="${first_party_images[$image_var]}"
+  if ! grep -Eq "^${image_var}=${image_ref}(:|@sha256:)" .env.production.example; then
+    echo ".env.production.example: ${image_var} must point at ${image_ref} by tag or digest." >&2
+    exit 1
+  fi
+done
+
+for image_var in THORONDOR_SEARXNG_IMAGE THORONDOR_CRAWL4AI_IMAGE; do
+  if ! grep -Eq "^${image_var}=.+@sha256:" .env.production.example; then
+    echo ".env.production.example: ${image_var} must be pinned by digest." >&2
+    exit 1
+  fi
+done
 
 for dockerfile in orchestrator/Dockerfile semantic-chunking-service/Dockerfile ssrf-proxy/Dockerfile; do
   if ! grep -Eq '^USER[[:space:]]+' "$dockerfile"; then

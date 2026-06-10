@@ -40,8 +40,10 @@ All inter-service traffic travels over an internal Compose network. Crawl4AI's o
 | `scripts/` | scripts | `deploy.ps1`, `deploy-llamacpp.ps1`, `smoke.ps1`, `check-release-guard.ps1` (PowerShell) + Bash equivalents |
 | `docker-compose.yml` | config | Core stack: orchestrator, chunker, SearXNG, Crawl4AI, egress-proxy; `bundled-models` profile adds TEI embedding + reranker |
 | `docker-compose.llamacpp.yml` | config | Override: swaps embedding and reranker to local llama.cpp containers using GGUF files under `models/` |
+| `docker-compose.production.yml` | config | Image-only production slice for Tengwar-style deployments; no `build:` blocks or model containers |
 | `.env.example` | config | Template for `.env` — every key the Python settings loader requires |
 | `.env.llamacpp.example` | config | Template for `.env.llamacpp` — llama.cpp image SHA, GGUF paths, and batch sizes |
+| `.env.production.example` | config | Template overlay for released GHCR image refs and production service names |
 | `docs/architecture/` | docs | Operational architecture reference (overview, pipeline, deployment, deps, security, config) |
 | `docs/plans/` | docs | Active remediation and implementation plans |
 | `.agents/skills/thorondor-web-search/` | skill | Repo-local agent skill for calling the running service |
@@ -121,6 +123,27 @@ The `bundled-models` profile (TEI containers) is still available if you want to 
 ```powershell
 .\scripts\deploy.ps1 -Profile bundled-models
 ```
+
+## Production Images for Tengwar
+
+Thorondor production deployments should consume released images rather than building from a source checkout on the headless host. The release workflow publishes:
+
+- `ghcr.io/feanorscodesl/thorondor-orchestrator`
+- `ghcr.io/feanorscodesl/thorondor-chunker`
+- `ghcr.io/feanorscodesl/thorondor-egress-proxy`
+
+Create a Git tag such as `v0.1.0` or run the `publish-images` workflow manually. The workflow pushes multi-arch `linux/amd64` and `linux/arm64` images, uploads digest artifacts, and attaches `THORONDOR_IMAGE_DIGESTS.md` to tag releases.
+
+For Tengwar, copy `.env.production.example` to `.env.production`, replace the three first-party image refs with the release digest refs, and run the image-only Compose file:
+
+```powershell
+docker compose `
+  --env-file .env --env-file .env.production `
+  -f docker-compose.production.yml `
+  config
+```
+
+`docker-compose.production.yml` expects Tengwar's external `app-network` and externally managed `embedding` and `reranker` services. It does not start extra model containers.
 
 ## REST API
 

@@ -1,6 +1,6 @@
 # Configuration Reference
 
-All environment variables must be present in `.env` (and `.env.llamacpp` for the llama.cpp profile). The Python settings loader raises `RuntimeError` on startup for any missing key — including keys that are intentionally blank. Leave optional keys set to an empty string rather than deleting them.
+All environment variables must be present in `.env` (and `.env.llamacpp` or `.env.production` for the selected Compose overlay). The Python settings loader raises `RuntimeError` on startup for any missing key — including keys that are intentionally blank. Leave optional keys set to an empty string rather than deleting them.
 
 ## Variable Table
 
@@ -177,6 +177,18 @@ All environment variables must be present in `.env` (and `.env.llamacpp` for the
 | `LLAMACPP_RERANKER_CONTEXT` | Required / `8192` | int | Context window size for the reranker server. | — |
 | `LLAMACPP_BATCH` | Required / `8192` | int | Batch size (`-b`) for llama.cpp. | `LLAMACPP_UBATCH` |
 | `LLAMACPP_UBATCH` | Required / `8192` | int | Micro-batch size (`-ub`) for llama.cpp. | `LLAMACPP_BATCH` |
+
+### Production Image Overlay (`.env.production` only)
+
+| Variable | Required / Default | Type | Description | Related |
+|---|---|---|---|---|
+| `THORONDOR_ORCHESTRATOR_IMAGE` | Required / `ghcr.io/feanorscodesl/thorondor-orchestrator:0.1.0` | Docker image reference | First-party orchestrator image. Use the release digest ref for production promotion. | — |
+| `THORONDOR_CHUNKER_IMAGE` | Required / `ghcr.io/feanorscodesl/thorondor-chunker:0.1.0` | Docker image reference | First-party chunker image. Use the release digest ref for production promotion. | — |
+| `THORONDOR_EGRESS_PROXY_IMAGE` | Required / `ghcr.io/feanorscodesl/thorondor-egress-proxy:0.1.0` | Docker image reference | First-party SSRF egress proxy image. Use the release digest ref for production promotion. | — |
+| `THORONDOR_SEARXNG_IMAGE` | Required / pinned upstream digest | Docker image reference | SearXNG image used by the production slice. May point to a GHCR mirror of the same pinned artifact. | `SEARXNG_URL` |
+| `THORONDOR_CRAWL4AI_IMAGE` | Required / pinned upstream digest | Docker image reference | Crawl4AI image used by the production slice. May point to a GHCR mirror of the same pinned artifact. | `CRAWL4AI_URL` |
+| `THORONDOR_APP_NETWORK` | Required / `app-network` | Docker network name | External network provided by Tengwar and shared with model services. | `EMBEDDING_ENDPOINT`, `RERANKER_ENDPOINT` |
+| `THORONDOR_SEARXNG_CONFIG_DIR` | Required / `./searxng` | host path | Directory mounted at `/etc/searxng:ro`. In production this should be a copied config directory, not the Thorondor source tree. | `SEARXNG_BASE_URL` |
 
 ---
 
