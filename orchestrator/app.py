@@ -84,8 +84,11 @@ async def close_runtime_clients() -> None:
         health_client = None
 
 
-@app.post("/v1/search", response_model=SearchResponse)
-@app.post("/search", response_model=SearchResponse)
+SEARCH_ERROR_RESPONSES = {503: {"description": "Search dependency unavailable"}}
+
+
+@app.post("/v1/search", responses=SEARCH_ERROR_RESPONSES)
+@app.post("/search", responses=SEARCH_ERROR_RESPONSES)
 async def search(req: SearchRequest) -> SearchResponse:
     try:
         return await run_search(req, get_deps())
@@ -134,7 +137,13 @@ async def healthz():
         _check_url("reranker", _join_url(s.reranker_endpoint, s.reranker_health_path)),
     )
     chunker, embedding = chunker_pair
-    dependencies = dict([searxng, crawl4ai, chunker, embedding, reranker])
+    dependencies = {
+        "searxng": searxng[1],
+        "crawl4ai": crawl4ai[1],
+        "chunker": chunker[1],
+        "embedding": embedding[1],
+        "reranker": reranker[1],
+    }
     return {
         "status": "ok" if all(dependencies.values()) else "degraded",
         "dependencies": dependencies,

@@ -1,4 +1,5 @@
 """Query planner clients."""
+import asyncio
 import json
 
 import httpx
@@ -10,6 +11,7 @@ MAX_PLANNED_SUBQUERIES = 3
 
 class IdentityPlanner:
     async def plan(self, query: str) -> list[str]:
+        await asyncio.sleep(0)
         return [query]
 
 

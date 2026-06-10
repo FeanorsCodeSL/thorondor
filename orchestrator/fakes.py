@@ -1,4 +1,6 @@
 """Deterministic fakes for orchestrator tests."""
+import asyncio
+
 from .clients.chunker_client import ChunkerUnavailable
 from .clients.reranker_client import RerankerUnavailable
 from .clients.searxng_client import DiscoveryUnavailable
@@ -15,27 +17,35 @@ def _fake_extract(html: str, **_kwargs) -> str:
     return html
 
 
+async def _async_boundary() -> None:
+    await asyncio.sleep(0)
+
+
 class FakePlanner:
     def __init__(self):
         self.called = False
 
     async def plan(self, query: str) -> list[str]:
+        await _async_boundary()
         self.called = True
         return [query]
 
 
 class EmptyPlanner:
-    async def plan(self, query: str) -> list[str]:
+    async def plan(self, _query: str) -> list[str]:
+        await _async_boundary()
         return []
 
 
 class PartialPlanner:
     async def plan(self, query: str) -> list[str]:
+        await _async_boundary()
         return [query, f"{query} context"][:1]
 
 
 class DownPlanner:
-    async def plan(self, query: str) -> list[str]:
+    async def plan(self, _query: str) -> list[str]:
+        await _async_boundary()
         raise RuntimeError("planner down")
 
 
@@ -43,7 +53,8 @@ class FakeDiscovery:
     def __init__(self):
         self.freshness_seen: list[str | None] = []
 
-    async def search(self, subquery: str, freshness: str | None = None) -> list[DiscoveryResult]:
+    async def search(self, _subquery: str, freshness: str | None = None) -> list[DiscoveryResult]:
+        await _async_boundary()
         self.freshness_seen.append(freshness)
         return [
             DiscoveryResult("A", "https://a.test/article", "snip", "fake", 0.9),
@@ -52,17 +63,20 @@ class FakeDiscovery:
 
 
 class EmptyDiscovery:
-    async def search(self, subquery: str, freshness: str | None = None) -> list[DiscoveryResult]:
+    async def search(self, _subquery: str, _freshness: str | None = None) -> list[DiscoveryResult]:
+        await _async_boundary()
         return []
 
 
 class PartialDiscovery:
-    async def search(self, subquery: str, freshness: str | None = None) -> list[DiscoveryResult]:
+    async def search(self, _subquery: str, _freshness: str | None = None) -> list[DiscoveryResult]:
+        await _async_boundary()
         return [DiscoveryResult("A", "https://a.test/article", "snip", "fake", 0.9)]
 
 
 class DownDiscovery:
-    async def search(self, subquery: str, freshness: str | None = None) -> list[DiscoveryResult]:
+    async def search(self, _subquery: str, _freshness: str | None = None) -> list[DiscoveryResult]:
+        await _async_boundary()
         raise DiscoveryUnavailable("down")
 
 
@@ -74,9 +88,9 @@ class FakeSelector:
         self,
         results: list[DiscoveryResult],
         max_urls: int,
-        blocklist: set[str],
-        allowlist: set[str] | None = None,
-        query: str | None = None,
+        _blocklist: set[str],
+        _allowlist: set[str] | None = None,
+        _query: str | None = None,
     ) -> list[DiscoveryResult]:
         if self.subset is not None:
             return self.subset[:max_urls]
@@ -86,11 +100,11 @@ class FakeSelector:
 class EmptySelector:
     def select(
         self,
-        results: list[DiscoveryResult],
-        max_urls: int,
-        blocklist: set[str],
-        allowlist: set[str] | None = None,
-        query: str | None = None,
+        _results: list[DiscoveryResult],
+        _max_urls: int,
+        _blocklist: set[str],
+        _allowlist: set[str] | None = None,
+        _query: str | None = None,
     ) -> list[DiscoveryResult]:
         return []
 
@@ -98,38 +112,43 @@ class EmptySelector:
 class DownSelector:
     def select(
         self,
-        results: list[DiscoveryResult],
-        max_urls: int,
-        blocklist: set[str],
-        allowlist: set[str] | None = None,
-        query: str | None = None,
+        _results: list[DiscoveryResult],
+        _max_urls: int,
+        _blocklist: set[str],
+        _allowlist: set[str] | None = None,
+        _query: str | None = None,
     ) -> list[DiscoveryResult]:
         raise RuntimeError("selector down")
 
 
 class FakeExtractor:
     async def extract(self, urls: list[str]) -> list[Page]:
+        await _async_boundary()
         return [Page(url, url.split("//", 1)[-1], f"Markdown for {url}") for url in urls]
 
 
 class EmptyExtractor:
-    async def extract(self, urls: list[str]) -> list[Page]:
+    async def extract(self, _urls: list[str]) -> list[Page]:
+        await _async_boundary()
         return []
 
 
 class PartialExtractor:
     async def extract(self, urls: list[str]) -> list[Page]:
+        await _async_boundary()
         kept = urls[: max(1, len(urls) - 1)]
         return [Page(url, url.split("//", 1)[-1], f"Markdown for {url}") for url in kept]
 
 
 class DownExtractor:
-    async def extract(self, urls: list[str]) -> list[Page]:
+    async def extract(self, _urls: list[str]) -> list[Page]:
+        await _async_boundary()
         raise RuntimeError("extractor down")
 
 
 class FakeChunker:
     async def chunk(self, pages: list[Page]) -> list[Chunk]:
+        await _async_boundary()
         return [
             Chunk(page.markdown, len(page.markdown.split()), page.url, page.title, index, page.source_id)
             for page in pages
@@ -138,12 +157,14 @@ class FakeChunker:
 
 
 class EmptyChunker:
-    async def chunk(self, pages: list[Page]) -> list[Chunk]:
+    async def chunk(self, _pages: list[Page]) -> list[Chunk]:
+        await _async_boundary()
         return []
 
 
 class PartialChunker:
     async def chunk(self, pages: list[Page]) -> list[Chunk]:
+        await _async_boundary()
         kept = pages[: max(1, len(pages) - 1)]
         return [
             Chunk(page.markdown, len(page.markdown.split()), page.url, page.title, index, page.source_id)
@@ -153,48 +174,53 @@ class PartialChunker:
 
 
 class DownChunker:
-    async def chunk(self, pages: list[Page]) -> list[Chunk]:
+    async def chunk(self, _pages: list[Page]) -> list[Chunk]:
+        await _async_boundary()
         raise ChunkerUnavailable("down")
 
 
 class FakeCandidatePrefilter:
-    def filter(self, query: str, chunks: list[Chunk]) -> PrefilteredChunks:
+    def filter(self, _query: str, chunks: list[Chunk]) -> PrefilteredChunks:
         return PrefilteredChunks(chunks, 0, len(chunks), "fake-prefilter")
 
 
 class EmptyCandidatePrefilter:
-    def filter(self, query: str, chunks: list[Chunk]) -> PrefilteredChunks:
+    def filter(self, _query: str, chunks: list[Chunk]) -> PrefilteredChunks:
         return PrefilteredChunks([], len(chunks), 0, "fake-prefilter")
 
 
 class PartialCandidatePrefilter:
-    def filter(self, query: str, chunks: list[Chunk]) -> PrefilteredChunks:
+    def filter(self, _query: str, chunks: list[Chunk]) -> PrefilteredChunks:
         kept = chunks[:1]
         return PrefilteredChunks(kept, len(chunks) - len(kept), len(kept), "fake-prefilter")
 
 
 class DownCandidatePrefilter:
-    def filter(self, query: str, chunks: list[Chunk]) -> PrefilteredChunks:
+    def filter(self, _query: str, _chunks: list[Chunk]) -> PrefilteredChunks:
         raise RuntimeError("prefilter down")
 
 
 class FakeReranker:
-    async def rerank(self, query: str, chunks: list[Chunk]) -> list[ScoredChunk]:
+    async def rerank(self, _query: str, chunks: list[Chunk]) -> list[ScoredChunk]:
+        await _async_boundary()
         return [ScoredChunk(chunk, 1.0 - (index * 0.1)) for index, chunk in enumerate(chunks)]
 
 
 class EmptyReranker:
-    async def rerank(self, query: str, chunks: list[Chunk]) -> list[ScoredChunk]:
+    async def rerank(self, _query: str, _chunks: list[Chunk]) -> list[ScoredChunk]:
+        await _async_boundary()
         return []
 
 
 class PartialReranker:
-    async def rerank(self, query: str, chunks: list[Chunk]) -> list[ScoredChunk]:
+    async def rerank(self, _query: str, chunks: list[Chunk]) -> list[ScoredChunk]:
+        await _async_boundary()
         return [ScoredChunk(chunk, 1.0 - (index * 0.1)) for index, chunk in enumerate(chunks[:1])]
 
 
 class DownReranker:
-    async def rerank(self, query: str, chunks: list[Chunk]) -> list[ScoredChunk]:
+    async def rerank(self, _query: str, _chunks: list[Chunk]) -> list[ScoredChunk]:
+        await _async_boundary()
         raise RerankerUnavailable("down")
 
 
@@ -239,9 +265,9 @@ class FakeAssembler:
 class EmptyAssembler:
     def assemble(
         self,
-        scored: list[ScoredChunk],
-        token_budget: int,
-        max_passages: int | None,
+        _scored: list[ScoredChunk],
+        _token_budget: int,
+        _max_passages: int | None,
     ) -> tuple[list[AssembledPassage], list[AssembledCitation]]:
         return [], []
 
@@ -259,9 +285,9 @@ class PartialAssembler:
 class DownAssembler:
     def assemble(
         self,
-        scored: list[ScoredChunk],
-        token_budget: int,
-        max_passages: int | None,
+        _scored: list[ScoredChunk],
+        _token_budget: int,
+        _max_passages: int | None,
     ) -> tuple[list[AssembledPassage], list[AssembledCitation]]:
         raise RuntimeError("assembler down")
 

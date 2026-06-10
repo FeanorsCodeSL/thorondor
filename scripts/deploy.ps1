@@ -2,7 +2,8 @@ param(
     [string[]]$ComposeFiles = @("docker-compose.yml"),
     [string[]]$EnvFiles = @(".env"),
     [string]$Profile = $(if ($env:PROFILE) { $env:PROFILE } else { "bundled-models" }),
-    [string]$HealthUrl = $(if ($env:HEALTH_URL) { $env:HEALTH_URL } else { "http://localhost:8080/healthz" }),
+    [string]$HealthUrl = $env:HEALTH_URL,
+    [string]$SearchUrl = $env:SEARCH_URL,
     [switch]$SkipSmoke
 )
 
@@ -57,6 +58,65 @@ function Ensure-DotEnvValue {
 }
 
 Ensure-DotEnvValue -Path ".env" -Key "SEARXNG_SECRET" -Value (New-SecretValue)
+
+function Read-DotEnv {
+    param([string]$Path)
+
+    $values = @{}
+    foreach ($line in Get-Content $Path) {
+        $trimmed = $line.Trim()
+        if (-not $trimmed -or $trimmed.StartsWith("#")) {
+            continue
+        }
+
+        $index = $trimmed.IndexOf("=")
+        if ($index -le 0) {
+            continue
+        }
+
+        $key = $trimmed.Substring(0, $index).Trim()
+        $value = $trimmed.Substring($index + 1).Trim()
+        $value = $value.Trim('"')
+        $value = $value.Trim("'")
+        $values[$key] = $value
+    }
+    return $values
+}
+
+function Get-RequiredDotEnvValue {
+    param(
+        [hashtable]$Values,
+        [string]$Key,
+        [string]$Path
+    )
+
+    if (-not $Values.ContainsKey($Key) -or [string]::IsNullOrWhiteSpace($Values[$Key])) {
+        throw "$Key must be set explicitly in $Path."
+    }
+
+    return $Values[$Key]
+}
+
+function Join-OrchestratorUrl {
+    param(
+        [string]$HostName,
+        [string]$Port,
+        [string]$Path
+    )
+
+    return "http://${HostName}:${Port}${Path}"
+}
+
+$envValues = Read-DotEnv ".env"
+$orchestratorHost = Get-RequiredDotEnvValue -Values $envValues -Key "ORCHESTRATOR_HOST" -Path ".env"
+$orchestratorPort = Get-RequiredDotEnvValue -Values $envValues -Key "ORCHESTRATOR_PORT" -Path ".env"
+
+if ([string]::IsNullOrWhiteSpace($HealthUrl)) {
+    $HealthUrl = Join-OrchestratorUrl -HostName $orchestratorHost -Port $orchestratorPort -Path "/healthz"
+}
+if ([string]::IsNullOrWhiteSpace($SearchUrl)) {
+    $SearchUrl = Join-OrchestratorUrl -HostName $orchestratorHost -Port $orchestratorPort -Path "/search"
+}
 
 function New-ComposeArgs {
     param(
@@ -120,5 +180,5 @@ if ($finalValues.Count -eq 0 -or ($finalValues -contains $false)) {
 }
 
 if (-not $SkipSmoke) {
-    & (Join-Path $PSScriptRoot "smoke.ps1") -ComposeFiles $ComposeFiles -EnvFiles $EnvFiles -Profile $Profile
+    & (Join-Path $PSScriptRoot "smoke.ps1") -ComposeFiles $ComposeFiles -EnvFiles $EnvFiles -Profile $Profile -HealthUrl $HealthUrl -SearchUrl $SearchUrl
 }

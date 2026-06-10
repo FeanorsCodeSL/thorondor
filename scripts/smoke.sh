@@ -37,13 +37,14 @@ done
 run_search_smoke() {
   local body="$1"
   local require_prefilter="${2:-false}"
+  local expected_text="${3:-}"
   echo "REQUEST_JSON:"
   echo "$body"
   response="$(curl -fsS "$SEARCH_URL" -H 'content-type: application/json' -d "$body")"
   echo "RESPONSE_JSON:"
   echo "$response"
 
-  RESPONSE="$response" BODY="$body" REQUIRE_PREFILTER="$require_prefilter" INVESTIGATION="$INVESTIGATION" python3 -c '
+  RESPONSE="$response" BODY="$body" REQUIRE_PREFILTER="$require_prefilter" INVESTIGATION="$INVESTIGATION" EXPECTED_TEXT="$expected_text" python3 -c '
 import json, sys
 import os
 body = json.loads(os.environ["RESPONSE"])
@@ -53,6 +54,13 @@ assert isinstance(body.get("citations"), list), "expected citations array"
 stats = body.get("stats", {})
 assert stats.get("reranked") is True, "expected reranked=true"
 assert stats.get("tokens_returned", 0) <= request["token_budget"], "token budget exceeded"
+expected = os.environ["EXPECTED_TEXT"]
+if expected:
+    searchable = "\n".join(
+        [passage.get("text", "") for passage in body.get("passages", [])]
+        + ["{} {}".format(citation.get("title", ""), citation.get("url", "")) for citation in body.get("citations", [])]
+    )
+    assert expected.lower() in searchable.lower(), f"expected response to contain {expected!r}"
 if os.environ["REQUIRE_PREFILTER"] == "true" and stats.get("chunks_produced", 0) >= 50:
     assert stats.get("chunks_sent_to_reranker", 0) < stats.get("chunks_produced", 0), "expected prefilter to reduce broad chunk set"
 if os.environ["INVESTIGATION"] == "true":
@@ -61,8 +69,8 @@ if os.environ["INVESTIGATION"] == "true":
 }
 
 if [ "$INVESTIGATION" = "true" ]; then
-  run_search_smoke '{"query":"Where was J. Robert Oppenheimer born?","search_profile":"research","token_budget":5000,"max_urls":8,"max_passages":8,"include_raw_markdown":false}'
-  run_search_smoke '{"query":"J. Robert Oppenheimer Manhattan Project early life education security hearing","search_profile":"research","token_budget":8000,"max_urls":12,"max_passages":12,"include_raw_markdown":false}' true
+  run_search_smoke '{"query":"Where was J. Robert Oppenheimer born?","search_profile":"research","token_budget":5000,"max_urls":8,"max_passages":8,"include_raw_markdown":false}' false Oppenheimer
+  run_search_smoke '{"query":"J. Robert Oppenheimer Manhattan Project early life education security hearing","search_profile":"research","token_budget":8000,"max_urls":12,"max_passages":12,"include_raw_markdown":false}' true Oppenheimer
 else
-  run_search_smoke '{"query":"what changed in the EU AI Act timeline in 2025","token_budget":4000}'
+  run_search_smoke '{"query":"what changed in the EU AI Act timeline in 2025","token_budget":4000}' false "AI Act"
 fi

@@ -1,6 +1,7 @@
 param(
     [string]$Profile = "llamacpp-models",
-    [string]$HealthUrl = $(if ($env:HEALTH_URL) { $env:HEALTH_URL } else { "http://localhost:8080/healthz" }),
+    [string]$HealthUrl = $env:HEALTH_URL,
+    [string]$SearchUrl = $env:SEARCH_URL,
     [switch]$SkipSmoke
 )
 
@@ -52,19 +53,23 @@ function ConvertTo-LocalModelPath {
     return Join-Path "models" $relative
 }
 
+function Get-RequiredDotEnvValue {
+    param(
+        [hashtable]$Values,
+        [string]$Key,
+        [string]$Path
+    )
+
+    if (-not $Values.ContainsKey($Key) -or [string]::IsNullOrWhiteSpace($Values[$Key])) {
+        throw "$Key must be set explicitly in $Path."
+    }
+
+    return $Values[$Key]
+}
+
 $envValues = Read-DotEnv ".env.llamacpp"
-$embeddingModel = if ($envValues.ContainsKey("LLAMACPP_EMBEDDING_MODEL")) {
-    $envValues["LLAMACPP_EMBEDDING_MODEL"]
-}
-else {
-    "/models/bge-m3.gguf"
-}
-$rerankerModel = if ($envValues.ContainsKey("LLAMACPP_RERANKER_MODEL")) {
-    $envValues["LLAMACPP_RERANKER_MODEL"]
-}
-else {
-    "/models/bge-reranker-v2-m3.gguf"
-}
+$embeddingModel = Get-RequiredDotEnvValue -Values $envValues -Key "LLAMACPP_EMBEDDING_MODEL" -Path ".env.llamacpp"
+$rerankerModel = Get-RequiredDotEnvValue -Values $envValues -Key "LLAMACPP_RERANKER_MODEL" -Path ".env.llamacpp"
 
 $missing = @()
 foreach ($item in @(
@@ -86,6 +91,7 @@ $deployArgs = @{
     EnvFiles = @(".env", ".env.llamacpp")
     Profile = $Profile
     HealthUrl = $HealthUrl
+    SearchUrl = $SearchUrl
 }
 
 if ($SkipSmoke) {

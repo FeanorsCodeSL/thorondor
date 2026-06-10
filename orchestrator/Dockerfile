@@ -5,9 +5,8 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 WORKDIR /app
 COPY orchestrator/requirements.txt ./requirements.txt
-RUN pip install --no-cache-dir -r requirements.txt
-
-RUN useradd --create-home --uid 10001 --shell /usr/sbin/nologin appuser
+RUN pip install --no-cache-dir -r requirements.txt \
+    && useradd --create-home --uid 10001 --shell /usr/sbin/nologin appuser
 COPY --chown=appuser:appuser orchestrator/ ./orchestrator/
 
 EXPOSE 8080

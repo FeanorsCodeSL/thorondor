@@ -8,13 +8,27 @@ Set-StrictMode -Version Latest
 $Root = Resolve-Path (Join-Path $PSScriptRoot "..")
 Set-Location $Root
 
-if ([string]::IsNullOrWhiteSpace($env:SONAR_HOST_URL)) {
-    throw "SONAR_HOST_URL must be set explicitly before running SonarQube analysis."
+function Get-RequiredEnvironmentValue {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Name
+    )
+
+    $value = [Environment]::GetEnvironmentVariable($Name, "Process")
+    if ([string]::IsNullOrWhiteSpace($value)) {
+        $value = [Environment]::GetEnvironmentVariable($Name, "User")
+    }
+
+    if ([string]::IsNullOrWhiteSpace($value)) {
+        throw "$Name must be set explicitly before running SonarQube analysis."
+    }
+
+    Set-Item -Path "Env:$Name" -Value $value
+    return $value
 }
 
-if ([string]::IsNullOrWhiteSpace($env:SONAR_TOKEN)) {
-    throw "SONAR_TOKEN must be set explicitly before running SonarQube analysis."
-}
+$sonarHostUrl = Get-RequiredEnvironmentValue -Name "SONAR_HOST_URL"
+Get-RequiredEnvironmentValue -Name "SONAR_TOKEN" | Out-Null
 
 $scannerPath = $null
 $scanner = Get-Command sonar-scanner -ErrorAction SilentlyContinue
@@ -38,6 +52,20 @@ if (-not $scannerPath) {
     throw "sonar-scanner was not found on PATH. Install the generic SonarScanner CLI before running this script."
 }
 
+function Remove-AnalysisCache {
+    foreach ($path in @(".pytest_cache", ".scannerwork")) {
+        $item = Get-Item -LiteralPath $path -Force -ErrorAction SilentlyContinue
+        if ($item) {
+            try {
+                Remove-Item -LiteralPath $item.FullName -Recurse -Force -ErrorAction Stop
+            }
+            catch {
+                Write-Warning "Could not remove ignored analysis cache '$path': $($_.Exception.Message)"
+            }
+        }
+    }
+}
+
 if (-not $SkipTests) {
     $python = Join-Path $Root ".venv\Scripts\python.exe"
     if (-not (Test-Path $python)) {
@@ -48,7 +76,7 @@ if (-not $SkipTests) {
         --source=orchestrator `
         --source=semantic-chunking-service/chunking `
         --source=ssrf-proxy `
-        -m pytest semantic-chunking-service\tests orchestrator\tests -v
+        -m pytest semantic-chunking-service\tests orchestrator\tests -v -p no:cacheprovider
     if ($LASTEXITCODE -ne 0) {
         exit $LASTEXITCODE
     }
@@ -58,7 +86,8 @@ if (-not $SkipTests) {
     }
 }
 
-& $scannerPath "-Dsonar.host.url=$env:SONAR_HOST_URL" "-Dsonar.qualitygate.wait=true"
+Remove-AnalysisCache
+& $scannerPath "-Dsonar.host.url=$sonarHostUrl" "-Dsonar.qualitygate.wait=true"
 if ($LASTEXITCODE -ne 0) {
     exit $LASTEXITCODE
 }

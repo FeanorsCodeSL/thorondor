@@ -44,7 +44,7 @@ class SearxngDiscovery:
         results = []
         for rank, item in enumerate(payload.get("results", [])):
             score = float(item.get("score") or 0.0)
-            if score == 0.0:
+            if score <= 0.0:
                 score = 1.0 / (rank + 1)
             results.append(
                 DiscoveryResult(

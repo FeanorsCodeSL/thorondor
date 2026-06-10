@@ -2,8 +2,8 @@ param(
     [string[]]$ComposeFiles = @("docker-compose.yml"),
     [string[]]$EnvFiles = @(".env"),
     [string]$Profile = $(if ($env:PROFILE) { $env:PROFILE } else { "bundled-models" }),
-    [string]$HealthUrl = $(if ($env:HEALTH_URL) { $env:HEALTH_URL } else { "http://localhost:8080/healthz" }),
-    [string]$SearchUrl = $(if ($env:SEARCH_URL) { $env:SEARCH_URL } else { "http://localhost:8080/search" }),
+    [string]$HealthUrl = $env:HEALTH_URL,
+    [string]$SearchUrl = $env:SEARCH_URL,
     [switch]$Investigation
 )
 
@@ -18,6 +18,65 @@ Set-Location $Root
 
 if (($EnvFiles -contains ".env") -and -not (Test-Path ".env")) {
     Copy-Item ".env.example" ".env"
+}
+
+function Read-DotEnv {
+    param([string]$Path)
+
+    $values = @{}
+    foreach ($line in Get-Content $Path) {
+        $trimmed = $line.Trim()
+        if (-not $trimmed -or $trimmed.StartsWith("#")) {
+            continue
+        }
+
+        $index = $trimmed.IndexOf("=")
+        if ($index -le 0) {
+            continue
+        }
+
+        $key = $trimmed.Substring(0, $index).Trim()
+        $value = $trimmed.Substring($index + 1).Trim()
+        $value = $value.Trim('"')
+        $value = $value.Trim("'")
+        $values[$key] = $value
+    }
+    return $values
+}
+
+function Get-RequiredDotEnvValue {
+    param(
+        [hashtable]$Values,
+        [string]$Key,
+        [string]$Path
+    )
+
+    if (-not $Values.ContainsKey($Key) -or [string]::IsNullOrWhiteSpace($Values[$Key])) {
+        throw "$Key must be set explicitly in $Path."
+    }
+
+    return $Values[$Key]
+}
+
+function Join-OrchestratorUrl {
+    param(
+        [string]$HostName,
+        [string]$Port,
+        [string]$Path
+    )
+
+    return "http://${HostName}:${Port}${Path}"
+}
+
+$envValues = Read-DotEnv ".env"
+$orchestratorHost = Get-RequiredDotEnvValue -Values $envValues -Key "ORCHESTRATOR_HOST" -Path ".env"
+$orchestratorPort = Get-RequiredDotEnvValue -Values $envValues -Key "ORCHESTRATOR_PORT" -Path ".env"
+
+if ([string]::IsNullOrWhiteSpace($HealthUrl)) {
+    $HealthUrl = Join-OrchestratorUrl -HostName $orchestratorHost -Port $orchestratorPort -Path "/healthz"
+}
+if ([string]::IsNullOrWhiteSpace($SearchUrl)) {
+    $SearchUrl = Join-OrchestratorUrl -HostName $orchestratorHost -Port $orchestratorPort -Path "/search"
 }
 
 function New-ComposeArgs {
@@ -67,6 +126,7 @@ for ($attempt = 1; $attempt -le 90; $attempt++) {
 function Invoke-SearchSmoke {
     param(
         [hashtable]$Body,
+        [string[]]$ExpectedText = @(),
         [switch]$RequirePrefilter
     )
 
@@ -89,6 +149,12 @@ function Invoke-SearchSmoke {
     if ($response.stats.tokens_returned -gt $Body.token_budget) {
         Write-Error "Token budget exceeded"
     }
+    $searchableText = (($response.passages | ForEach-Object { $_.text }) + ($response.citations | ForEach-Object { "$($_.title) $($_.url)" })) -join "`n"
+    foreach ($needle in $ExpectedText) {
+        if ($searchableText.IndexOf($needle, [System.StringComparison]::OrdinalIgnoreCase) -lt 0) {
+            Write-Error "Expected response to contain '$needle'"
+        }
+    }
     if ($RequirePrefilter -and $response.stats.chunks_produced -ge 50 -and
         $response.stats.chunks_sent_to_reranker -ge $response.stats.chunks_produced) {
         Write-Error "Expected prefilter to reduce broad chunk set"
@@ -99,7 +165,7 @@ function Invoke-SearchSmoke {
 }
 
 if ($Investigation) {
-    Invoke-SearchSmoke -Body @{
+    Invoke-SearchSmoke -ExpectedText @("Oppenheimer") -Body @{
         query = "Where was J. Robert Oppenheimer born?"
         search_profile = "research"
         token_budget = 5000
@@ -107,7 +173,7 @@ if ($Investigation) {
         max_passages = 8
         include_raw_markdown = $false
     }
-    Invoke-SearchSmoke -RequirePrefilter -Body @{
+    Invoke-SearchSmoke -ExpectedText @("Oppenheimer") -RequirePrefilter -Body @{
         query = "J. Robert Oppenheimer Manhattan Project early life education security hearing"
         search_profile = "research"
         token_budget = 8000
@@ -117,7 +183,7 @@ if ($Investigation) {
     }
 }
 else {
-    Invoke-SearchSmoke -Body @{
+    Invoke-SearchSmoke -ExpectedText @("AI Act") -Body @{
         query = "what changed in the EU AI Act timeline in 2025"
         token_budget = 4000
     }

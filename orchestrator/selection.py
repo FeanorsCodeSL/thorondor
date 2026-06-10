@@ -8,6 +8,7 @@ from .types import DiscoveryResult
 
 
 MAX_SELECTION_DIAGNOSTICS = 50
+Candidate = tuple[DiscoveryResult, str, float]
 
 
 @dataclass
@@ -17,6 +18,15 @@ class SelectionDecision:
     selection_reason: str | None = None
     filtered_reason: str | None = None
     lexical_score: float = 0.0
+
+
+@dataclass
+class _SelectionState:
+    selected: list[DiscoveryResult]
+    selected_keys: set[str]
+    host_counts: dict[str, int]
+    seen_engines: set[str]
+    decisions: list[SelectionDecision]
 
 
 def _matches_host(host: str, pattern: str) -> bool:
@@ -45,6 +55,98 @@ def _per_domain_limit(max_urls: int, allowed: set[str] | None) -> int:
     return min(3, max(1, math.ceil(max_urls / 3)))
 
 
+def _normalized_hosts(hosts: set[str] | None) -> set[str] | None:
+    if hosts is None:
+        return None
+    normalized = {canonical_host(host) for host in hosts}
+    normalized.discard("")
+    return normalized
+
+
+def _collect_candidates(
+    results: list[DiscoveryResult],
+    blocked: set[str],
+    allowed: set[str] | None,
+    query: str | None,
+) -> tuple[list[Candidate], list[SelectionDecision]]:
+    candidates: list[Candidate] = []
+    decisions: list[SelectionDecision] = []
+    for result in results:
+        host = host_for(result.url)
+        if not host:
+            decisions.append(SelectionDecision(result, selected=False, filtered_reason="invalid_host"))
+        elif any(_matches_host(host, item) for item in blocked):
+            decisions.append(SelectionDecision(result, selected=False, filtered_reason="blocked_domain"))
+        elif allowed is not None and not any(_matches_host(host, item) for item in allowed):
+            decisions.append(SelectionDecision(result, selected=False, filtered_reason="outside_allowlist"))
+        else:
+            candidates.append((result, host, _lexical_score(query, result)))
+    return candidates, decisions
+
+
+def _ordered_candidates(candidates: list[Candidate]) -> list[Candidate]:
+    return sorted(
+        candidates,
+        key=lambda item: (
+            -(item[0].score + (item[2] * 0.25)),
+            -item[0].score,
+            item[0].url,
+        ),
+    )
+
+
+def _candidate_limit(max_urls: int, allowed: set[str] | None, candidates: list[Candidate]) -> int:
+    unique_hosts = {host for _result, host, _score in candidates}
+    return max_urls if len(unique_hosts) <= 1 else _per_domain_limit(max_urls, allowed)
+
+
+def _can_select(state: _SelectionState, result: DiscoveryResult, host: str, per_domain_limit: int) -> bool:
+    return result.url not in state.selected_keys and state.host_counts.get(host, 0) < per_domain_limit
+
+
+def _add_selection(state: _SelectionState, result: DiscoveryResult, host: str, reason: str) -> None:
+    state.selected.append(result)
+    state.selected_keys.add(result.url)
+    state.host_counts[host] = state.host_counts.get(host, 0) + 1
+    if result.engine:
+        state.seen_engines.add(result.engine)
+    state.decisions.append(SelectionDecision(result, selected=True, selection_reason=reason))
+
+
+def _select_pass(
+    ordered: list[Candidate],
+    state: _SelectionState,
+    max_urls: int,
+    per_domain_limit: int,
+    reason: str,
+    predicate,
+) -> None:
+    for result, host, _score in ordered:
+        if len(state.selected) >= max_urls:
+            break
+        if predicate(result, host, state) and _can_select(state, result, host, per_domain_limit):
+            _add_selection(state, result, host, reason)
+
+
+def _append_unselected(
+    ordered: list[Candidate],
+    state: _SelectionState,
+    per_domain_limit: int,
+) -> None:
+    for result, host, lexical_score in ordered:
+        if result.url in state.selected_keys:
+            continue
+        reason = "domain_cap" if state.host_counts.get(host, 0) >= per_domain_limit else "rank_cap"
+        state.decisions.append(
+            SelectionDecision(
+                result,
+                selected=False,
+                filtered_reason=reason,
+                lexical_score=lexical_score,
+            )
+        )
+
+
 class SelectionPolicyImpl:
     def select_with_diagnostics(
         self,
@@ -54,85 +156,39 @@ class SelectionPolicyImpl:
         allowlist: set[str] | None = None,
         query: str | None = None,
     ) -> tuple[list[DiscoveryResult], list[SelectionDecision]]:
-        blocked = {canonical_host(host) for host in blocklist}
-        blocked.discard("")
-        allowed = {canonical_host(host) for host in allowlist} if allowlist is not None else None
-        if allowed is not None:
-            allowed.discard("")
-
-        candidates: list[tuple[DiscoveryResult, str, float]] = []
-        decisions: list[SelectionDecision] = []
-        for result in results:
-            host = host_for(result.url)
-            if not host:
-                decisions.append(SelectionDecision(result, selected=False, filtered_reason="invalid_host"))
-                continue
-            if any(_matches_host(host, item) for item in blocked):
-                decisions.append(SelectionDecision(result, selected=False, filtered_reason="blocked_domain"))
-                continue
-            if allowed is not None and not any(_matches_host(host, item) for item in allowed):
-                decisions.append(SelectionDecision(result, selected=False, filtered_reason="outside_allowlist"))
-                continue
-            candidates.append((result, host, _lexical_score(query, result)))
-
-        ordered = sorted(
-            candidates,
-            key=lambda item: (
-                -(item[0].score + (item[2] * 0.25)),
-                -item[0].score,
-                item[0].url,
-            ),
+        blocked = _normalized_hosts(blocklist) or set()
+        allowed = _normalized_hosts(allowlist)
+        candidates, decisions = _collect_candidates(results, blocked, allowed, query)
+        ordered = _ordered_candidates(candidates)
+        state = _SelectionState(
+            selected=[],
+            selected_keys=set(),
+            host_counts={},
+            seen_engines=set(),
+            decisions=decisions,
         )
-        selected: list[DiscoveryResult] = []
-        selected_keys: set[str] = set()
-        host_counts: dict[str, int] = {}
-        seen_engines: set[str] = set()
-        unique_hosts = {host for _result, host, _score in candidates}
-        per_domain_limit = max_urls if len(unique_hosts) <= 1 else _per_domain_limit(max_urls, allowed)
+        per_domain_limit = _candidate_limit(max_urls, allowed, candidates)
 
-        def can_select(result: DiscoveryResult, host: str) -> bool:
-            return result.url not in selected_keys and host_counts.get(host, 0) < per_domain_limit
+        _select_pass(
+            ordered,
+            state,
+            max_urls,
+            per_domain_limit,
+            "engine_diversity",
+            lambda result, _host, current: bool(result.engine and result.engine not in current.seen_engines),
+        )
+        _select_pass(
+            ordered,
+            state,
+            max_urls,
+            per_domain_limit,
+            "domain_diversity",
+            lambda _result, host, current: host not in current.host_counts,
+        )
+        _select_pass(ordered, state, max_urls, per_domain_limit, "score", lambda _result, _host, _current: True)
+        _append_unselected(ordered, state, per_domain_limit)
 
-        def add(result: DiscoveryResult, host: str, reason: str) -> None:
-            selected.append(result)
-            selected_keys.add(result.url)
-            host_counts[host] = host_counts.get(host, 0) + 1
-            if result.engine:
-                seen_engines.add(result.engine)
-            decisions.append(SelectionDecision(result, selected=True, selection_reason=reason))
-
-        for result, host, _score in ordered:
-            if len(selected) >= max_urls:
-                break
-            if result.engine and result.engine not in seen_engines and can_select(result, host):
-                add(result, host, "engine_diversity")
-
-        for result, host, _score in ordered:
-            if len(selected) >= max_urls:
-                break
-            if host not in host_counts and can_select(result, host):
-                add(result, host, "domain_diversity")
-
-        for result, host, _score in ordered:
-            if len(selected) >= max_urls:
-                break
-            if can_select(result, host):
-                add(result, host, "score")
-
-        for result, host, lexical_score in ordered:
-            if result.url in selected_keys:
-                continue
-            reason = "domain_cap" if host_counts.get(host, 0) >= per_domain_limit else "rank_cap"
-            decisions.append(
-                SelectionDecision(
-                    result,
-                    selected=False,
-                    filtered_reason=reason,
-                    lexical_score=lexical_score,
-                )
-            )
-
-        return selected, decisions[:MAX_SELECTION_DIAGNOSTICS]
+        return state.selected, state.decisions[:MAX_SELECTION_DIAGNOSTICS]
 
     def select(
         self,

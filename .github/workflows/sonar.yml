@@ -50,8 +50,9 @@ jobs:
             --source=orchestrator \
             --source=semantic-chunking-service/chunking \
             --source=ssrf-proxy \
-            -m pytest semantic-chunking-service/tests orchestrator/tests -v
+            -m pytest semantic-chunking-service/tests orchestrator/tests -v -p no:cacheprovider
           python -m coverage xml -o coverage.xml
+          rm -rf .pytest_cache .scannerwork
 
       - name: Install SonarScanner CLI
         shell: bash

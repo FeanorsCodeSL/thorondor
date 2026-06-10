@@ -3,7 +3,7 @@ from dataclasses import dataclass, replace
 import asyncio
 from collections.abc import Callable
 from importlib import import_module
-from importlib.metadata import PackageNotFoundError, version
+from importlib.metadata import version
 import logging
 import time
 
@@ -92,52 +92,47 @@ def _log_search_summary(query: str, stats: SearchStats, reason: str | None = Non
     )
 
 
-def _apply_relevance_floor(
-    scored: list[ScoredChunk],
-    reranked: bool,
-    relevance_score_floor: float | None,
-) -> tuple[list[ScoredChunk], int, str | None]:
-    if not reranked or relevance_score_floor is None:
-        return scored, 0, None
-    above_floor = [item for item in scored if item.score > relevance_score_floor]
-    if not above_floor:
-        return scored, 0, f"score>{relevance_score_floor}:kept_all_no_positive_scores"
-    return (
-        above_floor,
-        len(scored) - len(above_floor),
-        f"score>{relevance_score_floor}",
-    )
+def _elapsed_ms(started: float) -> int:
+    return int((time.perf_counter() - started) * 1000)
 
 
-async def run_search(req: SearchRequest, deps: PipelineDeps) -> SearchResponse:
-    started = time.perf_counter()
+def _request_limits(req: SearchRequest, deps: PipelineDeps) -> tuple[int, int, int | None]:
     profile_defaults = deps.profile_defaults.get(req.search_profile or "", {})
     token_budget = req.token_budget or profile_defaults.get("token_budget", deps.default_token_budget)
     max_urls = req.max_urls or profile_defaults.get("max_urls", deps.default_max_urls)
     max_passages = req.max_passages if req.max_passages is not None else profile_defaults.get("max_passages")
-    stats = SearchStats()
+    return token_budget, max_urls, max_passages
 
+
+async def _planned_subqueries(req: SearchRequest, deps: PipelineDeps, stats: SearchStats) -> list[str]:
     planned = await deps.planner.plan(req.query) if req.decompose else [req.query]
     subqueries = (planned or [req.query])[:deps.max_subqueries]
     stats.sub_queries = subqueries
+    return subqueries
 
+
+async def _discover_results(
+    req: SearchRequest,
+    deps: PipelineDeps,
+    stats: SearchStats,
+    subqueries: list[str],
+    started: float,
+) -> list[DiscoveryResult]:
     try:
         result_sets = await asyncio.gather(
             *(deps.discovery.search(query, req.freshness) for query in subqueries)
         )
     except DiscoveryUnavailable as exc:
-        stats.elapsed_ms = int((time.perf_counter() - started) * 1000)
+        stats.elapsed_ms = _elapsed_ms(started)
         _log_search_summary(req.query, stats, "searxng_unavailable")
         raise SearchDependencyUnavailable("searxng", "searxng_unavailable") from exc
 
     merged = merge_dedup(result_sets)
     stats.urls_discovered = len(merged)
-    if not merged:
-        stats.elapsed_ms = int((time.perf_counter() - started) * 1000)
-        return _empty_response(req.query, stats, "no_results_from_discovery")
+    return merged
 
-    safe_candidates = deps.url_safety(merged)
 
+def _selection_filters(req: SearchRequest, deps: PipelineDeps) -> tuple[set[str], set[str] | None]:
     blocklist = set(deps.blocklist)
     if req.exclude_domains:
         blocklist.update(req.exclude_domains)
@@ -145,29 +140,20 @@ async def run_search(req: SearchRequest, deps: PipelineDeps) -> SearchResponse:
     if deps.allowlist_only:
         operator_allowlist = set(deps.domain_allowlist or set())
         allowlist = operator_allowlist if allowlist is None else allowlist & operator_allowlist
+    return blocklist, allowlist
+
+
+def _select_results(
+    req: SearchRequest,
+    deps: PipelineDeps,
+    candidates: list[DiscoveryResult],
+    max_urls: int,
+    stats: SearchStats,
+) -> list[DiscoveryResult]:
+    blocklist, allowlist = _selection_filters(req, deps)
     select_with_diagnostics = getattr(deps.selector, "select_with_diagnostics", None)
-    if select_with_diagnostics is not None:
-        selected, selection_diagnostics = select_with_diagnostics(
-            safe_candidates,
-            max_urls,
-            blocklist,
-            allowlist,
-            req.query,
-        )
-        stats.url_diagnostics = [
-            UrlDiagnostic(
-                url=decision.result.url,
-                title=decision.result.title,
-                engine=decision.result.engine,
-                discovery_score=decision.result.score,
-                selected=decision.selected,
-                selection_reason=decision.selection_reason,
-                filtered_reason=decision.filtered_reason,
-            )
-            for decision in selection_diagnostics
-        ]
-    else:
-        selected = deps.selector.select(safe_candidates, max_urls, blocklist, allowlist, req.query)
+    if select_with_diagnostics is None:
+        selected = deps.selector.select(candidates, max_urls, blocklist, allowlist, req.query)
         stats.url_diagnostics = [
             UrlDiagnostic(
                 url=result.url,
@@ -179,57 +165,82 @@ async def run_search(req: SearchRequest, deps: PipelineDeps) -> SearchResponse:
             )
             for result in selected
         ]
-    stats.urls_selected = len(selected)
-    if not selected:
-        stats.elapsed_ms = int((time.perf_counter() - started) * 1000)
-        return _empty_response(req.query, stats, "no_urls_after_selection")
+        return selected
 
-    pages = await deps.extractor.extract([result.url for result in selected])
-    stats.urls_crawled_ok = len(pages)
-    stats.urls_crawled_failed = max(0, stats.urls_selected - stats.urls_crawled_ok)
-    if not pages:
-        stats.elapsed_ms = int((time.perf_counter() - started) * 1000)
-        return _empty_response(req.query, stats, "all_crawls_failed")
+    selected, selection_diagnostics = select_with_diagnostics(
+        candidates,
+        max_urls,
+        blocklist,
+        allowlist,
+        req.query,
+    )
+    stats.url_diagnostics = [
+        UrlDiagnostic(
+            url=decision.result.url,
+            title=decision.result.title,
+            engine=decision.result.engine,
+            discovery_score=decision.result.score,
+            selected=decision.selected,
+            selection_reason=decision.selection_reason,
+            filtered_reason=decision.filtered_reason,
+        )
+        for decision in selection_diagnostics
+    ]
+    return selected
 
+
+def _clean_pages(deps: PipelineDeps, pages: list[Page], stats: SearchStats) -> list[Page]:
     cleaned_pages = [deps.markdown_cleaner.clean(page) for page in pages]
-    if cleaned_pages:
-        stats.pages_cleaned = len(cleaned_pages)
-        stats.markdown_chars_before = sum(item.chars_before for item in cleaned_pages)
-        stats.markdown_chars_after = sum(item.chars_after for item in cleaned_pages)
-        stats.markdown_blocks_dropped = sum(item.blocks_dropped for item in cleaned_pages)
-        stats.markdown_cleaner_version = cleaned_pages[0].cleaner_version
-        pages = [item.page for item in cleaned_pages]
+    if not cleaned_pages:
+        return pages
+    stats.pages_cleaned = len(cleaned_pages)
+    stats.markdown_chars_before = sum(item.chars_before for item in cleaned_pages)
+    stats.markdown_chars_after = sum(item.chars_after for item in cleaned_pages)
+    stats.markdown_blocks_dropped = sum(item.blocks_dropped for item in cleaned_pages)
+    stats.markdown_cleaner_version = cleaned_pages[0].cleaner_version
+    return [item.page for item in cleaned_pages]
 
+
+def _dedupe_pages(pages: list[Page], stats: SearchStats) -> list[Page]:
     pages_before_dedup = len(pages)
-    pages = [
+    deduped = [
         replace(page, source_id=index + 1)
         for index, page in enumerate(content_dedup(pages))
     ]
-    stats.pages_after_dedup = len(pages)
-    stats.pages_deduped = max(0, pages_before_dedup - len(pages))
+    stats.pages_after_dedup = len(deduped)
+    stats.pages_deduped = max(0, pages_before_dedup - len(deduped))
+    return deduped
+
+
+async def _chunk_pages(
+    req: SearchRequest,
+    deps: PipelineDeps,
+    pages: list[Page],
+    stats: SearchStats,
+    started: float,
+) -> list:
     try:
         chunks = await deps.chunker.chunk(pages)
     except ChunkerUnavailable as exc:
-        stats.elapsed_ms = int((time.perf_counter() - started) * 1000)
+        stats.elapsed_ms = _elapsed_ms(started)
         _log_search_summary(req.query, stats, "chunker_unavailable")
         raise SearchDependencyUnavailable("chunker", "chunker_unavailable") from exc
     stats.chunks_produced = len(chunks)
     if chunks:
         stats.chunk_strategy = chunks[0].chunk_strategy
         stats.embedding_degraded = any(chunk.embedding_degraded for chunk in chunks)
-    if not chunks:
-        stats.elapsed_ms = int((time.perf_counter() - started) * 1000)
-        return _empty_response(req.query, stats, "no_chunks_after_dedup")
+    return chunks
 
+
+def _prefilter_chunks(req: SearchRequest, deps: PipelineDeps, chunks: list, stats: SearchStats) -> list:
     prefiltered = deps.candidate_prefilter.filter(req.query, chunks)
-    chunks = prefiltered.chunks
     stats.chunks_prefiltered = prefiltered.chunks_prefiltered
     stats.chunks_sent_to_reranker = prefiltered.chunks_sent_to_reranker
     stats.prefilter_strategy = prefiltered.prefilter_strategy
-    if not chunks:
-        stats.elapsed_ms = int((time.perf_counter() - started) * 1000)
-        return _empty_response(req.query, stats, "no_chunks_after_dedup")
+    return prefiltered.chunks
 
+
+async def _rerank_chunks(req: SearchRequest, deps: PipelineDeps, chunks: list, stats: SearchStats) -> list[ScoredChunk]:
     try:
         scored = await deps.reranker.rerank(req.query, chunks)
         stats.reranked = True
@@ -237,15 +248,89 @@ async def run_search(req: SearchRequest, deps: PipelineDeps) -> SearchResponse:
         stats.reranker_batches_failed = getattr(deps.reranker, "last_batches_failed", 0)
         stats.reranker_floor_filled = bool(getattr(deps.reranker, "last_floor_filled", False))
         stats.chunks_reranked = getattr(deps.reranker, "last_scored_count", len(scored))
+        return scored
     except RerankerUnavailable:
-        scored = [ScoredChunk(chunk, 1.0 / (index + 1)) for index, chunk in enumerate(chunks)]
         stats.reranked = False
         stats.reranker_batches = getattr(deps.reranker, "last_batches", 0)
         stats.reranker_batches_failed = getattr(deps.reranker, "last_batches_failed", 0)
         stats.reranker_floor_filled = False
         stats.chunks_reranked = 0
+        return [ScoredChunk(chunk, 1.0 / (index + 1)) for index, chunk in enumerate(chunks)]
+
+
+def _apply_relevance_floor(
+    scored: list[ScoredChunk],
+    reranked: bool,
+    relevance_score_floor: float | None,
+) -> tuple[list[ScoredChunk], int, str | None]:
+    if not reranked or relevance_score_floor is None:
+        return scored, 0, None
+    above_floor = [item for item in scored if item.score > relevance_score_floor]
+    return (
+        above_floor,
+        len(scored) - len(above_floor),
+        f"score>{relevance_score_floor}",
+    )
+
+
+def _build_raw_markdown(req: SearchRequest, pages: list[Page], assembled_citations: list) -> list[RawMarkdown] | None:
+    if not req.include_raw_markdown:
+        return None
+    by_source_id: dict[int, Page] = {
+        page.source_id: page
+        for page in pages
+        if page.source_id is not None
+    }
+    return [
+        RawMarkdown(
+            citation_id=citation.id,
+            markdown=by_source_id[citation.source_id].original_markdown
+            or by_source_id[citation.source_id].markdown,
+        )
+        for citation in assembled_citations
+        if citation.source_id in by_source_id
+    ]
+
+
+async def run_search(req: SearchRequest, deps: PipelineDeps) -> SearchResponse:
+    started = time.perf_counter()
+    token_budget, max_urls, max_passages = _request_limits(req, deps)
+    stats = SearchStats()
+
+    subqueries = await _planned_subqueries(req, deps, stats)
+    merged = await _discover_results(req, deps, stats, subqueries, started)
+    if not merged:
+        stats.elapsed_ms = _elapsed_ms(started)
+        return _empty_response(req.query, stats, "no_results_from_discovery")
+
+    safe_candidates = deps.url_safety(merged)
+    selected = _select_results(req, deps, safe_candidates, max_urls, stats)
+    stats.urls_selected = len(selected)
+    if not selected:
+        stats.elapsed_ms = _elapsed_ms(started)
+        return _empty_response(req.query, stats, "no_urls_after_selection")
+
+    pages = await deps.extractor.extract([result.url for result in selected])
+    stats.urls_crawled_ok = len(pages)
+    stats.urls_crawled_failed = max(0, stats.urls_selected - stats.urls_crawled_ok)
+    if not pages:
+        stats.elapsed_ms = _elapsed_ms(started)
+        return _empty_response(req.query, stats, "all_crawls_failed")
+
+    pages = _dedupe_pages(_clean_pages(deps, pages, stats), stats)
+    chunks = await _chunk_pages(req, deps, pages, stats, started)
+    if not chunks:
+        stats.elapsed_ms = _elapsed_ms(started)
+        return _empty_response(req.query, stats, "no_chunks_after_dedup")
+
+    chunks = _prefilter_chunks(req, deps, chunks, stats)
+    if not chunks:
+        stats.elapsed_ms = _elapsed_ms(started)
+        return _empty_response(req.query, stats, "no_chunks_after_dedup")
+
+    scored = await _rerank_chunks(req, deps, chunks, stats)
     if not scored:
-        stats.elapsed_ms = int((time.perf_counter() - started) * 1000)
+        stats.elapsed_ms = _elapsed_ms(started)
         return _empty_response(req.query, stats, "no_chunks_after_rerank")
 
     scored, dropped_below_threshold, threshold_policy = _apply_relevance_floor(
@@ -255,6 +340,9 @@ async def run_search(req: SearchRequest, deps: PipelineDeps) -> SearchResponse:
     )
     stats.passages_dropped_below_threshold = dropped_below_threshold
     stats.relevance_threshold_policy = threshold_policy
+    if not scored:
+        stats.elapsed_ms = _elapsed_ms(started)
+        return _empty_response(req.query, stats, "no_chunks_after_rerank")
 
     assembled_passages, assembled_citations = deps.assembler.assemble(scored, token_budget, max_passages)
     passages = [
@@ -271,31 +359,14 @@ async def run_search(req: SearchRequest, deps: PipelineDeps) -> SearchResponse:
         for citation in assembled_citations
     ]
     stats.tokens_returned = sum(p.token_count for p in passages)
-    stats.elapsed_ms = int((time.perf_counter() - started) * 1000)
-
-    raw_markdown = None
-    if req.include_raw_markdown:
-        by_source_id: dict[int, Page] = {
-            page.source_id: page
-            for page in pages
-            if page.source_id is not None
-        }
-        raw_markdown = [
-            RawMarkdown(
-                citation_id=citation.id,
-                markdown=by_source_id[citation.source_id].original_markdown
-                or by_source_id[citation.source_id].markdown,
-            )
-            for citation in assembled_citations
-            if citation.source_id in by_source_id
-        ]
+    stats.elapsed_ms = _elapsed_ms(started)
 
     response = SearchResponse(
         query=req.query,
         passages=passages,
         citations=citations,
         stats=stats,
-        raw_markdown=raw_markdown,
+        raw_markdown=_build_raw_markdown(req, pages, assembled_citations),
     )
     _log_search_summary(req.query, stats)
     return response
@@ -316,7 +387,7 @@ def build_deps_from_settings(settings) -> PipelineDeps:
     try:
         trafilatura = import_module("trafilatura")
         extractor_version = version("trafilatura")
-    except (ImportError, PackageNotFoundError) as exc:
+    except ImportError as exc:
         raise RuntimeError("MARKDOWN_EXTRACTOR=trafilatura requires the trafilatura package") from exc
 
     planner = (

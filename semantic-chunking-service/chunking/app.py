@@ -50,7 +50,7 @@ def healthz():
     return {"status": "ok", "embedding": _embedder.health_check()}
 
 
-@app.post("/chunk", response_model=ChunkResponse)
+@app.post("/chunk", responses={400: {"description": "Unknown or invalid chunking strategy"}})
 def chunk(req: ChunkRequest) -> ChunkResponse:
     version = req.strategy_version or settings.default_strategy_version
     try:

@@ -140,7 +140,7 @@ class RecursiveCharacterTextSplitter:
     def _merge_splits(
         self,
         splits: List[str],
-        separator: str
+        _separator: str
     ) -> List[str]:
         """Merge small splits into chunks up to chunk_size."""
         if not splits:

@@ -141,6 +141,11 @@ class _MixedScoreReranker:
         ]
 
 
+class _AllNegativeReranker:
+    async def rerank(self, query: str, chunks: list[Chunk]) -> list[ScoredChunk]:
+        return [ScoredChunk(chunk, -1.0 - index) for index, chunk in enumerate(chunks)]
+
+
 def _mock_resolver(monkeypatch, mapping: dict[str, list[str]] | None = None):
     from orchestrator import url_safety
 
@@ -452,6 +457,25 @@ def test_relevance_floor_returns_fewer_passages_instead_of_padding_weak_chunks()
     assert resp.stats.passages_dropped_below_threshold == 2
     assert resp.stats.relevance_threshold_policy == "score>0.0"
     assert resp.stats.reason is None
+
+
+def test_relevance_floor_returns_empty_when_all_reranked_chunks_are_below_floor():
+    resp = anyio.run(
+        run_search,
+        SearchRequest(query="x", max_passages=3),
+        fakes.deps(
+            discovery=_StaticDiscovery(["https://a.test/article"]),
+            chunker=_FixedChunker(),
+            reranker=_AllNegativeReranker(),
+        ),
+    )
+
+    assert resp.passages == []
+    assert resp.citations == []
+    assert resp.stats.reranked is True
+    assert resp.stats.passages_dropped_below_threshold == 3
+    assert resp.stats.relevance_threshold_policy == "score>0.0"
+    assert resp.stats.reason == "no_chunks_after_rerank"
 
 
 def test_relevance_floor_is_not_applied_to_reranker_degraded_fallback():
