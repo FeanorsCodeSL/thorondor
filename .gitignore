@@ -60,12 +60,16 @@ certs/ghcr-config.json
 *.pyc
 __pycache__/
 .venv/
+.coverage
+coverage.xml
+htmlcov/
 
 # Local model weights
 models/
 
 # SonarQube
 .sonarqube/
+.scannerwork/
 
 # Git worktrees
 .worktree/

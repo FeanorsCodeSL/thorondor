@@ -42,11 +42,13 @@ fi
 "${compose[@]}" up -d
 
 for attempt in $(seq 1 60); do
-  if curl -fsS "$HEALTH_URL" >/dev/null 2>&1; then
+  health="$(curl -fsS "$HEALTH_URL" || true)"
+  if echo "$health" | python3 -c 'import json,sys; d=json.load(sys.stdin); values=list(d.get("dependencies", {}).values()); sys.exit(0 if values and all(values) else 1)' 2>/dev/null; then
     break
   fi
   if [ "$attempt" -eq 60 ]; then
-    echo "Timed out waiting for $HEALTH_URL" >&2
+    echo "Timed out waiting for all dependencies at $HEALTH_URL" >&2
+    echo "$health" >&2
     "${compose[@]}" ps
     exit 1
   fi

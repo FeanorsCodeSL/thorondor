@@ -40,10 +40,8 @@ All inter-service traffic travels over an internal Compose network. Crawl4AI's o
 | `docker-compose.llamacpp.yml` | config | Override: swaps embedding and reranker to local llama.cpp containers using GGUF files under `models/` |
 | `.env.example` | config | Template for `.env` — every key the Python settings loader requires |
 | `.env.llamacpp.example` | config | Template for `.env.llamacpp` — llama.cpp image SHA, GGUF paths, and batch sizes |
-| `docs/foundational design/` | docs | Original architecture and deployment design documents |
-| `docs/plans/` | docs | Phased implementation plans |
 | `docs/architecture/` | docs | Operational architecture reference (overview, pipeline, deployment, deps, security, config) |
-| `docs/reviews/` | docs | Historical audit snapshots |
+| `docs/plans/` | docs | Active remediation and implementation plans |
 | `.agents/skills/thorondor-web-search/` | skill | Repo-local agent skill for calling the running service |
 | `LICENSE` | license | MIT |
 | `THIRD-PARTY-NOTICES.md` | license | Third-party runtime image and package notices |
@@ -321,6 +319,7 @@ All keys must be present in `.env` (leave optional keys blank rather than deleti
 | `CRAWL4AI_URL` | `http://crawl4ai:11235` | Internal Crawl4AI API base URL. |
 | `CHUNKER_URL` | `http://chunker:8000` | Internal semantic chunking service base URL. |
 | `SEARXNG_BASE_URL` | `http://searxng:8080/` | External base URL passed to SearXNG for self-referencing links (Compose env). |
+| `ORCHESTRATOR_HOST` | `127.0.0.1` | Host interface bound by Compose. Keep localhost for personal use; set `0.0.0.0` only behind firewall/auth. |
 | `ORCHESTRATOR_PORT` | `8080` | Host port bound to the orchestrator container (Compose env). |
 
 ### Logging
@@ -489,8 +488,19 @@ All keys must be present in `.env` (leave optional keys blank rather than deleti
 ## Development Checks
 
 ```powershell
+# Create or activate a Python environment, then install test dependencies
+python -m pip install `
+  -r orchestrator\requirements.txt `
+  -r orchestrator\requirements-dev.txt `
+  -r semantic-chunking-service\requirements.txt `
+  -r semantic-chunking-service\requirements-dev.txt
+
 # Run all tests
 python -m pytest semantic-chunking-service\tests orchestrator\tests -v
+
+# Run local SonarQube analysis
+# Requires SONAR_HOST_URL and SONAR_TOKEN in the environment.
+.\scripts\sonar.ps1
 
 # Validate base Compose config
 docker compose --env-file .env -f docker-compose.yml config
@@ -524,6 +534,9 @@ The reranker was unreachable at query time. Passages are returned sorted by posi
 **Port conflict on 8080**
 Change `ORCHESTRATOR_PORT` in `.env` to an available port, then restart: `docker compose up -d orchestrator`.
 
+**Expose beyond localhost**
+Compose binds the orchestrator to `127.0.0.1` by default. To expose it to another host, set `ORCHESTRATOR_HOST=0.0.0.0` and put the service behind TLS, authentication, and rate limiting first. Thorondor does not implement endpoint authentication itself.
+
 **`SEARXNG_SECRET not set` error**
 Run `.\scripts\deploy.ps1` (or `deploy-llamacpp.ps1`) rather than `docker compose up` directly — the deploy script generates the secret when the field is blank.
 
@@ -531,7 +544,7 @@ Run `.\scripts\deploy.ps1` (or `deploy-llamacpp.ps1`) rather than `docker compos
 Check Crawl4AI logs: `docker compose logs crawl4ai`. Common causes: slow network, robots.txt refusals (`CRAWL_RESPECT_ROBOTS_TXT=true`), or proxy misconfiguration. Increase `CRAWL_TIMEOUT_S` for slow sites.
 
 **No results from SearXNG**
-SearXNG may be rate-limited or blocking engines may be unavailable. Check `docker compose logs searxng` and verify the SearXNG web UI responds at `http://localhost:8080` (via the SearXNG container port if not exposed).
+SearXNG may be rate-limited or blocking engines may be unavailable. Check `docker compose logs searxng`. The SearXNG web UI is not published by the default Compose stack; inspect it from inside the Compose network or add a temporary local-only port mapping during debugging.
 
 ## License
 

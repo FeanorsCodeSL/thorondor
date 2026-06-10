@@ -88,15 +88,35 @@ $ComposeArgs = New-ComposeArgs -Files $ComposeFiles -EnvFilePaths $EnvFiles -Sel
 
 for ($attempt = 1; $attempt -le 60; $attempt++) {
     try {
-        Invoke-RestMethod -Uri $HealthUrl -Method Get | Out-Null
-        break
+        $health = Invoke-RestMethod -Uri $HealthUrl -Method Get
+        $values = @($health.dependencies.PSObject.Properties | ForEach-Object { $_.Value })
+        if ($values.Count -gt 0 -and -not ($values -contains $false)) {
+            break
+        }
     }
     catch {
-        if ($attempt -eq 60) {
-            Write-Error "Timed out waiting for $HealthUrl"
-        }
-        Start-Sleep -Seconds 2
+        $health = $null
     }
+
+    if ($attempt -eq 60) {
+        if ($null -ne $health) {
+            Write-Error ($health | ConvertTo-Json -Depth 10)
+        }
+        & docker @ComposeArgs ps
+        Write-Error "Timed out waiting for all dependencies at $HealthUrl"
+    }
+
+    Start-Sleep -Seconds 2
+}
+
+if ($null -eq $health) {
+    Write-Error "No health response received from $HealthUrl"
+}
+
+$finalValues = @($health.dependencies.PSObject.Properties | ForEach-Object { $_.Value })
+if ($finalValues.Count -eq 0 -or ($finalValues -contains $false)) {
+    Write-Error ($health | ConvertTo-Json -Depth 10)
+    Write-Error "Deployment health check failed because one or more dependencies are unhealthy."
 }
 
 if (-not $SkipSmoke) {

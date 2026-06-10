@@ -1,0 +1,69 @@
+name: SonarQube
+
+# Push-triggered SonarQube analysis on the LAN server configured by
+# SONAR_HOST_URL, run by the self-hosted runner on the TrueNAS box.
+on:
+  push:
+    branches: [dev]
+  workflow_dispatch:
+
+jobs:
+  scan:
+    runs-on: [self-hosted, truenas]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: pip
+          cache-dependency-path: |
+            orchestrator/requirements*.txt
+            semantic-chunking-service/requirements*.txt
+
+      - name: Validate SonarQube environment
+        shell: bash
+        run: |
+          if [ -z "$SONAR_HOST_URL" ]; then
+            echo "SONAR_HOST_URL must be set in the runner environment." >&2
+            exit 1
+          fi
+          if [ -z "$SONAR_TOKEN" ]; then
+            echo "SONAR_TOKEN must be set in the runner environment." >&2
+            exit 1
+          fi
+
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install \
+            -r orchestrator/requirements.txt \
+            -r orchestrator/requirements-dev.txt \
+            -r semantic-chunking-service/requirements.txt \
+            -r semantic-chunking-service/requirements-dev.txt
+
+      - name: Run tests with coverage
+        run: |
+          python -m coverage run \
+            --source=orchestrator \
+            --source=semantic-chunking-service/chunking \
+            --source=ssrf-proxy \
+            -m pytest semantic-chunking-service/tests orchestrator/tests -v
+          python -m coverage xml -o coverage.xml
+
+      - name: Install SonarScanner CLI
+        shell: bash
+        run: |
+          scanner_version="8.0.1.6346"
+          scanner_zip="$RUNNER_TEMP/sonar-scanner-cli.zip"
+          scanner_root="$RUNNER_TEMP/sonar-scanner"
+          curl -fsSL "https://binaries.sonarsource.com/Distribution/sonar-scanner-cli/sonar-scanner-cli-${scanner_version}-linux-x64.zip" -o "$scanner_zip"
+          rm -rf "$scanner_root"
+          mkdir -p "$scanner_root"
+          unzip -q "$scanner_zip" -d "$scanner_root"
+          echo "$scanner_root/sonar-scanner-${scanner_version}-linux-x64/bin" >> "$GITHUB_PATH"
+
+      - name: SonarQube scan
+        run: sonar-scanner -Dsonar.qualitygate.wait=true

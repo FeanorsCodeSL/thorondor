@@ -31,13 +31,12 @@ Dashed border = optional component (not started unless `LLM_ENDPOINT` is configu
 | Image | Pinned Tag / SHA | Architecture | License | Purpose |
 |---|---|---|---|---|
 | `searxng/searxng` | `@sha256:02d441bbb647b7be422d21041420115cddadac4644368f67c7c7f407bbe72e22` | amd64, arm64 | AGPL-3.0 | Multi-engine URL discovery |
-| `unclecode/crawl4ai` | `0.8.9` (`sha256:b243f684...`) | amd64 | Apache-2.0 | JavaScript-capable page crawling |
+| `unclecode/crawl4ai` | `@sha256:b243f684ad20f71ee108ab3fc3f31f3349eb5b31a9947b9e563d868417141aad` | amd64 | Apache-2.0 | JavaScript-capable page crawling |
 | `ghcr.io/huggingface/text-embeddings-inference` | `@sha256:b3e0169969c0dc4b22ab6bf6ad5699374d4cb720fc43fb66868a679586ea806f` | amd64, arm64 | Apache-2.0 | Embedding + reranking (`bundled-models` profile) |
 | `ghcr.io/ggml-org/llama.cpp:server` | `@sha256:4c52f549b6612fc1b4aee696c4cfb4a9dceecb10216bb7e677cf97db909e1b4a` | amd64, arm64 | MIT | Embedding + reranking via GGUF (`llamacpp-models` profile) |
-| `python:3.12-slim` | latest slim at build time | amd64, arm64 | PSF License | Base for orchestrator Dockerfile |
-| `python:3.13-slim` | latest slim at build time | amd64, arm64 | PSF License | Base for chunker Dockerfile |
+| `python:3.13-slim` | tag-pinned official image | amd64, arm64 | PSF License | Base for first-party Python services |
 
-> Note: `python:3.12-slim` and `python:3.13-slim` are not pinned by SHA. For reproducible production builds, pin to a specific digest.
+> Note: first-party service Dockerfiles run as non-root users. The Python base image remains an official version tag so maintainers can receive routine patch updates; production distributors who need byte-for-byte reproducibility should pin that base image to a vetted digest in their downstream build.
 
 ## 3. Python Package Inventory
 
@@ -46,7 +45,7 @@ Dashed border = optional component (not started unless `LLM_ENDPOINT` is configu
 | Package | Version | License | Purpose |
 |---|---|---|---|
 | FastAPI | 0.136.3 | MIT | REST API framework |
-| Uvicorn[standard] | 0.48.0 | BSD-3-Clause | ASGI server |
+| Uvicorn[standard] | 0.49.0 | BSD-3-Clause | ASGI server |
 | httpx | 0.28.1 | BSD-3-Clause | Async HTTP client for all downstream seams |
 | Pydantic | 2.13.4 | MIT | Request/response wire models, settings validation |
 | MCP Python SDK | 1.27.2 | MIT | MCP `web_search` tool surface |
@@ -57,7 +56,7 @@ Dashed border = optional component (not started unless `LLM_ENDPOINT` is configu
 | Package | Version | License | Purpose |
 |---|---|---|---|
 | FastAPI | 0.136.3 | MIT | REST API framework |
-| Uvicorn[standard] | 0.48.0 | BSD-3-Clause | ASGI server |
+| Uvicorn[standard] | 0.49.0 | BSD-3-Clause | ASGI server |
 | httpx | 0.28.1 | BSD-3-Clause | HTTP client for embedding server calls |
 | NumPy | 2.4.6 | BSD-3-Clause | Similarity matrix computation, cosine similarity |
 | Pydantic | 2.13.4 | MIT | Request/response models |
@@ -69,7 +68,7 @@ Dashed border = optional component (not started unless `LLM_ENDPOINT` is configu
 | pytest + plugins | `orchestrator/requirements-dev.txt` | Test runner |
 | pytest + plugins | `semantic-chunking-service/requirements-dev.txt` | Test runner |
 
-<!-- TODO: run `pip-licenses` against both virtualenvs to generate the full transitive dependency list. -->
+The source distribution lists direct dependencies. CI installs the direct runtime and dev requirements from both services before running the offline pytest suite. Binary or container distributors should generate a transitive SBOM for the exact artifact they publish.
 
 ## 4. Model Artifacts
 
@@ -78,7 +77,7 @@ These files are not part of the repository. They must be downloaded separately a
 | Model file | Format | Purpose | License | Source |
 |---|---|---|---|---|
 | `bge-m3.gguf` | GGUF (GGML) | Text embeddings (1024-dim, multilingual) | MIT | https://huggingface.co/BAAI/bge-m3 |
-| `bge-reranker-v2-m3.gguf` | GGUF (GGML) | Cross-encoder passage reranking | MIT | https://huggingface.co/BAAI/bge-reranker-v2-m3 |
+| `bge-reranker-v2-m3.gguf` | GGUF (GGML) | Cross-encoder passage reranking | Apache-2.0 | https://huggingface.co/BAAI/bge-reranker-v2-m3 |
 
 Approximate sizes: `bge-m3.gguf` is ~570 MB in Q8 quantization; `bge-reranker-v2-m3.gguf` is ~570 MB in Q8 quantization. Actual sizes depend on quantization level.
 
@@ -107,4 +106,4 @@ When using the `bundled-models` (TEI) profile, model weights are downloaded from
 | PowerShell 7+ | `scripts/*.ps1` | Deploy, smoke, and release-guard scripts |
 | Bash | `scripts/*.sh` | Linux equivalents of the PowerShell scripts |
 | Docker Compose | `docker-compose.yml`, `docker-compose.llamacpp.yml` | Local stack management |
-| GitHub Actions | `.github/workflows/release-guard.yml` | CI release guard (checks for uncommitted changes or test failures) |
+| GitHub Actions | `.github/workflows/release-guard.yml` | CI release guard, dependency install, compile check, offline pytest, and Compose config validation |

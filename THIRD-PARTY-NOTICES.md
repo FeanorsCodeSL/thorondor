@@ -1,20 +1,20 @@
 # Third-Party Notices
 
-<!-- TODO: run `pip-licenses --with-urls --with-description` and `docker sbom` to verify this list is complete before redistribution. -->
-
 This file records the third-party components intentionally referenced by the
-Thorondor runtime bundle. It is engineering inventory, not legal advice; verify
-licenses again before redistribution.
+Thorondor source distribution. It is engineering inventory, not legal advice.
+The repository does not vendor Python wheels, third-party container image
+layers, or model weights; binary or container distributors should attach their
+own generated SBOM for the exact artifacts they ship.
 
 ## Runtime Images
 
 | Component | Runtime reference | License | Upstream |
 |---|---|---|---|
 | SearXNG | `searxng/searxng@sha256:02d441bbb647b7be422d21041420115cddadac4644368f67c7c7f407bbe72e22` | AGPL-3.0 | https://github.com/searxng/searxng |
-| Crawl4AI | `unclecode/crawl4ai:0.8.9` (`sha256:b243f684ad20f71ee108ab3fc3f31f3349eb5b31a9947b9e563d868417141aad`) | Apache-2.0 | https://github.com/unclecode/crawl4ai |
+| Crawl4AI | `unclecode/crawl4ai@sha256:b243f684ad20f71ee108ab3fc3f31f3349eb5b31a9947b9e563d868417141aad` | Apache-2.0 | https://github.com/unclecode/crawl4ai |
 | Hugging Face Text Embeddings Inference | `ghcr.io/huggingface/text-embeddings-inference@sha256:b3e0169969c0dc4b22ab6bf6ad5699374d4cb720fc43fb66868a679586ea806f` | Apache-2.0 | https://github.com/huggingface/text-embeddings-inference |
 | llama.cpp server | `ghcr.io/ggml-org/llama.cpp:server@sha256:4c52f549b6612fc1b4aee696c4cfb4a9dceecb10216bb7e677cf97db909e1b4a` | MIT | https://github.com/ggml-org/llama.cpp |
-| Python base image | `python:3.12-slim`, `python:3.13-slim` | Python Software Foundation License + bundled OS package licenses | https://hub.docker.com/_/python |
+| Python base image | `python:3.13-slim` | Python Software Foundation License + bundled OS package licenses | https://hub.docker.com/_/python |
 
 ### SearXNG — AGPL-3.0 notice
 
@@ -49,7 +49,7 @@ MIT license: https://github.com/ggml-org/llama.cpp/blob/master/LICENSE
 | Package | Version | License | SPDX | Used by |
 |---|---:|---|---|---|
 | FastAPI | 0.136.3 | MIT | MIT | orchestrator, chunker |
-| Uvicorn | 0.48.0 | BSD-3-Clause | BSD-3-Clause | orchestrator, chunker |
+| Uvicorn | 0.49.0 | BSD-3-Clause | BSD-3-Clause | orchestrator, chunker |
 | httpx | 0.28.1 | BSD-3-Clause | BSD-3-Clause | orchestrator, chunker |
 | Pydantic | 2.13.4 | MIT | MIT | orchestrator, chunker |
 | MCP Python SDK | 1.27.2 | MIT | MIT | orchestrator MCP surface |
@@ -126,6 +126,4 @@ Reference model licenses at the time of documentation:
 | Model | HuggingFace Hub | License |
 |---|---|---|
 | BAAI/bge-m3 | https://huggingface.co/BAAI/bge-m3 | MIT |
-| BAAI/bge-reranker-v2-m3 | https://huggingface.co/BAAI/bge-reranker-v2-m3 | MIT |
-
-<!-- TODO: verify current license terms on HuggingFace Hub before deployment. -->
+| BAAI/bge-reranker-v2-m3 | https://huggingface.co/BAAI/bge-reranker-v2-m3 | Apache-2.0 |

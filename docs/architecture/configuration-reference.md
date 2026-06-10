@@ -12,6 +12,7 @@ All environment variables must be present in `.env` (and `.env.llamacpp` for the
 | `CRAWL4AI_URL` | Required / `http://crawl4ai:11235` | URL | Internal Crawl4AI API base URL. | `CRAWL4AI_API_KEY` |
 | `CHUNKER_URL` | Required / `http://chunker:8000` | URL | Internal semantic chunking service base URL. | `CHUNKER_API_KEY` |
 | `SEARXNG_BASE_URL` | Required / `http://searxng:8080/` | URL | Passed to SearXNG for self-referencing link generation (Compose env, not read by Python settings loader). | `SEARXNG_URL` |
+| `ORCHESTRATOR_HOST` | Required / `127.0.0.1` | host/IP | Host interface bound by Compose. Use `0.0.0.0` only behind firewall/auth/rate limiting. | `ORCHESTRATOR_PORT` |
 | `ORCHESTRATOR_PORT` | Required / `8080` | int | Host port bound to the orchestrator container (Compose env only). | — |
 
 ### Logging

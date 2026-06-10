@@ -56,6 +56,8 @@ Copy-Item .env.example .env
 
 **Optional keys** — variables like `SEARXNG_API_KEY`, `CRAWL4AI_API_KEY`, `LLM_ENDPOINT`, `DOMAIN_BLOCKLIST`, etc. must be present in `.env` but may be blank. Blank means disabled. Do not delete these keys — the loader raises if the key is entirely absent.
 
+**ORCHESTRATOR_HOST** — defaults to `127.0.0.1` in `.env.example`, which keeps the public REST/MCP port local to the host. Set it to `0.0.0.0` only when a firewall, TLS, authentication, and rate limiting are already in front of the service.
+
 **SEARXNG_SECRET** — this key must be non-blank when SearXNG starts. The deploy scripts generate a random 32-byte base64 secret when the field is blank. Do not commit a real secret value. Rotate by blanking the key in `.env` and re-running `deploy.ps1`.
 
 ### `.env.llamacpp`
@@ -87,7 +89,7 @@ crawl4ai
 
 All other services (`searxng`, `chunker`, `egress-proxy`, `embedding`, `reranker`) start without explicit health-gate dependencies and are polled by the deploy script via `GET /healthz` on the orchestrator.
 
-The deploy script waits up to 120 seconds (60 attempts × 2s sleep) for `/healthz` to return a response with no `false` values in the `dependencies` object. The llama.cpp profile wait loop is longer (90 × 2s = 180s) to accommodate model loading time.
+The deploy script waits up to 120 seconds (60 attempts x 2s sleep) for `/healthz` to return a response with at least one dependency value and no `false` values in the `dependencies` object. The smoke script waits up to 180 seconds before issuing live search requests, which gives model containers extra time to finish loading.
 
 ## 4. The Deploy Script
 
@@ -107,7 +109,7 @@ The deploy script waits up to 120 seconds (60 attempts × 2s sleep) for `/health
 
 6. **Service start** — `docker compose up -d` starts all containers in the selected profile.
 
-7. **Health poll** — the script polls `GET $HealthUrl` every 2 seconds for up to 120 seconds. It succeeds when the response has at least one dependency value and none are `false`.
+7. **Health poll** — the script polls `GET $HealthUrl` every 2 seconds for up to 120 seconds. It succeeds only when the response has at least one dependency value and none are `false`; a degraded `/healthz` response does not pass deploy.
 
 8. **Smoke test** — unless `-SkipSmoke` is passed, `smoke.ps1` is called with the same Compose files, env files, and profile.
 
@@ -191,11 +193,12 @@ No ARM64-specific code changes are needed. Run the same `deploy-llamacpp.ps1` co
 
 Known considerations:
 - CPU inference is the default. CUDA or Metal acceleration in llama.cpp requires rebuilding the image with GPU support — beyond the scope of this deployment guide.
-- The SearXNG image (`sha256:02d441bb...`) and Crawl4AI image (`unclecode/crawl4ai:0.8.9`) are pulled from Docker Hub; verify ARM64 manifest availability for any image tag update.
+- The SearXNG image (`sha256:02d441bb...`) and Crawl4AI image (`sha256:b243f684...`) are pulled from Docker Hub; verify ARM64 manifest availability for any image digest update.
 
 ## 8. Production Hardening Checklist
 
-- [ ] **TLS termination** — place a reverse proxy (nginx, Caddy, Traefik) in front of port `ORCHESTRATOR_PORT` with a valid TLS certificate. The orchestrator does not terminate TLS itself.
+- [ ] **Host binding** — keep `ORCHESTRATOR_HOST=127.0.0.1` for local use. Set `ORCHESTRATOR_HOST=0.0.0.0` only when the service is behind firewall, TLS, authentication, and rate limiting.
+- [ ] **TLS termination** — place a reverse proxy (nginx, Caddy, Traefik) in front of port `ORCHESTRATOR_PORT` with a valid TLS certificate before exposing it beyond localhost. The orchestrator does not terminate TLS itself.
 - [ ] **Access control** — restrict the orchestrator port to authorized clients. No authentication is built into the REST or MCP endpoints.
 - [ ] **Rotate SEARXNG_SECRET** — ensure `SEARXNG_SECRET` is a strong random value (the deploy script generates one; verify it is set in `.env` before first production start).
 - [ ] **Enable ALLOWLIST_ONLY** — set `ALLOWLIST_ONLY=true` and populate `DOMAIN_ALLOWLIST` for deployments where crawling should be restricted to known domains.

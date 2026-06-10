@@ -31,7 +31,7 @@ services:
       context: .
       dockerfile: orchestrator/Dockerfile
     ports:
-      - "${ORCHESTRATOR_PORT}:8080"
+      - "${ORCHESTRATOR_HOST}:${ORCHESTRATOR_PORT}:8080"
     environment:
       LOG_LEVEL: "${LOG_LEVEL}"
       SEARXNG_URL: "${SEARXNG_URL}"
@@ -122,7 +122,7 @@ services:
     networks: [internal, egress]
     # Public upstream self-hosted Docker API. Keep this as an image dependency
     # and integrate over HTTP; do not vendor or build Crawl4AI in this repo.
-    image: unclecode/crawl4ai:0.8.9
+    image: unclecode/crawl4ai@sha256:b243f684ad20f71ee108ab3fc3f31f3349eb5b31a9947b9e563d868417141aad
     environment:
       CRAWL4AI_API_TOKEN: "${CRAWL4AI_API_KEY?}"
       HTTP_PROXY: "${CRAWL4AI_HTTP_PROXY}"

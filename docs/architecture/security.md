@@ -107,7 +107,7 @@ Two services additionally attach to the `egress` network (which has a default ro
 - `crawl4ai` — Crawl4AI must reach the web, but all its outbound traffic is forced through the SSRF proxy via the `CRAWL4AI_HTTP_PROXY` / `CRAWL4AI_HTTPS_PROXY` environment variables.
 - `orchestrator` — the orchestrator attaches to `egress` for healthcheck probes to external services if configured, but in the default Compose setup all its operational traffic is internal.
 
-The orchestrator's port `ORCHESTRATOR_PORT` is the only published port; all other service ports are internal-only.
+The orchestrator's port `ORCHESTRATOR_PORT` is the only published port; all other service ports are internal-only. Compose binds that published port to `ORCHESTRATOR_HOST`, which is `127.0.0.1` in `.env.example` for local-only access by default.
 
 ## 8. Operator Responsibilities
 
@@ -115,7 +115,7 @@ Thorondor provides SSRF protection, log sanitization, and network isolation. The
 
 - **TLS termination** — the orchestrator does not serve HTTPS. A reverse proxy with a valid TLS certificate must be placed in front.
 - **Access control** — there is no authentication on `POST /v1/search`, `POST /search`, or the MCP endpoint. Restrict access at the network or reverse-proxy layer.
-- **Host firewall** — ensure `ORCHESTRATOR_PORT` is not exposed to untrusted networks.
+- **Host binding and firewall** — keep `ORCHESTRATOR_HOST=127.0.0.1` for personal/local deployments. Use `ORCHESTRATOR_HOST=0.0.0.0` only behind firewall, TLS, authentication, and rate limiting.
 - **Secret hygiene** — `.env` contains sensitive values. Do not commit it to version control. Inject secrets from a secrets manager at deploy time.
 - **`ALLOWLIST_ONLY=false` responsibility** — with the default setting, the service will crawl any URL that passes the IP safety filter. Set `ALLOWLIST_ONLY=true` and populate `DOMAIN_ALLOWLIST` in high-risk environments.
 - **robots.txt compliance** — `CRAWL_RESPECT_ROBOTS_TXT=true` by default. Changing this to `false` may violate the terms of service of crawled sites. The operator is responsible for compliance with applicable ToS and legal requirements.

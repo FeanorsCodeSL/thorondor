@@ -30,7 +30,7 @@ An unmodified upstream SearXNG Docker image, configured through `searxng/setting
 
 ### Crawl4AI
 
-The public upstream Crawl4AI self-hosted Docker API (`unclecode/crawl4ai:0.8.9`), consumed over the internal Compose network. The orchestrator submits `POST /crawl` requests to extract page content. Crawl4AI handles JavaScript rendering, robots.txt checking, and returns both raw HTML and Markdown forms of the page content. Thorondor never vendors or patches Crawl4AI source.
+The public upstream Crawl4AI self-hosted Docker API (`unclecode/crawl4ai@sha256:b243f684...`), consumed over the internal Compose network. The orchestrator submits `POST /crawl` requests to extract page content. Crawl4AI handles JavaScript rendering, robots.txt checking, and returns both raw HTML and Markdown forms of the page content. Thorondor never vendors or patches Crawl4AI source.
 
 Crawl4AI's outbound HTTP traffic routes through the embedded SSRF egress proxy to block requests to RFC-1918 and embedded-IPv4 IPv6 addresses.
 
