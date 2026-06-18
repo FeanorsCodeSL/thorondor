@@ -1,0 +1,55 @@
+Screen {
+    background: #0B0B0B;
+    color: #F2C04B;
+}
+
+#dashboard {
+    layout: vertical;
+    background: #0B0B0B;
+    padding: 0 1;
+}
+
+#brand-header {
+    background: #0B0B0B;
+    color: #F2C04B;
+    text-style: bold;
+    height: auto;
+    padding: 0 1;
+}
+
+#dashboard-body {
+    color: #F2C04B;
+    height: 1fr;
+    padding: 0 1;
+}
+
+#action-bar {
+    dock: bottom;
+    color: #F2C04B;
+    background: #130F05;
+    text-style: bold;
+    padding: 0 1;
+    border-top: heavy #F2C04B;
+}
+
+.screen-title {
+    text-style: bold;
+    color: #F2C04B;
+    padding: 1 1 0 1;
+}
+
+Input {
+    margin: 0 1;
+}
+
+Button {
+    margin: 1;
+    color: #0B0B0B;
+    background: #F2C04B;
+}
+
+Button:focus {
+    color: #F2C04B;
+    background: #0B0B0B;
+    border: heavy #F2C04B;
+}

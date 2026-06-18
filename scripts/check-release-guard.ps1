@@ -4,6 +4,7 @@ $ErrorActionPreference = "Stop"
 Set-StrictMode -Version Latest
 
 $Root = Resolve-Path (Join-Path $PSScriptRoot "..")
+$Python = if ($env:PYTHON) { $env:PYTHON } else { "python" }
 $RuntimeFiles = @(
     "docker-compose.yml",
     "docker-compose.llamacpp.yml",
@@ -105,6 +106,78 @@ if ((Get-Content (Join-Path $Root "scripts/deploy.ps1") -Raw) -notmatch "health\
 if ((Get-Content (Join-Path $Root "scripts/deploy.sh") -Raw) -notmatch "dependencies") {
     Write-Error "scripts/deploy.sh: deploy health polling must inspect dependency values."
     exit 1
+}
+
+$templatePairs = @(
+    @(".env.example", "thorondor_cli/templates/env.example"),
+    @(".env.llamacpp.example", "thorondor_cli/templates/env.llamacpp.example"),
+    @(".env.production.example", "thorondor_cli/templates/env.production.example")
+)
+foreach ($pair in $templatePairs) {
+    $left = Join-Path $Root $pair[0]
+    $right = Join-Path $Root $pair[1]
+    if ((Get-FileHash $left).Hash -ne (Get-FileHash $right).Hash) {
+        Write-Error "$($pair[1]) must match $($pair[0])."
+        exit 1
+    }
+}
+
+$assetPairs = @(
+    @("docker-compose.llamacpp.yml", "thorondor_cli/assets/docker-compose.llamacpp.yml"),
+    @("searxng/settings.yml", "thorondor_cli/assets/searxng/settings.yml"),
+    @("searxng/limiter.toml", "thorondor_cli/assets/searxng/limiter.toml")
+)
+foreach ($pair in $assetPairs) {
+    $left = Join-Path $Root $pair[0]
+    $right = Join-Path $Root $pair[1]
+    if ((Get-FileHash $left).Hash -ne (Get-FileHash $right).Hash) {
+        Write-Error "$($pair[1]) must match $($pair[0])."
+        exit 1
+    }
+}
+
+if (Select-String -Path (Join-Path $Root "thorondor_cli/assets/docker-compose.yml") -Pattern "^\s+build:\s*$") {
+    Write-Error "thorondor_cli/assets/docker-compose.yml must consume published images only."
+    exit 1
+}
+
+docker compose `
+    --env-file thorondor_cli/templates/env.example `
+    -f thorondor_cli/assets/docker-compose.yml `
+    config | Out-Null
+
+$installCommand = "uv tool install --force git+https://github.com/FeanorsCodeSL/thorondor"
+if ((Get-Content (Join-Path $Root "scripts/install.sh") -Raw) -notmatch [regex]::Escape($installCommand)) {
+    Write-Error "scripts/install.sh must install the canonical Thorondor repository with uv tool install."
+    exit 1
+}
+if ((Get-Content (Join-Path $Root "scripts/install.ps1") -Raw) -notmatch [regex]::Escape($installCommand)) {
+    Write-Error "scripts/install.ps1 must install the canonical Thorondor repository with uv tool install."
+    exit 1
+}
+if ((Get-Content (Join-Path $Root "scripts/install.sh") -Raw) -match "checkout") {
+    Write-Error "scripts/install.sh must not require a Thorondor checkout after installation."
+    exit 1
+}
+if ((Get-Content (Join-Path $Root "scripts/install.ps1") -Raw) -match "checkout") {
+    Write-Error "scripts/install.ps1 must not require a Thorondor checkout after installation."
+    exit 1
+}
+if (Get-Command sh -ErrorAction SilentlyContinue) {
+    sh -n scripts/install.sh
+}
+
+$overlayDir = Join-Path ([System.IO.Path]::GetTempPath()) ([System.Guid]::NewGuid().ToString())
+$overlay = Join-Path $overlayDir "docker-compose.host-endpoints.yml"
+try {
+    New-Item -ItemType Directory -Force $overlayDir | Out-Null
+    & $Python -c "import sys; from thorondor_cli.state import write_host_endpoints_overlay; write_host_endpoints_overlay(sys.argv[1], host_rewritten=True)" $overlayDir
+    docker compose --env-file .env.example -f docker-compose.yml -f $overlay config | Out-Null
+}
+finally {
+    if (Test-Path $overlayDir) {
+        Remove-Item -Recurse -Force $overlayDir
+    }
 }
 
 Write-Host "Release guard passed."

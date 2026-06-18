@@ -34,10 +34,11 @@ All inter-service traffic travels over an internal Compose network. Crawl4AI's o
 |---|---|---|
 | `orchestrator/` | service | FastAPI app: `/v1/search`, `/search` (compat), `/healthz`, MCP `/mcp` |
 | `semantic-chunking-service/` | service | FastAPI chunker: `/chunk`, `/healthz` — ClusterSemanticChunker + OpenAI-compatible embedding client |
+| `thorondor_cli/` | tool | Textual configurator, env/deploy helpers, native `thorondor-mcp` proxy, and harness writers |
 | `ssrf-proxy/` | service | Minimal async HTTP CONNECT proxy that blocks RFC-1918 and embedded-IPv4 IPv6 targets |
 | `searxng/` | config | SearXNG `settings.yml` mounted read-only by Compose |
 | `models/` | artifact | Local GGUF model files consumed by the llama.cpp profile (not committed) |
-| `scripts/` | scripts | `deploy.ps1`, `deploy-llamacpp.ps1`, `smoke.ps1`, `check-release-guard.ps1` (PowerShell) + Bash equivalents |
+| `scripts/` | scripts | `install.*`, `deploy.ps1`, `deploy-llamacpp.ps1`, `smoke.ps1`, `check-release-guard.ps1` (PowerShell) + Bash equivalents |
 | `docker-compose.yml` | config | Core stack: orchestrator, chunker, SearXNG, Crawl4AI, egress-proxy; `bundled-models` profile adds TEI embedding + reranker |
 | `docker-compose.llamacpp.yml` | config | Override: swaps embedding and reranker to local llama.cpp containers using GGUF files under `models/` |
 | `docker-compose.production.yml` | config | Image-only production slice for Tengwar-style deployments; no `build:` blocks or model containers |
@@ -56,6 +57,52 @@ All inter-service traffic travels over an internal Compose network. Crawl4AI's o
 - **GGUF model files** (llama.cpp profile only) — `bge-m3.gguf` and `bge-reranker-v2-m3.gguf` placed under `models/`. Verify model license terms before downloading weights.
 - **Hardware** — tested on Windows 10/11 with Docker Desktop (WSL2 backend) and on ARM64 (NVIDIA DGX Spark). The llama.cpp image is pinned to a SHA known to work on both architectures. GPU acceleration is not required; CPU inference works but is slower.
 - **PowerShell 7+** for the deploy and smoke scripts. Bash equivalents exist under `scripts/`.
+
+## Quickstart — Textual Configurator
+
+The interactive path is a one-line host install. It creates the local
+`thorondor` and `thorondor-mcp` commands; the first `thorondor` run initializes
+the managed deployment directory under `~/.thorondor`.
+
+```bash
+curl -LsSf https://raw.githubusercontent.com/FeanorsCodeSL/thorondor/main/scripts/install.sh | sh
+thorondor
+```
+
+PowerShell:
+
+```powershell
+irm https://raw.githubusercontent.com/FeanorsCodeSL/thorondor/main/scripts/install.ps1 | iex
+thorondor
+```
+
+The `thorondor` dashboard writes complete `.env` files, can probe endpoints,
+generates `SEARXNG_SECRET` when blank, and drives the existing Compose stack.
+The action bar mirrors the main operator workflow:
+
+| Action | Purpose |
+|---|---|
+| `Mode` | Choose BYO endpoints, bundled TEI containers, or llama.cpp GGUF containers. |
+| `Endpoints` | Edit embedding, reranker, and optional LLM planner endpoints. |
+| `Search/crawl` | Tune ports, budgets, crawl limits, robots, and domain filters. |
+| `Validate` | Check env completeness and show the exact Compose command. |
+| `Deploy` | Run `config`, `build`, `up -d`, `/healthz`, and smoke search. |
+| `MCP` | Wire Claude Code, Codex, or OpenCode to `thorondor-mcp` or Docker HTTP `/mcp`. |
+
+`thorondor doctor` is the non-interactive status path. `thorondor-mcp` is a
+native stdio MCP proxy that forwards `web_search` to the running
+`POST /v1/search` endpoint. The Dockerized HTTP MCP surface remains available at
+`http://localhost:8080/mcp`.
+
+`thorondor uninstall` stops the managed stack, removes `~/.thorondor`, and then
+removes the installed `thorondor` tool. Use `thorondor uninstall --keep-tool`
+when you only want to reset the local deployment files.
+
+When a BYO embedding endpoint points outside the Compose internal network, the
+configurator generates `docker-compose.host-endpoints.yml` and includes it
+during deploy. That overlay gives only the `chunker` egress for the external
+embedding call; host-rewritten `localhost` endpoints also get
+`host.docker.internal:host-gateway` entries for Linux Docker Engine.
 
 ## Quickstart — Windows with llama.cpp (fully local)
 

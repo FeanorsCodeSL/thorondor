@@ -122,7 +122,60 @@ Crawl4AI uses `thorondor-egress-proxy`.
 
 The Python settings loader validates every key at process startup. Compose validates that every `${VAR}` interpolation has a value (using `?` suffix for optional Compose variables). Running `docker compose config` before `up` is the recommended way to surface missing keys before a deployment attempt.
 
-## 3. Service Startup Order and Health Dependencies
+## 3. Textual Configurator
+
+`thorondor` is the interactive host entrypoint. The installer creates the
+command with:
+
+```bash
+curl -LsSf https://raw.githubusercontent.com/FeanorsCodeSL/thorondor/main/scripts/install.sh | sh
+```
+
+The first `thorondor` run initializes a managed deployment directory under
+`~/.thorondor`, writes packaged Compose/env/SearXNG assets there, and launches a
+full-screen Textual dashboard with these actions:
+
+| Action | Writes or checks |
+|---|---|
+| `Mode` | Selects BYO endpoints, bundled TEI containers, or llama.cpp containers. |
+| `Endpoints` | Edits embedding, reranker, and optional LLM planner endpoints. |
+| `Search/crawl` | Edits ports, budgets, crawl limits, robots, and domain filters. |
+| `Validate` | Reports env completeness and the Compose command that will run. |
+| `Deploy` | Runs `docker compose config`, `build`, `up -d`, `/healthz`, and smoke search. |
+| `MCP` | Wires Claude Code, Codex, or OpenCode to stdio `thorondor-mcp` or HTTP `/mcp`. |
+
+The dashboard does not keep unsaved state. Save/apply actions write complete env
+files at `0600`, re-read from disk, and return to the dashboard. `Esc` from a
+sub-screen discards in-progress edits.
+
+`thorondor doctor` is the plain-text status command for shells and automation.
+`thorondor uninstall` stops the managed stack, removes `~/.thorondor`, and
+uninstalls the local tool unless `--keep-tool` is passed. `thorondor-mcp` is the
+native stdio MCP proxy. It forwards `web_search` to the running stack's
+`POST /v1/search`; the Dockerized streamable HTTP MCP endpoint continues to be
+served at `/mcp`.
+
+### External and host model endpoints
+
+The base Compose topology keeps `chunker` on the `internal` network only. That
+is correct for bundled and llama.cpp model containers, where the embedding
+server is also internal. A BYO embedding endpoint outside the internal network
+requires a generated overlay:
+
+```text
+docker-compose.host-endpoints.yml
+```
+
+The overlay adds `egress` to `chunker` so it can call the external embedding
+server. If an operator entered `localhost` or `127.0.0.1`, the configurator
+rewrites it to `host.docker.internal` and the overlay adds
+`host.docker.internal:host-gateway` to `chunker` and `orchestrator` for Linux
+Docker Engine. The base Compose files remain unchanged.
+
+`scripts/deploy.ps1`, `scripts/deploy.sh`, and `scripts/smoke.*` remain the
+non-interactive and CI entrypoints.
+
+## 4. Service Startup Order and Health Dependencies
 
 Compose `depends_on` relationships (no `condition: service_healthy` by default, except Crawl4AI):
 
@@ -139,7 +192,7 @@ All other services (`searxng`, `chunker`, `egress-proxy`, `embedding`, `reranker
 
 The deploy script waits up to 120 seconds (60 attempts x 2s sleep) for `/healthz` to return a response with at least one dependency value and no `false` values in the `dependencies` object. The smoke script waits up to 180 seconds before issuing live search requests, which gives model containers extra time to finish loading.
 
-## 4. The Deploy Script
+## 5. The Deploy Script
 
 `scripts/deploy.ps1` is the base deploy script. `scripts/deploy-llamacpp.ps1` is a thin wrapper that sets llama.cpp-specific arguments and calls `deploy.ps1`. Both accept the same parameters.
 
@@ -169,7 +222,7 @@ Before calling `deploy.ps1`, this script:
 2. Reads `LLAMACPP_EMBEDDING_MODEL` and `LLAMACPP_RERANKER_MODEL` from `.env.llamacpp`.
 3. Converts container paths (`/models/<name>`) to host paths (`models\<name>`) and checks they exist. If any are missing, it calls `Write-Error` and stops.
 
-## 5. The Smoke Test
+## 6. The Smoke Test
 
 `scripts/smoke.ps1` validates that a running deployment can serve real search results.
 
@@ -203,7 +256,7 @@ In investigation mode, asserts all standard checks plus that `url_diagnostics` i
 
 A passing run exits with code 0 and prints each request/response JSON pair. A failing run calls `Write-Error`, which throws a terminating error and sets exit code 1. The deploy script propagates this failure to its own exit code.
 
-## 6. Upgrading
+## 7. Upgrading
 
 **Publish first-party production images:**
 
@@ -253,7 +306,7 @@ Edit `LLAMACPP_IMAGE` in `.env.llamacpp` to the new pinned SHA, then re-run `dep
 
 Blank the `SEARXNG_SECRET=` value in `.env`, then re-run `deploy.ps1`. The script will generate a new secret and restart the SearXNG container with it.
 
-## 7. Running on ARM64 / DGX Spark
+## 8. Running on ARM64 / DGX Spark
 
 The llama.cpp image SHA `4c52f549b6612fc1b4aee696c4cfb4a9dceecb10216bb7e677cf97db909e1b4a` is a multi-arch manifest that includes `linux/arm64`. The TEI image SHA is similarly multi-arch.
 

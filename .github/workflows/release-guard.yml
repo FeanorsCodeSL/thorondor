@@ -9,6 +9,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
       - name: Check pinned runtime images and SearXNG boundary
         run: bash scripts/check-release-guard.sh
 
@@ -21,20 +24,22 @@ jobs:
           python-version: "3.13"
           cache: pip
           cache-dependency-path: |
+            pyproject.toml
             orchestrator/requirements*.txt
             semantic-chunking-service/requirements*.txt
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
+          python -m pip install -e ".[dev]"
           python -m pip install \
             -r orchestrator/requirements.txt \
             -r orchestrator/requirements-dev.txt \
             -r semantic-chunking-service/requirements.txt \
             -r semantic-chunking-service/requirements-dev.txt
       - name: Compile Python sources
-        run: python -m compileall orchestrator semantic-chunking-service ssrf-proxy -q
+        run: python -m compileall orchestrator semantic-chunking-service ssrf-proxy thorondor_cli -q
       - name: Run offline tests
-        run: python -m pytest semantic-chunking-service/tests orchestrator/tests -v
+        run: python -m pytest semantic-chunking-service/tests orchestrator/tests thorondor_cli/tests -v
       - name: Validate bundled Compose config
         run: docker compose --env-file .env.example -f docker-compose.yml --profile bundled-models config >/dev/null
       - name: Validate llama.cpp Compose config
