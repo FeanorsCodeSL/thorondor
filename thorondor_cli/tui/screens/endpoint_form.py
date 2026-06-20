@@ -1,108 +1,130 @@
-"""Endpoint editor screen."""
+"""Endpoint editor screen for the Thorondor configurator."""
 
 from __future__ import annotations
 
 from pathlib import Path
 
 from textual.app import ComposeResult
-from textual.binding import Binding
+from textual.containers import Horizontal, Vertical
 from textual.screen import Screen
 from textual.widgets import Button, Input, Static
 
 from ...probe import probe_embedding, probe_reranker, rewrite_host_for_docker
 from ...state import ConfigAnswers, load_draft, persist_env_changes
+from .navigation import ARROW_NAV_BINDINGS, ArrowNavigationMixin
+
+ENDPOINT_FIELDS: tuple[tuple[str, str, str], ...] = (
+    ("embedding_endpoint", "Embedding base URL", ""),
+    ("embedding_model", "Embedding model", ""),
+    ("embedding_api_key", "Embedding token", "password"),
+    ("reranker_endpoint", "Reranker base URL", ""),
+    ("reranker_model", "Reranker model", ""),
+    ("reranker_path", "Rerank path", ""),
+    ("reranker_health_path", "Health path", ""),
+    ("reranker_api_key", "Reranker token", "password"),
+    ("llm_endpoint", "Optional LLM base URL", ""),
+    ("llm_model", "Optional LLM model", ""),
+    ("llm_api_key", "Optional LLM token", "password"),
+)
 
 
-class EndpointFormScreen(Screen[None]):
-    BINDINGS = [Binding("escape", "cancel", "Cancel")]
+class EndpointFormScreen(ArrowNavigationMixin, Screen[None]):
+    """Edit embedding, reranker, and LLM endpoints."""
 
-    def __init__(self, project_dir: Path):
+    BINDINGS = [*ARROW_NAV_BINDINGS, ("escape", "cancel", "Cancel")]
+
+    def __init__(
+        self,
+        project_dir: str | Path,
+        *,
+        dashboard: object | None = None,
+    ) -> None:
         super().__init__()
         self.project_dir = Path(project_dir)
+        self._dashboard = dashboard
 
     def compose(self) -> ComposeResult:
         draft = load_draft(self.project_dir)
-        yield Static("Endpoints", classes="screen-title")
-        yield Input(
-            draft.env.get("EMBEDDING_ENDPOINT", ""),
-            id="embedding_endpoint",
-            placeholder="Embedding base URL",
-        )
-        yield Input(
-            draft.env.get("EMBEDDING_MODEL", ""),
-            id="embedding_model",
-            placeholder="Embedding model",
-        )
-        yield Input(
-            draft.env.get("EMBEDDING_API_KEY", ""),
-            id="embedding_api_key",
-            placeholder="Embedding token",
-            password=True,
-        )
-        yield Input(
-            draft.env.get("RERANKER_ENDPOINT", ""),
-            id="reranker_endpoint",
-            placeholder="Reranker base URL",
-        )
-        yield Input(
-            draft.env.get("RERANKER_MODEL", ""),
-            id="reranker_model",
-            placeholder="Reranker model",
-        )
-        yield Input(
-            draft.env.get("RERANKER_PATH", "/rerank"),
-            id="reranker_path",
-            placeholder="Rerank path",
-        )
-        yield Input(
-            draft.env.get("RERANKER_HEALTH_PATH", "/health"),
-            id="reranker_health_path",
-            placeholder="Health path",
-        )
-        yield Input(
-            draft.env.get("RERANKER_API_KEY", ""),
-            id="reranker_api_key",
-            placeholder="Reranker token",
-            password=True,
-        )
-        yield Input(
-            draft.env.get("LLM_ENDPOINT", ""),
-            id="llm_endpoint",
-            placeholder="Optional LLM base URL",
-        )
-        yield Input(
-            draft.env.get("LLM_MODEL", ""),
-            id="llm_model",
-            placeholder="Optional LLM model",
-        )
-        yield Input(
-            draft.env.get("LLM_API_KEY", ""),
-            id="llm_api_key",
-            placeholder="Optional LLM token",
-            password=True,
-        )
-        yield Button("Test connection", id="test")
-        yield Button("Save", id="save")
-        yield Static("", id="endpoint-status")
+        yield Static("Endpoints", id="endpoints-title", classes="brand")
+        with Vertical(id="endpoints-form"):
+            for field_id, label, kind in ENDPOINT_FIELDS:
+                yield Static(label, classes="field-label")
+                kwargs: dict[str, object] = {
+                    "id": field_id,
+                    "placeholder": label,
+                    "value": draft.env.get(field_id.upper(), ""),
+                }
+                if kind == "password":
+                    kwargs["password"] = True
+                yield Input(**kwargs)  # type: ignore[arg-type]
+            with Horizontal(classes="form-row"):
+                yield Button("Test connection", id="test-endpoints")
+                yield Button("Save", id="save-endpoints", variant="primary")
+                yield Button("Cancel", id="cancel-endpoints")
+            yield Static("", id="endpoints-status")
 
-    def _input(self, widget_id: str) -> str:
-        return self.query_one(f"#{widget_id}", Input).value
+    def on_mount(self) -> None:
+        self.query_one(f"#{ENDPOINT_FIELDS[0][0]}", Input).focus()
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        if event.button.id == "test-endpoints":
+            self.action_test_connection()
+        elif event.button.id == "save-endpoints":
+            self.action_save()
+        elif event.button.id == "cancel-endpoints":
+            self.action_cancel()
+
+    def action_cancel(self) -> None:
+        self.app.pop_screen()
+
+    def action_test_connection(self) -> None:
+        answers = self._answers()
+        embedding = probe_embedding(
+            answers.embedding_endpoint,
+            answers.embedding_model,
+            answers.embedding_api_key or None,
+        )
+        reranker = probe_reranker(
+            answers.reranker_endpoint,
+            answers.reranker_health_path,
+            answers.reranker_path,
+            answers.reranker_model,
+            answers.reranker_api_key or None,
+        )
+        self.query_one("#endpoints-status", Static).update(
+            f"{self._preview()}\nembedding probe: {embedding.status}\n"
+            f"reranker probe: {reranker.status}"
+        )
+
+    def action_save(self) -> None:
+        try:
+            persist_env_changes(self.project_dir, self._answers())
+        except Exception as exc:
+            self.query_one("#endpoints-status", Static).update(f"Cannot save: {exc}")
+            return
+        self.app.refresh_dashboard_state()
+        self._refresh_dashboard_widget()
+        self.app.pop_screen()
 
     def _answers(self) -> ConfigAnswers:
         draft = load_draft(self.project_dir)
+
+        def _value(field_id: str) -> str:
+            return self.query_one(f"#{field_id}", Input).value
+
         return ConfigAnswers(
             mode="byo",
-            embedding_endpoint=self._input("embedding_endpoint"),
-            embedding_model=self._input("embedding_model"),
-            embedding_api_key=self._input("embedding_api_key"),
-            reranker_endpoint=self._input("reranker_endpoint"),
-            reranker_model=self._input("reranker_model"),
-            reranker_path=self._input("reranker_path"),
-            reranker_health_path=self._input("reranker_health_path"),
-            reranker_api_key=self._input("reranker_api_key"),
-            llm_endpoint=self._input("llm_endpoint"),
-            llm_model=self._input("llm_model"),
-            llm_api_key=self._input("llm_api_key"),
+            embedding_endpoint=_value("embedding_endpoint"),
+            embedding_model=_value("embedding_model"),
+            embedding_api_key=_value("embedding_api_key"),
+            reranker_endpoint=_value("reranker_endpoint"),
+            reranker_model=_value("reranker_model"),
+            reranker_path=_value("reranker_path") or "/rerank",
+            reranker_health_path=_value("reranker_health_path") or "/health",
+            reranker_api_key=_value("reranker_api_key"),
+            llm_endpoint=_value("llm_endpoint"),
+            llm_model=_value("llm_model"),
+            llm_api_key=_value("llm_api_key"),
             orchestrator_host=draft.env.get("ORCHESTRATOR_HOST", "127.0.0.1"),
             orchestrator_port=draft.env.get("ORCHESTRATOR_PORT", "8080"),
         )
@@ -116,30 +138,7 @@ class EndpointFormScreen(Screen[None]):
             lines.append("host-gateway overlay will be generated for Docker on Linux")
         return "\n".join(lines)
 
-    def on_button_pressed(self, event: Button.Pressed) -> None:
-        if event.button.id == "test":
-            answers = self._answers()
-            embedding = probe_embedding(
-                answers.embedding_endpoint,
-                answers.embedding_model,
-                answers.embedding_api_key or None,
-            )
-            reranker = probe_reranker(
-                answers.reranker_endpoint,
-                answers.reranker_health_path,
-                answers.reranker_path,
-                answers.reranker_model,
-                answers.reranker_api_key or None,
-            )
-            self.query_one("#endpoint-status", Static).update(
-                f"{self._preview()}\n"
-                f"embedding probe: {embedding.status}\n"
-                f"reranker probe: {reranker.status}"
-            )
-            return
-        if event.button.id == "save":
-            persist_env_changes(self.project_dir, self._answers())
-            self.app.pop_screen()
-
-    def action_cancel(self) -> None:
-        self.app.pop_screen()
+    def _refresh_dashboard_widget(self) -> None:
+        refresh = getattr(self._dashboard, "refresh_dashboard", None)
+        if refresh is not None:
+            refresh()

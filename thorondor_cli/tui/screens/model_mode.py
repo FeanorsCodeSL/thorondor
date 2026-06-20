@@ -1,40 +1,79 @@
-"""Mode selection screen."""
+"""Mode selection screen for the Thorondor configurator."""
 
 from __future__ import annotations
 
 from pathlib import Path
 
 from textual.app import ComposeResult
-from textual.binding import Binding
+from textual.containers import Horizontal, Vertical
 from textual.screen import Screen
 from textual.widgets import Button, Static
 
 from ...state import ConfigAnswers, load_draft, persist_env_changes
+from .navigation import ARROW_NAV_BINDINGS, ArrowNavigationMixin
 
 
-class ModelModeScreen(Screen[None]):
-    BINDINGS = [
-        Binding("escape", "cancel", "Cancel"),
-        Binding("b", "save_bundled", "Bundled"),
-        Binding("l", "save_llamacpp", "llama.cpp"),
-        Binding("y", "save_byo", "BYO"),
-    ]
+class ModelModeScreen(ArrowNavigationMixin, Screen[None]):
+    """Choose the model delivery mode (BYO / bundled / llama.cpp)."""
 
-    def __init__(self, project_dir: Path):
+    BINDINGS = [*ARROW_NAV_BINDINGS, ("escape", "cancel", "Cancel")]
+
+    def __init__(
+        self,
+        project_dir: str | Path,
+        *,
+        dashboard: object | None = None,
+    ) -> None:
         super().__init__()
         self.project_dir = Path(project_dir)
+        self._dashboard = dashboard
 
     def compose(self) -> ComposeResult:
         draft = load_draft(self.project_dir)
-        yield Static("Mode", classes="screen-title")
-        yield Static(
-            f"Current mode: {draft.mode}\n"
-            "Choose the model delivery mode to write complete env values."
+        yield Static("Mode", id="mode-title", classes="brand")
+        with Vertical(id="mode-form"):
+            yield Static(
+                f"Current mode: {draft.mode}\n"
+                "Choose the model delivery mode to write complete env values.",
+                classes="status",
+            )
+            with Horizontal(classes="form-row"):
+                yield Button("BYO endpoints", id="byo", variant="primary")
+                yield Button("bundled-models (TEI)", id="bundled")
+                yield Button("llamacpp (GGUF)", id="llamacpp")
+            with Horizontal(classes="form-row"):
+                yield Button("Apply", id="apply-mode")
+                yield Button("Cancel", id="cancel-mode")
+            yield Static("", id="mode-status")
+
+    def on_mount(self) -> None:
+        self.query_one("#byo", Button).focus()
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        if event.button.id == "apply-mode":
+            self.action_apply_mode()
+        elif event.button.id == "cancel-mode":
+            self.action_cancel()
+        elif event.button.id in {"byo", "bundled", "llamacpp"}:
+            self._save(self._mode_for_button(event.button.id or ""))
+
+    def action_apply_mode(self) -> None:
+        self._save("byo")
+
+    def _mode_for_button(self, button_id: str) -> str:
+        return {"byo": "byo", "bundled": "bundled-models", "llamacpp": "llamacpp"}.get(
+            button_id, "byo"
         )
-        yield Button("BYO endpoints", id="byo")
-        yield Button("bundled-models (TEI containers)", id="bundled")
-        yield Button("llamacpp (GGUF under models/)", id="llamacpp")
-        yield Static("", id="mode-status")
+
+    def _save(self, mode: str) -> None:
+        try:
+            persist_env_changes(self.project_dir, self._answers(mode))
+        except Exception as exc:
+            self.query_one("#mode-status", Static).update(f"Cannot save: {exc}")
+            return
+        self.app.refresh_dashboard_state()
+        self._refresh_dashboard_widget()
+        self.app.pop_screen()
 
     def _answers(self, mode: str) -> ConfigAnswers:
         draft = load_draft(self.project_dir)
@@ -56,26 +95,10 @@ class ModelModeScreen(Screen[None]):
             llamacpp_overrides=draft.llamacpp_env,
         )
 
-    def _save(self, mode: str) -> None:
-        try:
-            persist_env_changes(self.project_dir, self._answers(mode))
-        except Exception as exc:
-            self.query_one("#mode-status", Static).update(f"Cannot save: {exc}")
-            return
-        self.app.pop_screen()
-
-    def on_button_pressed(self, event: Button.Pressed) -> None:
-        mode_by_button = {"byo": "byo", "bundled": "bundled-models", "llamacpp": "llamacpp"}
-        self._save(mode_by_button.get(event.button.id or "", "byo"))
-
-    def action_save_bundled(self) -> None:
-        self._save("bundled-models")
-
-    def action_save_llamacpp(self) -> None:
-        self._save("llamacpp")
-
-    def action_save_byo(self) -> None:
-        self._save("byo")
-
     def action_cancel(self) -> None:
         self.app.pop_screen()
+
+    def _refresh_dashboard_widget(self) -> None:
+        refresh = getattr(self._dashboard, "refresh_dashboard", None)
+        if refresh is not None:
+            refresh()

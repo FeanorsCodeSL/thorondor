@@ -133,7 +133,11 @@ curl -LsSf https://raw.githubusercontent.com/FeanorsCodeSL/thorondor/main/script
 
 The first `thorondor` run initializes a managed deployment directory under
 `~/.thorondor`, writes packaged Compose/env/SearXNG assets there, and launches a
-full-screen Textual dashboard with these actions:
+full-screen Textual dashboard. The dashboard is a sibling of the Imladris
+configurator: black-on-gold chrome with `◆`/`✦` ornaments, an action rail on
+the left, a live components table on the right, and arrow-key navigation
+(`↑/↓` to move, `Enter` to open, `←/→` to switch panels, `Esc` to back out).
+The actions are:
 
 | Action | Writes or checks |
 |---|---|
@@ -142,7 +146,9 @@ full-screen Textual dashboard with these actions:
 | `Search/crawl` | Edits ports, budgets, crawl limits, robots, and domain filters. |
 | `Validate` | Reports env completeness and the Compose command that will run. |
 | `Deploy` | Runs `docker compose config`, `build`, `up -d`, `/healthz`, and smoke search. |
-| `MCP` | Wires Claude Code, Codex, or OpenCode to stdio `thorondor-mcp` or HTTP `/mcp`. |
+| `Wire MCP` | Wires Claude Code, Codex, or OpenCode to stdio `thorondor-mcp` or HTTP `/mcp`. |
+| `Refresh state` | Re-reads `.env` and re-detects harnesses without restarting. |
+| `Quit` | Exits the dashboard. |
 
 The dashboard does not keep unsaved state. Save/apply actions write complete env
 files at `0600`, re-read from disk, and return to the dashboard. `Esc` from a

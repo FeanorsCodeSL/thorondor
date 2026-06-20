@@ -78,7 +78,12 @@ thorondor
 
 The `thorondor` dashboard writes complete `.env` files, can probe endpoints,
 generates `SEARXNG_SECRET` when blank, and drives the existing Compose stack.
-The action bar mirrors the main operator workflow:
+The dashboard uses the same keyboard model as the Imladris TUI: `↑/↓` to move
+through the action menu, `Enter` to open a screen, `←/→` to focus the action
+menu or the components table, and `Esc` to back out of a form. The left rail
+lists the operator actions; the main panel shows the live component table
+(searxng / crawl4ai / chunker / embedding / reranker / llm planner) plus
+status and harness status:
 
 | Action | Purpose |
 |---|---|
@@ -87,7 +92,9 @@ The action bar mirrors the main operator workflow:
 | `Search/crawl` | Tune ports, budgets, crawl limits, robots, and domain filters. |
 | `Validate` | Check env completeness and show the exact Compose command. |
 | `Deploy` | Run `config`, `build`, `up -d`, `/healthz`, and smoke search. |
-| `MCP` | Wire Claude Code, Codex, or OpenCode to `thorondor-mcp` or Docker HTTP `/mcp`. |
+| `Wire MCP` | Wire Claude Code, Codex, or OpenCode to `thorondor-mcp` or Docker HTTP `/mcp`. |
+| `Refresh state` | Re-read `.env` and the harness detection without restarting. |
+| `Quit` | Exit the dashboard. |
 
 `thorondor doctor` is the non-interactive status path. `thorondor-mcp` is a
 native stdio MCP proxy that forwards `web_search` to the running
