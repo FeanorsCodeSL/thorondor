@@ -2,21 +2,28 @@
 
 from __future__ import annotations
 
-import sys
-import subprocess
 import shutil
+import subprocess
+import sys
 from collections.abc import Callable
 from pathlib import Path
 
 from .deploy import ComposePlan, run_compose
+from .models import (
+    LLAMACPP_MODEL_LICENSES,
+    LLAMACPP_MODEL_SOURCES,
+    ensure_llamacpp_models,
+    llamacpp_models_status,
+)
 from .project import ProjectError, default_project_dir, remove_managed_project, resolve_project_dir
-from .state import compute_issues, load_draft
+from .state import build_llamacpp_env_values, compute_issues, load_draft
 
 HELP = """thorondor - configure and deploy the Thorondor search stack.
 
 Usage:
   thorondor                               Launch the Textual configurator dashboard.
   thorondor doctor                        Show project/env status without launching the TUI.
+  thorondor download-models               Fetch missing GGUF model files for the llamacpp profile.
   thorondor uninstall [--keep-tool]       Stop and remove the managed deployment.
   thorondor --project-dir PATH            Use an explicit Thorondor project directory.
   thorondor --help                        Show this help.
@@ -93,6 +100,94 @@ def run_tui(project_dir: str | Path | None = None) -> int:  # pragma: no cover -
         return 1
     ThorondorApp(project.root).run()
     return 0
+
+
+def _human_bytes(n: int) -> str:
+    units = ("B", "KB", "MB", "GB", "TB")
+    size = float(n)
+    for unit in units:
+        if size < 1024 or unit == units[-1]:
+            return f"{size:.0f} {unit}" if unit == "B" else f"{size:.1f} {unit}"
+        size /= 1024
+    return f"{n} B"
+
+
+def download_models_command(project_dir: str | Path | None = None) -> int:
+    """Download any missing llamacpp GGUF model files with a console progress bar."""
+    try:
+        project = resolve_project_dir(project_dir)
+    except ProjectError as exc:
+        print(f"Thorondor project check failed: {exc}", file=sys.stderr)
+        return 1
+    draft = load_draft(project.root)
+    values = (
+        build_llamacpp_env_values_from_draft(draft)
+        if draft.mode == "llamacpp"
+        else draft.llamacpp_env
+    )
+    _present, missing = llamacpp_models_status(project.root, values)
+    if not missing:
+        print("All llamacpp model files are already present.")
+        return 0
+    for model in missing:
+        url = LLAMACPP_MODEL_SOURCES.get(model.filename, "<no default URL>")
+        license = LLAMACPP_MODEL_LICENSES.get(model.filename, "see HuggingFace")
+        print(f"Downloading {model.filename} — {license}")
+        print(f"  {url}")
+        print(f"  -> {model.target}")
+
+    def _progress(filename: str, downloaded: int, total: int | None) -> None:
+        if total:
+            pct = min(100, int(downloaded * 100 / total))
+            print(
+                f"  {filename}: {pct:3d}%  ({_human_bytes(downloaded)} / {_human_bytes(total)})",
+                end="\r",
+                flush=True,
+            )
+        else:
+            print(
+                f"  {filename}: {_human_bytes(downloaded)} downloaded",
+                end="\r",
+                flush=True,
+            )
+
+    try:
+        downloaded = ensure_llamacpp_models(project.root, values, progress=_progress)
+    except FileNotFoundError as exc:
+        print(f"\nDownload failed: {exc}", file=sys.stderr)
+        return 1
+    except Exception as exc:
+        print(f"\nDownload failed: {exc}", file=sys.stderr)
+        return 1
+    print("")
+    if downloaded:
+        print(f"Downloaded: {', '.join(downloaded)}")
+    else:
+        print("All llamacpp model files were already present.")
+    return 0
+
+
+def build_llamacpp_env_values_from_draft(draft) -> dict[str, str]:
+    from .state import ConfigAnswers
+
+    answers = ConfigAnswers(
+        mode="llamacpp",
+        embedding_endpoint=draft.env.get("EMBEDDING_ENDPOINT", ""),
+        embedding_model=draft.env.get("EMBEDDING_MODEL", ""),
+        embedding_api_key=draft.env.get("EMBEDDING_API_KEY", ""),
+        reranker_endpoint=draft.env.get("RERANKER_ENDPOINT", ""),
+        reranker_model=draft.env.get("RERANKER_MODEL", ""),
+        reranker_path=draft.env.get("RERANKER_PATH", "/rerank"),
+        reranker_health_path=draft.env.get("RERANKER_HEALTH_PATH", "/health"),
+        reranker_api_key=draft.env.get("RERANKER_API_KEY", ""),
+        llm_endpoint=draft.env.get("LLM_ENDPOINT", ""),
+        llm_model=draft.env.get("LLM_MODEL", ""),
+        llm_api_key=draft.env.get("LLM_API_KEY", ""),
+        orchestrator_host=draft.env.get("ORCHESTRATOR_HOST", "127.0.0.1"),
+        orchestrator_port=draft.env.get("ORCHESTRATOR_PORT", "8080"),
+        llamacpp_overrides=draft.llamacpp_env,
+    )
+    return build_llamacpp_env_values(answers)
 
 
 def _stop_managed_stack(
@@ -176,6 +271,14 @@ def main(argv: list[str] | None = None) -> int:
             print(f"Unknown arguments for doctor: {' '.join(remaining[1:])}", file=sys.stderr)
             return 2
         return doctor(project_dir)
+    if remaining and remaining[0] == "download-models":
+        if len(remaining) > 1:
+            print(
+                f"Unknown arguments for download-models: {' '.join(remaining[1:])}",
+                file=sys.stderr,
+            )
+            return 2
+        return download_models_command(project_dir)
     if remaining and remaining[0] == "uninstall":
         keep_tool = "--keep-tool" in remaining[1:]
         unknown = [arg for arg in remaining[1:] if arg != "--keep-tool"]

@@ -362,3 +362,58 @@ def test_dashboard_brand_uses_thorondor_outer_title_and_subtitle(tmp_path):
             )
 
     asyncio.run(run())
+
+
+def test_dashboard_surfaces_missing_gguf_in_issues_for_llamacpp(tmp_path):
+    root = _make_project(tmp_path)
+    persist_env_changes(root, ConfigAnswers(mode="bundled-models"))
+    (root / "models").mkdir()
+    (root / "models" / "bge-m3.gguf").write_bytes(b"\x00" * 8)
+    from thorondor_cli.envfile import LLAMACPP_TEMPLATE, seed_from_example
+    from thorondor_cli.models import llamacpp_models_status
+    from thorondor_cli.state import build_llamacpp_env_values
+
+    llamacpp_values = build_llamacpp_env_values(ConfigAnswers(mode="llamacpp"))
+    assert llamacpp_models_status(root, llamacpp_values)
+
+    def _patched_load_draft(*_args, **_kwargs):
+        from thorondor_cli.state import Draft
+
+        return Draft(
+            project_dir=root,
+            env_path=root / ".env",
+            llamacpp_env_path=root / ".env.llamacpp",
+            env={},
+            llamacpp_env=llamacpp_values,
+            template_env={},
+            template_llamacpp_env=seed_from_example(
+                template_name=LLAMACPP_TEMPLATE, project_dir=root
+            ),
+            missing_project_paths=[],
+            missing_env_keys=[],
+            invalid_values=[],
+            mode="llamacpp",
+            profile="llamacpp-models",
+            overlay_needed=False,
+            host_rewritten=False,
+            env_exists=True,
+            llamacpp_env_exists=True,
+            token_present={},
+        )
+
+    import thorondor_cli.tui.app as app_module
+
+    original = app_module.load_draft
+    app_module.load_draft = _patched_load_draft  # type: ignore[assignment]
+    try:
+        asyncio.run(_run_dashboard_assertions(root, _patched_load_draft))
+    finally:
+        app_module.load_draft = original  # type: ignore[assignment]
+
+
+async def _run_dashboard_assertions(root, loader):
+    app = ThorondorApp(root, draft_loader=loader)
+    async with app.run_test(size=(120, 36)):
+        issues = _issues_text(app)
+        assert "GGUF model files not downloaded" in issues
+        assert "bge-reranker-v2-m3.gguf" in issues

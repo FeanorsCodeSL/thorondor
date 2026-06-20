@@ -87,7 +87,7 @@ status and harness status:
 
 | Action | Purpose |
 |---|---|
-| `Mode` | Choose BYO endpoints, bundled TEI containers, or llama.cpp GGUF containers. |
+| `Mode` | Choose BYO endpoints, bundled TEI containers, or llama.cpp GGUF containers. Picking `llamacpp` auto-downloads missing GGUF files into `models/` with a progress bar. |
 | `Endpoints` | Edit embedding, reranker, and optional LLM planner endpoints. |
 | `Search/crawl` | Tune ports, budgets, crawl limits, robots, and domain filters. |
 | `Validate` | Check env completeness and show the exact Compose command. |
@@ -95,6 +95,13 @@ status and harness status:
 | `Wire MCP` | Wire Claude Code, Codex, or OpenCode to `thorondor-mcp` or Docker HTTP `/mcp`. |
 | `Refresh state` | Re-read `.env` and the harness detection without restarting. |
 | `Quit` | Exit the dashboard. |
+
+The llama.cpp mode also exposes a `Download models` button (and a `thorondor
+download-models` subcommand for non-interactive use) that fetches the two Q8
+GGUF files from the default HuggingFace sources into `models/` without
+changing the active mode. Both are wired into `scripts/deploy-llamacpp.ps1`
+and `scripts/deploy-llamacpp.sh` so a fresh clone can deploy the llamacpp
+profile with no manual file placement.
 
 `thorondor doctor` is the non-interactive status path. `thorondor-mcp` is a
 native stdio MCP proxy that forwards `web_search` to the running

@@ -1,7 +1,11 @@
 import subprocess
 
+import httpx
+import respx
 from thorondor_cli import app
+from thorondor_cli.models import LLAMACPP_MODEL_SOURCES
 from thorondor_cli.project import ensure_managed_project
+from thorondor_cli.state import ConfigAnswers, persist_env_changes
 
 
 def test_help_prints_both_commands(capsys):
@@ -10,6 +14,7 @@ def test_help_prints_both_commands(capsys):
     assert "thorondor" in out
     assert "thorondor-mcp" in out
     assert "uninstall" in out
+    assert "download-models" in out
     assert "~/.thorondor" in out
     assert "Usage:" in out
 
@@ -52,3 +57,36 @@ def test_uninstall_removes_managed_project_without_removing_tool(monkeypatch, tm
     out = capsys.readouterr().out
     assert "Removed Thorondor managed files" in out
     assert "Kept the thorondor command" in out
+
+
+def test_download_models_subcommand_fetches_missing_gguf(tmp_path, capsys):
+    project = ensure_managed_project(tmp_path / "thorondor")
+    persist_env_changes(project.root, ConfigAnswers(mode="bundled-models"))
+    (project.root / "models").mkdir()
+    (project.root / "models" / "bge-m3.gguf").write_bytes(b"already here")
+
+    with respx.mock(assert_all_called=True) as router:
+        router.get(LLAMACPP_MODEL_SOURCES["bge-reranker-v2-m3.gguf"]).mock(
+            return_value=httpx.Response(200, content=b"reranker-bytes")
+        )
+        assert app.main(["download-models", "--project-dir", str(project.root)]) == 0
+
+    assert (
+        project.root / "models" / "bge-m3.gguf"
+    ).read_bytes() == b"already here"
+    assert (
+        project.root / "models" / "bge-reranker-v2-m3.gguf"
+    ).read_bytes() == b"reranker-bytes"
+    out = capsys.readouterr().out
+    assert "Downloading bge-reranker-v2-m3.gguf" in out
+    assert "MIT" in out or "Apache" in out
+
+
+def test_download_models_subcommand_rejects_unknown_args(capsys):
+    project = ensure_managed_project()
+    assert (
+        app.main(["download-models", "--project-dir", str(project.root), "extra"])
+        == 2
+    )
+    err = capsys.readouterr().err
+    assert "Unknown arguments for download-models" in err

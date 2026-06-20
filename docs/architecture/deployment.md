@@ -32,6 +32,8 @@ An override file that replaces the `embedding` and `reranker` containers with ll
 - Overrides `RERANKER_ENDPOINT`, `RERANKER_PATH`, and `RERANKER_MODEL` in the orchestrator to match the llama.cpp server API shape (path `/reranking` instead of `/rerank`).
 - Overrides `EMBEDDING_ENDPOINT` and `EMBEDDING_MODEL` in the chunker.
 
+`deploy-llamacpp.ps1` (and `deploy-llamacpp.sh`) call `thorondor download-models` to fetch any missing GGUF files into `./models/` before bringing the stack up, so the overlay works on a fresh checkout with no manual model placement. The same flow is wired into the TUI: picking the `llamacpp` mode auto-downloads the missing files with a progress indicator, then writes the env and returns to the dashboard.
+
 To use the llama.cpp overlay, always pass both files:
 
 ```powershell

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from .common import DEFAULT_BASE_URL, DEFAULT_HTTP_URL, DeliveryMode, MCP_COMMAND, backup
+from .common import DEFAULT_BASE_URL, DEFAULT_HTTP_URL, MCP_COMMAND, DeliveryMode, backup
 
 _HEADER = "[mcp_servers.thorondor]"
 

@@ -6,7 +6,11 @@ import asyncio
 import json
 import tomllib
 
+import httpx
 import pytest
+import respx
+from textual.widgets import Static
+from thorondor_cli.models import LLAMACPP_MODEL_SOURCES
 from thorondor_cli.state import ConfigAnswers, persist_env_changes
 from thorondor_cli.tui import ThorondorApp
 from thorondor_cli.tui.screens.dashboard import DashboardScreen
@@ -167,3 +171,101 @@ def test_endpoint_form_cancel_does_not_write_env(tmp_path):
     asyncio.run(run())
 
     assert (root / ".env").read_text(encoding="utf-8") == original
+
+
+def test_model_mode_llamacpp_auto_downloads_then_saves(tmp_path):
+    root = _make_project(tmp_path)
+    embedding_payload = b"GGUF\x00" * 600
+    reranker_payload = b"GGUF\x11" * 600
+
+    async def run() -> None:
+        with respx.mock(assert_all_called=True) as router:
+            router.get(LLAMACPP_MODEL_SOURCES["bge-m3.gguf"]).mock(
+                return_value=httpx.Response(200, content=embedding_payload)
+            )
+            router.get(LLAMACPP_MODEL_SOURCES["bge-reranker-v2-m3.gguf"]).mock(
+                return_value=httpx.Response(200, content=reranker_payload)
+            )
+            app = ThorondorApp(root)
+            async with app.run_test(size=(120, 40)) as pilot:
+                await pilot.press("enter")
+                await pilot.pause()
+                assert isinstance(app.screen, ModelModeScreen)
+                await pilot.click("#llamacpp")
+                for _ in range(60):
+                    await pilot.pause(0.05)
+                    if (root / "models" / "bge-m3.gguf").exists() and (
+                        root / "models" / "bge-reranker-v2-m3.gguf"
+                    ).exists() and not isinstance(app.screen, ModelModeScreen):
+                        break
+                assert isinstance(app.screen, DashboardScreen)
+
+    asyncio.run(run())
+
+    assert (root / "models" / "bge-m3.gguf").read_bytes() == embedding_payload
+    assert (root / "models" / "bge-reranker-v2-m3.gguf").read_bytes() == reranker_payload
+    env_text = (root / ".env").read_text(encoding="utf-8")
+    llamacpp_text = (root / ".env.llamacpp").read_text(encoding="utf-8")
+    assert "EMBEDDING_ENDPOINT=http://embedding:8080" in env_text
+    assert "RERANKER_ENDPOINT=http://reranker:8080" in env_text
+    assert "LLAMACPP_IMAGE=" in llamacpp_text
+
+
+def test_model_mode_download_button_fetches_models_without_changing_mode(tmp_path):
+    root = _make_project(tmp_path)
+    payload = b"GGUF\x22" * 200
+
+    async def run() -> None:
+        with respx.mock(assert_all_called=True) as router:
+            router.get(LLAMACPP_MODEL_SOURCES["bge-m3.gguf"]).mock(
+                return_value=httpx.Response(200, content=payload)
+            )
+            router.get(LLAMACPP_MODEL_SOURCES["bge-reranker-v2-m3.gguf"]).mock(
+                return_value=httpx.Response(200, content=payload)
+            )
+            app = ThorondorApp(root)
+            async with app.run_test(size=(120, 40)) as pilot:
+                await pilot.press("enter")
+                await pilot.pause()
+                assert isinstance(app.screen, ModelModeScreen)
+                await pilot.click("#download-models")
+                for _ in range(60):
+                    await pilot.pause(0.05)
+                    if (root / "models" / "bge-reranker-v2-m3.gguf").exists():
+                        break
+                assert isinstance(app.screen, ModelModeScreen)
+                await pilot.press("escape")
+                await pilot.pause()
+                assert isinstance(app.screen, DashboardScreen)
+
+    asyncio.run(run())
+
+    assert (root / "models" / "bge-m3.gguf").exists()
+    assert (root / "models" / "bge-reranker-v2-m3.gguf").exists()
+    assert not (root / ".env").exists()
+
+
+def test_model_mode_download_error_is_surfaced_in_status(tmp_path):
+    root = _make_project(tmp_path)
+
+    async def run() -> None:
+        with respx.mock(assert_all_called=True) as router:
+            router.get(LLAMACPP_MODEL_SOURCES["bge-m3.gguf"]).mock(
+                return_value=httpx.Response(500, text="upstream down")
+            )
+            app = ThorondorApp(root)
+            async with app.run_test(size=(120, 40)) as pilot:
+                await pilot.press("enter")
+                await pilot.pause()
+                assert isinstance(app.screen, ModelModeScreen)
+                await pilot.click("#download-models")
+                for _ in range(60):
+                    await pilot.pause(0.05)
+                    status = str(app.screen.query_one("#mode-status", Static).content)
+                    if "failed" in status.lower():
+                        break
+                assert isinstance(app.screen, ModelModeScreen)
+                assert "failed" in status.lower()
+                assert not (root / "models" / "bge-m3.gguf").exists()
+
+    asyncio.run(run())

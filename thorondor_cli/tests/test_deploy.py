@@ -1,7 +1,6 @@
 import subprocess
 
 import pytest
-
 from thorondor_cli.deploy import (
     DeployError,
     compose_args,
@@ -11,7 +10,7 @@ from thorondor_cli.deploy import (
     wait_for_health,
 )
 from thorondor_cli.envfile import write_env
-from thorondor_cli.state import ConfigAnswers, HOST_ENDPOINTS_OVERLAY, persist_env_changes
+from thorondor_cli.state import HOST_ENDPOINTS_OVERLAY, ConfigAnswers, persist_env_changes
 
 
 def make_project(tmp_path):

@@ -270,19 +270,41 @@ class DashboardScreen(Screen[None]):
         ]
 
     def _issues_summary(self, issues: list[Issue]) -> str:
-        if not issues:
+        missing_gguf = self._missing_gguf_summary()
+        if not issues and not missing_gguf:
             draft = self.app.draft
             env_exists = bool(draft and draft.env_exists)
             env_state = "✓ ready" if env_exists else "✗ env missing"
             return f"{NODE} Status   {env_state}"
         ordered = sorted(issues, key=lambda issue: issue.action != "Manual repair")
-        lines = [f"{NODE} Status   {len(issues)} issue{'s' if len(issues) != 1 else ''}"]
-        lines.extend(
-            f"  - {issue.label} -> {issue.action}" for issue in ordered[:4]
+        header = (
+            f"{NODE} Status   {len(issues)} issue{'s' if len(issues) != 1 else ''}"
+            if issues
+            else f"{NODE} Status"
         )
-        if len(ordered) > 4:
-            lines.append(f"  - +{len(issues) - 4} more")
+        lines = [header]
+        if missing_gguf:
+            for line in missing_gguf:
+                lines.append(f"  - {line}")
+        for issue in ordered[: 4 - len(missing_gguf)]:
+            lines.append(f"  - {issue.label} -> {issue.action}")
+        if len(ordered) > 4 - len(missing_gguf):
+            remaining = len(ordered) - (4 - len(missing_gguf))
+            if remaining > 0:
+                lines.append(f"  - +{remaining} more")
         return "\n".join(lines)
+
+    def _missing_gguf_summary(self) -> list[str]:
+        draft = self.app.draft
+        if draft is None or draft.mode != "llamacpp":
+            return []
+        from ...models import llamacpp_models_status
+
+        _present, missing = llamacpp_models_status(self.project_dir, draft.llamacpp_env)
+        if not missing:
+            return []
+        joined = ", ".join(m.filename for m in missing)
+        return [f"GGUF model files not downloaded: {joined} -> Mode to fetch"]
 
     def _harness_summary(self) -> str:
         status = self.app.harness_status

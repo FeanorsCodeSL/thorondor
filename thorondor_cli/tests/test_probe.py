@@ -1,6 +1,5 @@
 import httpx
 import pytest
-
 from thorondor_cli.probe import (
     list_models,
     probe_embedding,

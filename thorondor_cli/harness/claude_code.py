@@ -5,7 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Literal
 
-from .common import DeliveryMode, MCP_NAME, entry_for_delivery, merge_json
+from .common import MCP_NAME, DeliveryMode, entry_for_delivery, merge_json
 
 Scope = Literal["global", "workspace"]
 

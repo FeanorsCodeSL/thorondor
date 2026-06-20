@@ -382,6 +382,19 @@ def missing_llamacpp_models(project_dir: str | Path, values: dict[str, str]) -> 
     return missing
 
 
+class MissingLlamaCppModelsError(ValueError):
+    """Raised when the llamacpp profile is selected but GGUF files are missing.
+
+    Carries the list of container paths that need to be on disk; the TUI
+    and the ``download-models`` subcommand catch this and download them
+    via :mod:`thorondor_cli.models` before retrying the save.
+    """
+
+    def __init__(self, missing: list[str]) -> None:
+        self.missing = list(missing)
+        super().__init__(f"Missing GGUF model files: {', '.join(self.missing)}")
+
+
 def persist_env_changes(project_dir: str | Path, answers: ConfigAnswers) -> Draft:
     root = Path(project_dir).expanduser().resolve()
     template = seed_from_example(template_name=ENV_TEMPLATE, project_dir=root)
@@ -392,7 +405,7 @@ def persist_env_changes(project_dir: str | Path, answers: ConfigAnswers) -> Draf
         llamacpp_values = build_llamacpp_env_values(answers)
         missing = missing_llamacpp_models(root, llamacpp_values)
         if missing:
-            raise ValueError(f"Missing GGUF model files: {', '.join(missing)}")
+            raise MissingLlamaCppModelsError(missing)
     write_env(
         root / ".env",
         values,

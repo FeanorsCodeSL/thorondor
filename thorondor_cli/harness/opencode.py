@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from .common import DeliveryMode, MCP_COMMAND, MCP_NAME, entry_for_delivery, merge_json
+from .common import MCP_COMMAND, MCP_NAME, DeliveryMode, entry_for_delivery, merge_json
 
 
 def opencode_path(home: Path) -> Path:

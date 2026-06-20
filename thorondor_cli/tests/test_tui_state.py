@@ -1,10 +1,9 @@
 import pytest
-
-from thorondor_cli.envfile import read_env, seed_from_example, write_env
+from thorondor_cli.envfile import read_env, seed_from_example
 from thorondor_cli.project import ProjectError, resolve_project_dir
 from thorondor_cli.state import (
-    ConfigAnswers,
     HOST_ENDPOINTS_OVERLAY,
+    ConfigAnswers,
     build_env_values,
     compose_overlays,
     compute_issues,
