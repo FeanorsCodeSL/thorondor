@@ -83,7 +83,31 @@ foreach ($item in @(
 }
 
 if ($missing.Count -gt 0) {
-    Write-Error "Missing llama.cpp GGUF model file(s): $($missing -join '; '). Place the files under .\models or edit .env.llamacpp."
+    Write-Host "Missing llama.cpp GGUF model file(s): $($missing -join '; '). Fetching via 'thorondor download-models'..."
+    $thorondorCmd = Get-Command thorondor -ErrorAction SilentlyContinue
+    if ($thorondorCmd) {
+        & thorondor download-models
+        if ($LASTEXITCODE -ne 0) {
+            throw "thorondor download-models failed with exit code $LASTEXITCODE."
+        }
+    }
+    else {
+        Write-Error "thorondor CLI not found on PATH. Install with 'uv tool install .' or set up the project, then re-run this script."
+    }
+
+    $stillMissing = @()
+    foreach ($item in @(
+        @{ Name = "LLAMACPP_EMBEDDING_MODEL"; Path = $embeddingModel },
+        @{ Name = "LLAMACPP_RERANKER_MODEL"; Path = $rerankerModel }
+    )) {
+        $localPath = ConvertTo-LocalModelPath $item["Path"]
+        if ($localPath -and -not (Test-Path $localPath)) {
+            $stillMissing += "$($item["Name"]) ($($item["Path"]) -> $localPath)"
+        }
+    }
+    if ($stillMissing.Count -gt 0) {
+        Write-Error "Still missing llama.cpp GGUF model file(s) after download: $($stillMissing -join '; ')."
+    }
 }
 
 $deployArgs = @{

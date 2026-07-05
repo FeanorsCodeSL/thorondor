@@ -59,6 +59,9 @@ certs/ghcr-config.json
 # Python
 *.pyc
 __pycache__/
+*.egg-info/
+build/
+dist/
 .pytest_cache/
 .venv/
 .coverage

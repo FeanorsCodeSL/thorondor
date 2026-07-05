@@ -61,7 +61,9 @@ MIT license: https://github.com/ggml-org/llama.cpp/blob/master/LICENSE
 | Uvicorn | 0.49.0 | BSD-3-Clause | BSD-3-Clause | orchestrator, chunker |
 | httpx | 0.28.1 | BSD-3-Clause | BSD-3-Clause | orchestrator, chunker |
 | Pydantic | 2.13.4 | MIT | MIT | orchestrator, chunker |
-| MCP Python SDK | 1.27.2 | MIT | MIT | orchestrator MCP surface |
+| MCP Python SDK | 1.27.2 | MIT | MIT | orchestrator MCP surface, `thorondor-mcp` |
+| Textual | 8.2.7 | MIT | MIT | `thorondor` Textual configurator |
+| Rich | 15.0.0 | MIT | MIT | CLI and TUI formatting |
 | Trafilatura | 2.1.0 | Apache-2.0 | Apache-2.0 | orchestrator HTML-to-Markdown extraction |
 | NumPy | 2.4.6 | BSD-3-Clause + bundled permissive notices | BSD-3-Clause | chunker |
 
@@ -89,6 +91,14 @@ MIT license: https://github.com/pydantic/pydantic/blob/main/LICENSE
 ### MCP Python SDK — MIT
 
 MIT license: https://github.com/modelcontextprotocol/python-sdk/blob/main/LICENSE
+
+### Textual — MIT
+
+MIT license: https://github.com/Textualize/textual/blob/main/LICENSE
+
+### Rich — MIT
+
+MIT license: https://github.com/Textualize/rich/blob/master/LICENSE
 
 ### Trafilatura — Apache-2.0
 

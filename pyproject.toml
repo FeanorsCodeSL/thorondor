@@ -1,0 +1,58 @@
+[project]
+name = "thorondor"
+version = "0.0.0"
+description = "Thorondor search stack configurator and MCP proxy."
+requires-python = ">=3.13"
+license = { text = "MIT" }
+readme = "README.md"
+dependencies = [
+    "textual>=8.2.7,<9.0",
+    "rich>=15.0,<16.0",
+    "httpx==0.28.1",
+    "pydantic==2.13.4",
+    "mcp==1.27.2",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "respx>=0.22",
+    "ruff>=0.8",
+]
+
+[project.scripts]
+thorondor = "thorondor_cli.app:main"
+thorondor-mcp = "thorondor_cli.mcp_proxy:main"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["thorondor_cli*"]
+exclude = ["thorondor_cli.tests*"]
+
+[tool.setuptools.package-data]
+thorondor_cli = [
+    "assets/*.yml",
+    "assets/searxng/*.toml",
+    "assets/searxng/*.yml",
+    "templates/*.example",
+    "tui/*.tcss",
+]
+
+[tool.ruff]
+target-version = "py313"
+line-length = 100
+src = ["thorondor_cli"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "ASYNC"]
+
+[tool.pytest.ini_options]
+testpaths = [
+    "semantic-chunking-service/tests",
+    "orchestrator/tests",
+    "thorondor_cli/tests",
+]
+addopts = "-v"

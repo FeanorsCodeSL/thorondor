@@ -79,16 +79,18 @@ The source distribution lists direct dependencies. CI installs the direct runtim
 
 ## 4. Model Artifacts
 
-These files are not part of the repository. They must be downloaded separately and placed under `models/` before starting the `llamacpp-models` profile.
+The `llamacpp-models` profile requires two GGUF files under `<project>/models/`. The TUI and the `thorondor download-models` subcommand download them automatically from the default Q8 sources below on first run. Operators who prefer manual placement can `curl` (or `huggingface-cli download`) the same URLs and drop the files into `models/`; the auto-downloader only fetches what's missing and refuses to overwrite existing non-empty files.
 
-| Model file | Format | Purpose | License | Source |
+| Model file | Format | Purpose | License | Default source |
 |---|---|---|---|---|
-| `bge-m3.gguf` | GGUF (GGML) | Text embeddings (1024-dim, multilingual) | MIT | https://huggingface.co/BAAI/bge-m3 |
-| `bge-reranker-v2-m3.gguf` | GGUF (GGML) | Cross-encoder passage reranking | Apache-2.0 | https://huggingface.co/BAAI/bge-reranker-v2-m3 |
+| `bge-m3.gguf` | GGUF (GGML), Q8 | Text embeddings (1024-dim, multilingual) | MIT (BAAI/bge-m3) | `https://huggingface.co/BAAI/bge-m3-GGUF/resolve/main/bge-m3-q8_0.gguf` |
+| `bge-reranker-v2-m3.gguf` | GGUF (GGML), Q8 | Cross-encoder passage reranking | Apache-2.0 (BAAI/bge-reranker-v2-m3) | `https://huggingface.co/BAAI/bge-reranker-v2-m3-GGUF/resolve/main/bge-reranker-v2-m3-q8_0.gguf` |
 
 Approximate sizes: `bge-m3.gguf` is ~570 MB in Q8 quantization; `bge-reranker-v2-m3.gguf` is ~570 MB in Q8 quantization. Actual sizes depend on quantization level.
 
 > Always verify current model license terms on HuggingFace Hub before downloading weights into a production environment.
+
+The default sources live in `thorondor_cli/models.py` (`LLAMACPP_MODEL_SOURCES`). To swap in a different quantization or mirror, edit that table and re-run `thorondor download-models` (or pick the mode in the TUI). The filenames (`bge-m3.gguf`, `bge-reranker-v2-m3.gguf`) and the `LLAMACPP_EMBEDDING_MODEL` / `LLAMACPP_RERANKER_MODEL` container paths in `.env.llamacpp` must stay in sync.
 
 When using the `bundled-models` (TEI) profile, model weights are downloaded from HuggingFace Hub inside the container on first start. The same model IDs apply: `BAAI/bge-m3` for embeddings and `BAAI/bge-reranker-v2-m3` for reranking.
 
