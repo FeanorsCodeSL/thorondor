@@ -1,12 +1,46 @@
 """MCP web_search tool for Thorondor."""
+import os
 from typing import Literal
 
 from mcp.server.fastmcp import FastMCP
+from mcp.server.transport_security import TransportSecuritySettings
 
 from .models import SearchRequest
 from .pipeline import run_search
 
-mcp = FastMCP("thorondor", streamable_http_path="/", stateless_http=True)
+DEFAULT_MCP_ALLOWED_HOSTS = (
+    "127.0.0.1:*",
+    "localhost:*",
+    "[::1]:*",
+    "thorondor:*",
+    "orchestrator:*",
+)
+DEFAULT_MCP_ALLOWED_ORIGINS = (
+    "http://127.0.0.1:*",
+    "http://localhost:*",
+    "http://[::1]:*",
+    "http://thorondor:*",
+    "http://orchestrator:*",
+)
+
+
+def _csv_env(name: str, default: tuple[str, ...]) -> list[str]:
+    raw = os.environ.get(name)
+    if raw is None or not raw.strip():
+        return list(default)
+    return [part.strip() for part in raw.split(",") if part.strip()]
+
+
+mcp = FastMCP(
+    "thorondor",
+    streamable_http_path="/",
+    stateless_http=True,
+    transport_security=TransportSecuritySettings(
+        enable_dns_rebinding_protection=True,
+        allowed_hosts=_csv_env("MCP_ALLOWED_HOSTS", DEFAULT_MCP_ALLOWED_HOSTS),
+        allowed_origins=_csv_env("MCP_ALLOWED_ORIGINS", DEFAULT_MCP_ALLOWED_ORIGINS),
+    ),
+)
 deps_override = None
 
 
