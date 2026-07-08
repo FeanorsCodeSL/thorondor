@@ -40,29 +40,40 @@ def test_streamable_http_initialize_tools_list_and_call_at_public_mcp(monkeypatc
         monkeypatch.setattr(appmod, "deps", deps)
         mcpmod.set_deps(deps)
 
-        def client_factory(headers=None, timeout=None, auth=None):
-            return httpx.AsyncClient(
-                transport=httpx.ASGITransport(app=app),
-                base_url="http://localhost:8000",
-                headers=headers,
-                timeout=timeout,
-                auth=auth,
-            )
+        def client_factory(base_url):
+            def create(headers=None, timeout=None, auth=None):
+                return httpx.AsyncClient(
+                    transport=httpx.ASGITransport(app=app),
+                    base_url=base_url,
+                    headers=headers,
+                    timeout=timeout,
+                    auth=auth,
+                )
+
+            return create
 
         async with app.router.lifespan_context(app):
-            async with client_factory() as client:
-                assert (await client.get("/mcp/mcp")).status_code == 404
+            for base_url in ["http://localhost:8000", "http://thorondor:8080"]:
+                create_client = client_factory(base_url)
+                async with create_client() as client:
+                    assert (await client.get("/mcp/mcp")).status_code == 404
 
-            async with streamablehttp_client(
-                "http://localhost:8000/mcp",
-                httpx_client_factory=client_factory,
-            ) as (read_stream, write_stream, _get_session_id):
-                async with ClientSession(read_stream, write_stream) as session:
-                    await session.initialize()
-                    tools = await session.list_tools()
-                    assert [tool.name for tool in tools.tools] == ["web_search"]
-                    result = await session.call_tool("web_search", {"query": "x"})
-                    assert result.content
+                async with streamablehttp_client(
+                    f"{base_url}/mcp",
+                    httpx_client_factory=create_client,
+                ) as (read_stream, write_stream, _get_session_id):
+                    async with ClientSession(read_stream, write_stream) as session:
+                        await session.initialize()
+                        tools = await session.list_tools()
+                        assert [tool.name for tool in tools.tools] == ["web_search"]
+                        result = await session.call_tool("web_search", {"query": "x"})
+                        assert result.content
+
+            async with httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=app),
+                base_url="http://evil.test:8080",
+            ) as client:
+                assert (await client.post("/mcp", json={})).status_code == 421
 
     anyio.run(exercise)
 

@@ -512,6 +512,13 @@ All keys must be present in `.env` (leave optional keys blank rather than deleti
 | `URL_SAFETY_SIX_TO_FOUR_NETWORKS` | `2002::/16` | IPv6 6-to-4 networks; embedded IPv4 is extracted and re-checked. |
 | `URL_SAFETY_IPV4_COMPAT_NETWORKS` | `::/96` | IPv4-compatible IPv6 networks; embedded IPv4 is extracted and re-checked. |
 
+### MCP Transport Security
+
+| Variable | Default | Description |
+|---|---|---|
+| `MCP_ALLOWED_HOSTS` | `127.0.0.1:*,localhost:*,[::1]:*,thorondor:*,orchestrator:*` | Host headers accepted by the MCP streamable HTTP endpoint. |
+| `MCP_ALLOWED_ORIGINS` | `http://127.0.0.1:*,http://localhost:*,http://[::1]:*,http://thorondor:*,http://orchestrator:*` | Origin headers accepted by the MCP streamable HTTP endpoint when an Origin header is present. |
+
 ### Domain Allow/Block Lists
 
 | Variable | Default | Description |

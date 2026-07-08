@@ -85,6 +85,8 @@ services:
       URL_SAFETY_NAT64_NETWORKS: "${URL_SAFETY_NAT64_NETWORKS}"
       URL_SAFETY_SIX_TO_FOUR_NETWORKS: "${URL_SAFETY_SIX_TO_FOUR_NETWORKS}"
       URL_SAFETY_IPV4_COMPAT_NETWORKS: "${URL_SAFETY_IPV4_COMPAT_NETWORKS}"
+      MCP_ALLOWED_HOSTS: "${MCP_ALLOWED_HOSTS}"
+      MCP_ALLOWED_ORIGINS: "${MCP_ALLOWED_ORIGINS}"
     depends_on:
       - searxng
       - crawl4ai
@@ -123,6 +125,9 @@ services:
   crawl4ai:
     <<: *thorondor-internal
     image: "${THORONDOR_CRAWL4AI_IMAGE}"
+    networks:
+      - thorondor-internal
+      - thorondor-egress
     environment:
       CRAWL4AI_API_TOKEN: "${CRAWL4AI_API_KEY?}"
       HTTP_PROXY: "${CRAWL4AI_HTTP_PROXY}"

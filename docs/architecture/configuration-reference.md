@@ -119,6 +119,13 @@ All environment variables must be present in `.env` (and `.env.llamacpp` or `.en
 | `URL_SAFETY_SIX_TO_FOUR_NETWORKS` | Required / `2002::/16` | comma-separated IPv6 CIDRs | IPv6 6-to-4 networks; bits 17–48 are extracted as IPv4 and re-checked. | — |
 | `URL_SAFETY_IPV4_COMPAT_NETWORKS` | Required / `::/96` | comma-separated IPv6 CIDRs | IPv4-compatible IPv6 networks; low 32 bits extracted and re-checked. | — |
 
+### MCP Transport Security
+
+| Variable | Required / Default | Type | Description | Related |
+|---|---|---|---|---|
+| `MCP_ALLOWED_HOSTS` | Required / `127.0.0.1:*,localhost:*,[::1]:*,thorondor:*,orchestrator:*` | comma-separated host patterns | Host headers accepted by the MCP streamable HTTP endpoint. Supports exact values and wildcard port patterns ending in `:*`. | `MCP_ALLOWED_ORIGINS` |
+| `MCP_ALLOWED_ORIGINS` | Required / `http://127.0.0.1:*,http://localhost:*,http://[::1]:*,http://thorondor:*,http://orchestrator:*` | comma-separated origins | Origin headers accepted by the MCP streamable HTTP endpoint when an Origin header is present. Supports exact values and wildcard port patterns ending in `:*`. | `MCP_ALLOWED_HOSTS` |
+
 ### Domain Allow/Block Lists
 
 | Variable | Required / Default | Type | Description | Related |
