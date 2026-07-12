@@ -26,6 +26,7 @@ services:
 
   orchestrator:
     <<: *internal
+    init: true
     networks: [internal, egress]
     build:
       context: .
@@ -94,6 +95,7 @@ services:
 
   chunker:
     <<: *internal
+    init: true
     build:
       context: ./semantic-chunking-service
       dockerfile: Dockerfile

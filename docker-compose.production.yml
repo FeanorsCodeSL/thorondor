@@ -26,6 +26,7 @@ services:
 
   thorondor:
     <<: *thorondor-internal
+    init: true
     image: "${THORONDOR_ORCHESTRATOR_IMAGE}"
     expose:
       - "8080"
@@ -94,6 +95,7 @@ services:
 
   thorondor-chunker:
     <<: *thorondor-internal
+    init: true
     image: "${THORONDOR_CHUNKER_IMAGE}"
     mem_limit: "${CHUNKER_MEM_LIMIT}"
     networks:

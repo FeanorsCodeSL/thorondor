@@ -24,6 +24,7 @@ services:
 
   orchestrator:
     <<: *internal
+    init: true
     networks: [internal, egress]
     image: "${THORONDOR_ORCHESTRATOR_IMAGE}"
     ports:
@@ -88,6 +89,7 @@ services:
 
   chunker:
     <<: *internal
+    init: true
     image: "${THORONDOR_CHUNKER_IMAGE}"
     mem_limit: "${CHUNKER_MEM_LIMIT}"
     environment:
