@@ -73,10 +73,13 @@ flowchart TD
     E --> F
 
     F -- DiscoveryUnavailable --> FAIL503[503 SearchDependencyUnavailable\ndependency=searxng]
-    F --> G[merge_dedup results]
+    F --> G[merge_dedup results\ncapture unresponsive_engines]
     G --> H{urls_discovered == 0?}
-    H -- yes --> EMPTY1[200 empty\nreason=no_results_from_discovery]
-    H -- no --> I[URL safety filter]
+    H -- yes, engine failures --> EMPTY0[200 empty\ndiscovery_status=unavailable\nreason=search_provider_unavailable]
+    H -- yes, no failures --> EMPTY1[200 empty\ndiscovery_status=ok\nreason=no_results_from_discovery]
+    H -- no, engine failures --> DEG[discovery_status=degraded]
+    H -- no failures --> I[URL safety filter]
+    DEG --> I
 
     I --> J[Domain blocklist + allowlist]
     J --> K[SelectionPolicyImpl\nengine diversity → domain diversity → score]
@@ -111,6 +114,10 @@ flowchart TD
 ```
 
 ## 3. Degraded-Mode Branches
+
+### Search engines degraded
+
+SearXNG returns engine failures and suspension reasons in `unresponsive_engines` even when the HTTP response is 200. The orchestrator preserves these entries in `stats.unresponsive_engines`. If other engines still provide usable results, the pipeline continues with `stats.discovery_status=degraded`. If reported engine failures leave no usable results, the response is an empty 200 with `stats.discovery_status=unavailable` and `stats.reason=search_provider_unavailable`. An empty result with no reported engine failures remains a healthy empty search with `stats.discovery_status=ok` and `stats.reason=no_results_from_discovery`.
 
 ### Reranker unavailable
 

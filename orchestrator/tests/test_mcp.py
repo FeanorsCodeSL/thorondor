@@ -103,6 +103,16 @@ def test_streamable_http_initialize_tools_list_and_call_at_public_mcp(monkeypatc
             fakes.deps(discovery=fakes.EmptyDiscovery()),
         ),
         (
+            "partial search provider degradation",
+            {"query": "x"},
+            fakes.deps(discovery=fakes.DegradedDiscovery()),
+        ),
+        (
+            "search provider unavailable",
+            {"query": "x"},
+            fakes.deps(discovery=fakes.UnavailableDiscovery()),
+        ),
+        (
             "degraded crawl reason",
             {"query": "x"},
             fakes.deps(extractor=fakes.EmptyExtractor()),

@@ -2,7 +2,7 @@
 import httpx
 
 from ..observability import request_id_headers
-from ..types import DiscoveryResult
+from ..types import DiscoveryEngineFailure, DiscoveryOutcome, DiscoveryResult
 
 
 class DiscoveryUnavailable(Exception):
@@ -26,7 +26,7 @@ class SearxngDiscovery:
         if self._owns_client:
             await self._client.aclose()
 
-    async def search(self, subquery: str, freshness: str | None = None) -> list[DiscoveryResult]:
+    async def search(self, subquery: str, freshness: str | None = None) -> DiscoveryOutcome:
         params = {"q": subquery, "format": "json"}
         if freshness:
             params["time_range"] = freshness
@@ -55,4 +55,12 @@ class SearxngDiscovery:
                     score=score,
                 )
             )
-        return [r for r in results if r.url]
+        failures = []
+        for item in payload.get("unresponsive_engines", []):
+            if not isinstance(item, (list, tuple)) or not item:
+                continue
+            engine = str(item[0]).strip()
+            reason = str(item[1]).strip() if len(item) > 1 else "unresponsive"
+            if engine:
+                failures.append(DiscoveryEngineFailure(engine, reason))
+        return DiscoveryOutcome([result for result in results if result.url], failures)

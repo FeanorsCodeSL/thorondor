@@ -60,7 +60,7 @@ A single search request proceeds as follows:
 
 2. **Query planning** — if `decompose=true` and an LLM planner is configured, the query is sent to the LLM planner which returns 1–3 sub-queries as a JSON array. The list is capped to `MAX_SUBQUERIES`. If planning fails, the original query is used.
 
-3. **URL discovery** — each sub-query is dispatched concurrently to SearXNG (`GET /search?q=...`). Results from all sub-queries are merged and deduplicated by URL, preserving the highest score for each URL. `stats.urls_discovered` is set.
+3. **URL discovery** — each sub-query is dispatched concurrently to SearXNG (`GET /search?q=...`). Results from all sub-queries are merged and deduplicated by URL, preserving the highest score for each URL. SearXNG's `unresponsive_engines` entries are retained in `stats`. Usable results with reported engine failures set `stats.discovery_status=degraded`; reported failures with no usable results set it to `unavailable` and return `reason=search_provider_unavailable`. A response with no results and no reported engine failures remains `reason=no_results_from_discovery`. `stats.urls_discovered` is set.
 
 4. **URL safety filter** — each discovered URL is checked against the `UrlSafetyPolicy`: the hostname is resolved, all returned IPs are checked against blocked categories and special IPs, and IPv6 addresses are expanded to find embedded IPv4 equivalents. Unsafe URLs are dropped silently.
 

@@ -11,6 +11,18 @@ class DiscoveryResult:
     score: float
 
 
+@dataclass(frozen=True)
+class DiscoveryEngineFailure:
+    engine: str
+    reason: str
+
+
+@dataclass
+class DiscoveryOutcome:
+    results: list[DiscoveryResult]
+    unresponsive_engines: list[DiscoveryEngineFailure]
+
+
 @dataclass
 class Page:
     url: str

@@ -102,6 +102,23 @@
           "title": "Sub Queries",
           "type": "array"
         },
+        "discovery_status": {
+          "default": "ok",
+          "enum": [
+            "ok",
+            "degraded",
+            "unavailable"
+          ],
+          "title": "Discovery Status",
+          "type": "string"
+        },
+        "unresponsive_engines": {
+          "items": {
+            "$ref": "#/$defs/UnresponsiveEngine"
+          },
+          "title": "Unresponsive Engines",
+          "type": "array"
+        },
         "urls_discovered": {
           "default": 0,
           "title": "Urls Discovered",
@@ -271,6 +288,7 @@
           "anyOf": [
             {
               "enum": [
+                "search_provider_unavailable",
                 "no_results_from_discovery",
                 "no_urls_after_selection",
                 "all_crawls_failed",
@@ -288,6 +306,24 @@
         }
       },
       "title": "SearchStats",
+      "type": "object"
+    },
+    "UnresponsiveEngine": {
+      "properties": {
+        "engine": {
+          "title": "Engine",
+          "type": "string"
+        },
+        "reason": {
+          "title": "Reason",
+          "type": "string"
+        }
+      },
+      "required": [
+        "engine",
+        "reason"
+      ],
+      "title": "UnresponsiveEngine",
       "type": "object"
     },
     "UrlDiagnostic": {

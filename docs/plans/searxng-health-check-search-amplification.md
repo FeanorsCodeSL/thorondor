@@ -4,7 +4,7 @@
 Stop Thorondor health monitoring from generating public web searches, distinguish upstream search-engine failure from a genuine empty result, and verify the correction before deploying immutable Thorondor images to the demo Spark.
 
 ## Current status
-The issue was reproduced on both Sparks 1 and Sparks 2 during demo preparation on 2026-07-31. Phase 1 implementation and offline verification completed locally on 2026-08-05. Live-container verification remains pending, so the phase is still in progress. Phases 2-4 have not started.
+The issue was reproduced on both Sparks 1 and Sparks 2 during demo preparation on 2026-07-31. Phase 1 implementation and offline verification completed locally on 2026-08-05. Live-container verification remains pending, so the phase is still in progress. Phase 2 is completed. Phases 3-5 have not started.
 
 ## Problem
 The orchestrator Docker health check calls `GET /healthz` every 30 seconds. The SearXNG dependency probe inside that endpoint calls:
@@ -79,6 +79,11 @@ A high-frequency Docker liveness or readiness probe must never perform the synth
 - `docs/architecture/pipeline-workflow.md` - documents the current health flow.
 - `docs/architecture/deployment.md` - uses `/healthz` as a deployment and monitoring gate.
 - `README.md` - documents the public health and search response contracts.
+- `pyproject.toml` and `uv.lock` - define and lock the Python CLI dependencies.
+- `orchestrator/requirements*.txt` and `semantic-chunking-service/requirements*.txt` - pin service runtime and development dependencies.
+- Service Dockerfiles and Compose files - define base images and runtime service images.
+- `thorondor_cli/assets/` - packages deployment manifests that must stay synchronized with the repository manifests.
+- `.github/workflows/publish-images.yml` - defines image build and publication dependencies.
 
 ## Build & run
 
@@ -135,23 +140,42 @@ A high-frequency Docker liveness or readiness probe must never perform the synth
 
 ## Phase 2 - Report search-provider degradation accurately
 
-**Status:** pending
+**Status:** completed
 **Kind:** logic
 
 ### Tasks
 
-- [ ] Parse and evaluate SearXNG's `unresponsive_engines` field.
-- [ ] Define a structured result that distinguishes a healthy empty search from partial engine degradation and complete discovery unavailability.
-- [ ] Prevent upstream engine failures from collapsing silently into `no_results_from_discovery`.
-- [ ] Preserve equivalent failure semantics for the REST and MCP interfaces.
-- [ ] Add tests for HTTP 200 responses with healthy empty results, partially failed engines, and no responsive engines.
-- [ ] Document the new response reason or error contract.
+- [x] Parse and evaluate SearXNG's `unresponsive_engines` field.
+- [x] Define a structured result that distinguishes a healthy empty search from partial engine degradation and complete discovery unavailability.
+- [x] Prevent upstream engine failures from collapsing silently into `no_results_from_discovery`.
+- [x] Preserve equivalent failure semantics for the REST and MCP interfaces.
+- [x] Add tests for HTTP 200 responses with healthy empty results, partially failed engines, and failed engines with no usable results.
+- [x] Document the new response reason or error contract.
+
+### Implementation report
+
+- Added an internal `DiscoveryOutcome` carrying both usable results and SearXNG engine failures.
+- Parsed SearXNG's `[engine, reason]` entries and propagated them through concurrent sub-query discovery.
+- Added `stats.discovery_status` with `ok`, `degraded`, and `unavailable` states plus structured `stats.unresponsive_engines` entries.
+- Kept healthy empty searches as `no_results_from_discovery`; engine failures with no usable results now return `search_provider_unavailable`.
+- Preserved usable results during partial engine degradation and exposed the same structured response through REST and MCP.
+- Updated the response schema golden file, README, MCP contract text, and architecture flow documentation.
 
 ### Verification
 
-- [ ] Prove that a healthy SearXNG response with no matches remains a genuine empty result.
-- [ ] Prove that HTTP 200 with failed or suspended engines is surfaced as degraded or unavailable.
-- [ ] Prove that REST and MCP callers receive equivalent structured outcomes.
+- [x] Prove that a healthy SearXNG response with no matches remains a genuine empty result.
+- [x] Prove that HTTP 200 with failed or suspended engines is surfaced as degraded or unavailable.
+- [x] Prove that REST and MCP callers receive equivalent structured outcomes.
+
+### Verification report
+
+- Focused client, pipeline, model, REST/MCP parity, and investigation tests: 85 passed with three upstream deprecation warnings.
+- Complete offline semantic-chunking and orchestrator suites: 260 passed with three upstream deprecation warnings.
+- Healthy empty discovery remained `discovery_status=ok` with `reason=no_results_from_discovery`.
+- Partial engine failure retained usable passages with `discovery_status=degraded`; failed engines with no usable results returned `discovery_status=unavailable` and `reason=search_provider_unavailable`.
+- REST and MCP responses matched for both new degradation outcomes.
+- Production Compose configuration validation and `git diff --check` passed.
+- Separate code inspection found no Phase 2 defect requiring correction.
 
 ## Phase 3 - Make external discovery reliable
 
@@ -194,6 +218,46 @@ A high-frequency Docker liveness or readiness probe must never perform the synth
 - [ ] Confirm local dependency loss is still visible through readiness.
 - [ ] Run one controlled domain-constrained search and verify that it returns cited evidence or an explicit provider-degradation response.
 - [ ] Confirm Sparks 1 contains runtime images and configuration only, with no Thorondor source or test tree.
+
+## Phase 5 - Review and update dependencies
+
+**Status:** pending
+**Kind:** logic
+
+### Part A - Produce an update inventory for approval
+
+#### Tasks
+
+- [ ] Inventory every direct and transitive Python dependency in `pyproject.toml`, `uv.lock`, and the runtime and development requirement files for each service.
+- [ ] Inventory every base, build, and runtime image referenced by Dockerfiles, Compose manifests, environment examples, packaged CLI assets, and publication workflows, including SearXNG, Crawl4AI, TEI, llama.cpp, and first-party Thorondor images.
+- [ ] Inventory externally versioned model artifacts, build actions, and deployment tooling that form part of the reproducible stack.
+- [ ] For each dependency, record the current immutable version or digest, the latest stable candidate, release date, authoritative changelog or security notice, license impact, architecture support, and every synchronized reference that would need to change.
+- [ ] Organize available updates into low-, medium-, and high-risk groups with a concrete compatibility and operational rationale for each item.
+- [ ] Present a no-change review list and wait for the user's explicit approval of individual updates or named groups.
+
+#### Verification
+
+- [ ] Cross-check the inventory against manifests, lock files, Dockerfiles, environment examples, packaged assets, and build workflows so no dependency surface is omitted.
+- [ ] Verify candidate versions, digests, release notes, security advisories, licenses, and supported architectures from authoritative upstream sources.
+- [ ] Confirm that Part A changes no dependency pin, lock entry, image reference, model artifact, source file, or deployment configuration.
+
+### Part B - Apply only approved updates
+
+#### Tasks
+
+- [ ] Record the explicitly approved update set and retain rejected or deferred items unchanged.
+- [ ] Update only approved Python pins, lock entries, image references, model artifacts, packaged assets, examples, and related license or provenance documentation.
+- [ ] Keep duplicated manifests and packaged CLI assets synchronized, and use immutable image digests whenever the registry provides them.
+- [ ] Apply updates in reviewable logical batches with a clear rollback boundary and no unrelated refactoring.
+- [ ] Preserve SearXNG as an unmodified third-party dependency and preserve existing REST and MCP contracts unless a separately approved update requires a documented compatibility change.
+
+#### Verification
+
+- [ ] Run focused tests appropriate to every approved update, then run the complete offline test suite.
+- [ ] Validate every supported Compose profile, including bundled models, llama.cpp, and production image deployments.
+- [ ] Build affected first-party images when an approved dependency or base-image update changes their contents.
+- [ ] Verify resolved image digests, supported architectures, model checksums, and license/provenance records for updated artifacts.
+- [ ] Run live smoke checks only after separate deployment authorization, and report the applied versions, exact verification results, deferred updates, and residual risks.
 
 ## Acceptance criteria
 

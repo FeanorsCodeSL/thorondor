@@ -288,6 +288,10 @@ curl -s -X POST http://localhost:8080/v1/search \
   ],
   "stats": {
     "sub_queries": ["..."],
+    "discovery_status": "degraded",
+    "unresponsive_engines": [
+      { "engine": "mojeek", "reason": "access denied" }
+    ],
     "urls_discovered": 18,
     "urls_selected": 6,
     "urls_crawled_ok": 5,
@@ -307,12 +311,14 @@ Key `stats` fields:
 
 | Field | Meaning |
 |---|---|
+| `discovery_status` | `ok` when SearXNG reports no engine failures, `degraded` when results remain usable despite failed engines, or `unavailable` when engine failures leave no usable discovery results. |
+| `unresponsive_engines` | SearXNG engine names and reported failure or suspension reasons. |
 | `reranked` | `false` when the reranker was unreachable; passages are still returned sorted by position. |
-| `reason` | Non-null closed enum when the search ended before normal assembly: `no_results_from_discovery`, `no_urls_after_selection`, `all_crawls_failed`, `no_chunks_after_dedup`, `no_chunks_after_rerank`. |
+| `reason` | Non-null closed enum when the search ended before normal assembly: `search_provider_unavailable`, `no_results_from_discovery`, `no_urls_after_selection`, `all_crawls_failed`, `no_chunks_after_dedup`, `no_chunks_after_rerank`. |
 | `embedding_degraded` | `true` when the chunker fell back to token-based splitting because embeddings failed. |
 | `url_diagnostics` | Per-URL selection decisions (populated when `include_raw_markdown` is true or the investigation smoke test is used). |
 
-An empty-passage response with `stats.reason` set is a normal 200, not an error. The caller should read `reason` rather than interpreting `passages.length == 0` alone.
+An empty-passage response with `stats.reason` set is a normal 200, not an error. The caller should read `reason` rather than interpreting `passages.length == 0` alone. `search_provider_unavailable` means SearXNG reported at least one failed engine and returned no usable discovery results; a healthy empty search remains `no_results_from_discovery`.
 
 `POST /search` is a backwards-compatible alias for `POST /v1/search`.
 

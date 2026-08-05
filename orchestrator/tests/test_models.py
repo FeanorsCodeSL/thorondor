@@ -52,11 +52,14 @@ def test_search_stats_defaults():
     assert stats.reranked is False
     assert stats.reason is None
     assert stats.sub_queries == []
+    assert stats.discovery_status == "ok"
+    assert stats.unresponsive_engines == []
 
 
 def test_reason_codes_are_closed():
     stats = SearchStats(reason="no_urls_after_selection")
     stats.reason = "all_crawls_failed"
+    stats.reason = "search_provider_unavailable"
 
     with pytest.raises(ValidationError):
         SearchStats(reason="not_a_reason")

@@ -10,12 +10,14 @@ MAX_PASSAGES = 50
 
 SearchProfile = Literal["quick", "research", "deep"]
 ReasonCode = Literal[
+    "search_provider_unavailable",
     "no_results_from_discovery",
     "no_urls_after_selection",
     "all_crawls_failed",
     "no_chunks_after_dedup",
     "no_chunks_after_rerank",
 ]
+DiscoveryStatus = Literal["ok", "degraded", "unavailable"]
 
 
 class Passage(BaseModel):
@@ -49,10 +51,17 @@ class RawMarkdown(BaseModel):
     markdown: str
 
 
+class UnresponsiveEngine(BaseModel):
+    engine: str
+    reason: str
+
+
 class SearchStats(BaseModel):
     model_config = ConfigDict(validate_assignment=True)
 
     sub_queries: list[str] = Field(default_factory=list)
+    discovery_status: DiscoveryStatus = "ok"
+    unresponsive_engines: list[UnresponsiveEngine] = Field(default_factory=list)
     urls_discovered: int = 0
     urls_selected: int = 0
     url_diagnostics: list[UrlDiagnostic] = Field(default_factory=list)

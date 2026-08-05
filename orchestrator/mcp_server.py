@@ -101,8 +101,10 @@ async def web_search(
     Returns:
         A versioned response envelope with `query`, `passages`, `citations`,
         `stats`, optional `raw_markdown`, and `schema_version`. Each passage has
-        `text`, `score`, `token_count`, and `citation_id`; `stats.reason` is a
-        closed enum when the call returns an empty/degraded 200 response.
+        `text`, `score`, `token_count`, and `citation_id`;
+        `stats.discovery_status` and `stats.unresponsive_engines` report search
+        engine degradation, while `stats.reason` is a closed enum when the call
+        returns an empty 200 response.
     """
     request_data = {
         "query": query,
