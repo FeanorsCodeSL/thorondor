@@ -4,7 +4,7 @@
 Stop Thorondor health monitoring from generating public web searches, distinguish upstream search-engine failure from a genuine empty result, and verify the correction before deploying immutable Thorondor images to the demo Spark.
 
 ## Current status
-The issue was reproduced on both Sparks 1 and Sparks 2 during demo preparation on 2026-07-31. Phase 1 implementation and offline verification completed locally on 2026-08-05. Live-container verification remains pending, so the phase is still in progress. Phase 2 is completed. Phases 3-5 have not started.
+The issue was reproduced on both Sparks 1 and Sparks 2 during demo preparation on 2026-07-31. Phase 1 implementation and offline verification completed locally on 2026-08-05. Live-container verification remains pending, so the phase is still in progress. Phase 2 is completed. Phase 3 is pending. Phase 4 Part A is completed and awaiting the user's update selection; Part B has not started.
 
 ## Problem
 The orchestrator Docker health check calls `GET /healthz` every 30 seconds. The SearXNG dependency probe inside that endpoint calls:
@@ -84,6 +84,7 @@ A high-frequency Docker liveness or readiness probe must never perform the synth
 - Service Dockerfiles and Compose files - define base images and runtime service images.
 - `thorondor_cli/assets/` - packages deployment manifests that must stay synchronized with the repository manifests.
 - `.github/workflows/publish-images.yml` - defines image build and publication dependencies.
+- `docs/reviews/dependency-update-inventory-2026-08-05.md` - records the Phase 4 Part A update candidates, risk classification, synchronized references, and verification evidence.
 
 ## Build & run
 
@@ -177,27 +178,7 @@ A high-frequency Docker liveness or readiness probe must never perform the synth
 - Production Compose configuration validation and `git diff --check` passed.
 - Separate code inspection found no Phase 2 defect requiring correction.
 
-## Phase 3 - Make external discovery reliable
-
-**Status:** pending
-**Kind:** logic
-
-### Tasks
-
-- [ ] Evaluate an explicitly configured API-backed search provider for reliable demo and production discovery.
-- [ ] Keep provider credentials in runtime secrets and retain SearXNG as an unmodified, opaque third-party dependency.
-- [ ] Ensure caller-supplied domain constraints use the existing structured `domains` input.
-- [ ] Define an explicit retry or fallback policy for freshness-constrained searches.
-- [ ] Do not silently remove a user's domain or freshness constraint to obtain results.
-- [ ] Require an explicit evidence-unavailable outcome when discovery cannot provide sources.
-
-### Verification
-
-- [ ] Exercise a controlled `reddit.com` domain-constrained search through both REST and MCP.
-- [ ] Exercise the same query with and without a freshness constraint and verify the response reports any constraint-related failure accurately.
-- [ ] Confirm successful responses contain usable source URLs and unsuccessful responses do not imply that the requested information does not exist.
-
-## Phase 4 - Deploy and verify the correction
+## Phase 3 - Deploy and verify the correction
 
 **Status:** pending
 **Kind:** logic
@@ -219,27 +200,37 @@ A high-frequency Docker liveness or readiness probe must never perform the synth
 - [ ] Run one controlled domain-constrained search and verify that it returns cited evidence or an explicit provider-degradation response.
 - [ ] Confirm Sparks 1 contains runtime images and configuration only, with no Thorondor source or test tree.
 
-## Phase 5 - Review and update dependencies
+## Phase 4 - Review and update dependencies
 
-**Status:** pending
+**Status:** in_progress
 **Kind:** logic
 
 ### Part A - Produce an update inventory for approval
 
 #### Tasks
 
-- [ ] Inventory every direct and transitive Python dependency in `pyproject.toml`, `uv.lock`, and the runtime and development requirement files for each service.
-- [ ] Inventory every base, build, and runtime image referenced by Dockerfiles, Compose manifests, environment examples, packaged CLI assets, and publication workflows, including SearXNG, Crawl4AI, TEI, llama.cpp, and first-party Thorondor images.
-- [ ] Inventory externally versioned model artifacts, build actions, and deployment tooling that form part of the reproducible stack.
-- [ ] For each dependency, record the current immutable version or digest, the latest stable candidate, release date, authoritative changelog or security notice, license impact, architecture support, and every synchronized reference that would need to change.
-- [ ] Organize available updates into low-, medium-, and high-risk groups with a concrete compatibility and operational rationale for each item.
-- [ ] Present a no-change review list and wait for the user's explicit approval of individual updates or named groups.
+- [x] Inventory every direct and transitive Python dependency in `pyproject.toml`, `uv.lock`, and the runtime and development requirement files for each service.
+- [x] Inventory every base, build, and runtime image referenced by Dockerfiles, Compose manifests, environment examples, packaged CLI assets, and publication workflows, including SearXNG, Crawl4AI, TEI, llama.cpp, and first-party Thorondor images.
+- [x] Inventory externally versioned model artifacts, build actions, and deployment tooling that form part of the reproducible stack.
+- [x] For each dependency, record the current immutable version or digest, the latest stable candidate, release date, authoritative changelog or security notice, license impact, architecture support, and every synchronized reference that would need to change.
+- [x] Organize available updates into low-, medium-, and high-risk groups with a concrete compatibility and operational rationale for each item.
+- [x] Present a no-change review list and wait for the user's explicit approval of individual updates or named groups.
 
 #### Verification
 
-- [ ] Cross-check the inventory against manifests, lock files, Dockerfiles, environment examples, packaged assets, and build workflows so no dependency surface is omitted.
-- [ ] Verify candidate versions, digests, release notes, security advisories, licenses, and supported architectures from authoritative upstream sources.
-- [ ] Confirm that Part A changes no dependency pin, lock entry, image reference, model artifact, source file, or deployment configuration.
+- [x] Cross-check the inventory against manifests, lock files, Dockerfiles, environment examples, packaged assets, and build workflows so no dependency surface is omitted.
+- [x] Verify candidate versions, digests, release notes, security advisories, licenses, and supported architectures from authoritative upstream sources.
+- [x] Confirm that Part A changes no dependency pin, lock entry, image reference, model artifact, source file, or deployment configuration.
+
+#### Part A report
+
+- Added `docs/reviews/dependency-update-inventory-2026-08-05.md` with individually selectable low-, medium-, and high-risk update identifiers plus an explicit no-update list.
+- Recorded all direct requirements, all 46 third-party CLI lock entries, the exact transitive packages installed in the running orchestrator and chunker images, and the unpinned service-development resolver results.
+- Audited the runtime requirements: `mcp 1.27.2` has `PYSEC-2026-3483`, fixed in `1.28.1`; the deprecated affected WebSocket server transport is not used by Thorondor. The chunker requirements had no known advisory.
+- Resolved the current and candidate OCI digests and architectures for SearXNG, Crawl4AI, TEI, llama.cpp, and the Python base image from their registries.
+- Found two existing documentation errors: the pinned Crawl4AI manifest includes ARM64, while the pinned TEI manifest is AMD64-only.
+- Confirmed that Part A changed only the plan and its review artifact. No dependency, image, model, workflow, container, or deployment was changed.
+- Part B remains blocked on the user's explicit approval of individual identifiers or named groups.
 
 ### Part B - Apply only approved updates
 
@@ -274,6 +265,7 @@ A high-frequency Docker liveness or readiness probe must never perform the synth
 ## Operational constraints
 
 - No recurring health probe may generate public web traffic.
+- Do not add a hosted search API, search-provider API key, or other vendor-operated discovery dependency; web discovery remains self-hosted through SearXNG invoking public search engines.
 - Do not patch or redistribute modified SearXNG source as part of this fix.
 - Do not assume a container restart clears an upstream IP restriction.
 - Do not hide provider failures behind a successful HTTP status or an empty result.
