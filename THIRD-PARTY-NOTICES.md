@@ -10,11 +10,11 @@ own generated SBOM for the exact artifacts they ship.
 
 | Component | Runtime reference | License | Upstream |
 |---|---|---|---|
-| SearXNG | `searxng/searxng@sha256:02d441bbb647b7be422d21041420115cddadac4644368f67c7c7f407bbe72e22` | AGPL-3.0 | https://github.com/searxng/searxng |
-| Crawl4AI | `unclecode/crawl4ai@sha256:b243f684ad20f71ee108ab3fc3f31f3349eb5b31a9947b9e563d868417141aad` | Apache-2.0 | https://github.com/unclecode/crawl4ai |
-| Hugging Face Text Embeddings Inference | `ghcr.io/huggingface/text-embeddings-inference@sha256:b3e0169969c0dc4b22ab6bf6ad5699374d4cb720fc43fb66868a679586ea806f` | Apache-2.0 | https://github.com/huggingface/text-embeddings-inference |
-| llama.cpp server | `ghcr.io/ggml-org/llama.cpp:server@sha256:4c52f549b6612fc1b4aee696c4cfb4a9dceecb10216bb7e677cf97db909e1b4a` | MIT | https://github.com/ggml-org/llama.cpp |
-| Python base image | `python:3.13-slim` | Python Software Foundation License + bundled OS package licenses | https://hub.docker.com/_/python |
+| SearXNG | `searxng/searxng@sha256:f4c8e59de166ed71f6380c0847c312ca51f0d41996e31d0559163b6b09ecde52` | AGPL-3.0 | https://github.com/searxng/searxng |
+| Crawl4AI | `unclecode/crawl4ai@sha256:bd36741e7bdd35ddc1a05d9183e1d6d8cefb61dd640d944a25d026b76e917690` | Apache-2.0 | https://github.com/unclecode/crawl4ai |
+| Hugging Face Text Embeddings Inference | revision `4150561`, `ghcr.io/huggingface/text-embeddings-inference@sha256:af92a3852c965393cbdd111865c3a72445d2b430c7daf84269ffdb5cf178f4eb` | Apache-2.0 | https://github.com/huggingface/text-embeddings-inference |
+| llama.cpp server | build `b10276`, `ghcr.io/ggml-org/llama.cpp:server@sha256:bde659bfc300ee7d4d2e558e8a97e06211bc2bf079e31d22b61497f4f2cd85b1` | MIT | https://github.com/ggml-org/llama.cpp |
+| Python base image | `python:3.13-slim@sha256:bf503bb2243c5aad0aa951544dd60d165f992646441d35dea90893703fc26251` | Python Software Foundation License + bundled OS package licenses | https://hub.docker.com/_/python |
 
 ### SearXNG — AGPL-3.0 notice
 
@@ -57,20 +57,19 @@ MIT license: https://github.com/ggml-org/llama.cpp/blob/master/LICENSE
 
 | Package | Version | License | SPDX | Used by |
 |---|---:|---|---|---|
-| FastAPI | 0.136.3 | MIT | MIT | orchestrator, chunker |
-| Uvicorn | 0.49.0 | BSD-3-Clause | BSD-3-Clause | orchestrator, chunker |
+| FastAPI | 0.141.1 | MIT | MIT | orchestrator, chunker |
+| Uvicorn | 0.52.1 | BSD-3-Clause | BSD-3-Clause | orchestrator, chunker |
 | httpx | 0.28.1 | BSD-3-Clause | BSD-3-Clause | orchestrator, chunker |
 | Pydantic | 2.13.4 | MIT | MIT | orchestrator, chunker |
-| MCP Python SDK | 1.27.2 | MIT | MIT | orchestrator MCP surface, `thorondor-mcp` |
-| Textual | 8.2.7 | MIT | MIT | `thorondor` Textual configurator |
+| MCP Python SDK | 2.0.0 | MIT | MIT | orchestrator MCP surface, `thorondor-mcp` |
+| Textual | 8.2.8 | MIT | MIT | `thorondor` Textual configurator |
 | Rich | 15.0.0 | MIT | MIT | CLI and TUI formatting |
-| Trafilatura | 2.1.0 | Apache-2.0 | Apache-2.0 | orchestrator HTML-to-Markdown extraction |
-| NumPy | 2.4.6 | BSD-3-Clause + bundled permissive notices | BSD-3-Clause | chunker |
+| Trafilatura | 2.2.0 | Apache-2.0 | Apache-2.0 | orchestrator HTML-to-Markdown extraction |
+| NumPy | 2.5.1 | BSD-3-Clause + bundled permissive notices | BSD-3-Clause | chunker |
 
-Transitive Python dependencies are resolved by pip from the pinned direct
-requirements listed in `orchestrator/requirements.txt` and
-`semantic-chunking-service/requirements.txt`. Generate a full lockfile or SBOM
-before publishing a binary distribution.
+Transitive Python dependencies are installed from the runtime and development
+lock files beside each service's direct requirement files. Generate an SBOM for
+the exact binary or container artifact before distribution.
 
 ### FastAPI — MIT
 
@@ -140,9 +139,11 @@ GGUF model files placed under `models/` are not part of this repository and
 are not licensed by this project. Operators are responsible for complying with
 the license terms of any model weights they download and use.
 
-Reference model licenses at the time of documentation:
+Reference model provenance at the time of documentation:
 
-| Model | HuggingFace Hub | License |
-|---|---|---|
-| BAAI/bge-m3 | https://huggingface.co/BAAI/bge-m3 | MIT |
-| BAAI/bge-reranker-v2-m3 | https://huggingface.co/BAAI/bge-reranker-v2-m3 | Apache-2.0 |
+| Model artifact | Hugging Face revision | SHA-256 | License |
+|---|---|---|---|
+| BAAI/bge-m3 for TEI | `BAAI/bge-m3@5617a9f61b028005a4858fdac845db406aefb181` | Hub-managed files | MIT |
+| BAAI/bge-reranker-v2-m3 for TEI | `BAAI/bge-reranker-v2-m3@953dc6f6f85a1b2dbfca4c34a2796e7dde08d41e` | Hub-managed files | Apache-2.0 |
+| bge-m3 Q8_0 GGUF | `gpustack/bge-m3-GGUF@2d48f1737679ad900d5c26c5aad5410e9c70fdca` | `950f4a8e5e19477a6d3c26d2f162233c20002c601f75e4b002e3239997821167` | MIT (BAAI/bge-m3) |
+| bge-reranker-v2-m3 Q8_0 GGUF | `gpustack/bge-reranker-v2-m3-GGUF@3093af03b1a635e67b084b1d8c03c5f5e020fd05` | `a43c7c9b11a4c1517e5bf95151960e1621d1b72f7a493364b01e386cf1aaa1d3` | Apache-2.0 (BAAI/bge-reranker-v2-m3) |

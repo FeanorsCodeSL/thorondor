@@ -1,9 +1,9 @@
 import anyio
 import pytest
 from fastapi.testclient import TestClient
-import httpx
-from mcp import ClientSession
-from mcp.client.streamable_http import streamablehttp_client
+import httpx2
+from mcp import Client, ClientSession
+from mcp.client.streamable_http import streamable_http_client
 from pydantic import ValidationError
 
 import orchestrator.app as appmod
@@ -40,37 +40,38 @@ def test_streamable_http_initialize_tools_list_and_call_at_public_mcp(monkeypatc
         monkeypatch.setattr(appmod, "deps", deps)
         mcpmod.set_deps(deps)
 
-        def client_factory(base_url):
-            def create(headers=None, timeout=None, auth=None):
-                return httpx.AsyncClient(
-                    transport=httpx.ASGITransport(app=app),
-                    base_url=base_url,
-                    headers=headers,
-                    timeout=timeout,
-                    auth=auth,
-                )
-
-            return create
-
         async with app.router.lifespan_context(app):
             for base_url in ["http://localhost:8000", "http://thorondor:8080"]:
-                create_client = client_factory(base_url)
-                async with create_client() as client:
+                async with httpx2.AsyncClient(
+                    transport=httpx2.ASGITransport(app=app),
+                    base_url=base_url,
+                ) as client:
                     assert (await client.get("/mcp/mcp")).status_code == 404
+                    async with streamable_http_client(
+                        f"{base_url}/mcp",
+                        http_client=client,
+                    ) as (read_stream, write_stream):
+                        async with ClientSession(read_stream, write_stream) as session:
+                            await session.initialize()
+                            tools = await session.list_tools()
+                            assert [tool.name for tool in tools.tools] == ["web_search"]
+                            result = await session.call_tool("web_search", {"query": "x"})
+                            assert result.content
 
-                async with streamablehttp_client(
-                    f"{base_url}/mcp",
-                    httpx_client_factory=create_client,
-                ) as (read_stream, write_stream, _get_session_id):
-                    async with ClientSession(read_stream, write_stream) as session:
-                        await session.initialize()
-                        tools = await session.list_tools()
+                    async with Client(
+                        streamable_http_client(
+                            f"{base_url}/mcp",
+                            http_client=client,
+                        )
+                    ) as modern_client:
+                        assert modern_client.protocol_version == "2026-07-28"
+                        tools = await modern_client.list_tools()
                         assert [tool.name for tool in tools.tools] == ["web_search"]
-                        result = await session.call_tool("web_search", {"query": "x"})
+                        result = await modern_client.call_tool("web_search", {"query": "x"})
                         assert result.content
 
-            async with httpx.AsyncClient(
-                transport=httpx.ASGITransport(app=app),
+            async with httpx2.AsyncClient(
+                transport=httpx2.ASGITransport(app=app),
                 base_url="http://evil.test:8080",
             ) as client:
                 assert (await client.post("/mcp", json={})).status_code == 421
@@ -103,6 +104,16 @@ def test_streamable_http_initialize_tools_list_and_call_at_public_mcp(monkeypatc
             fakes.deps(discovery=fakes.EmptyDiscovery()),
         ),
         (
+            "partial search provider degradation",
+            {"query": "x"},
+            fakes.deps(discovery=fakes.DegradedDiscovery()),
+        ),
+        (
+            "search provider unavailable",
+            {"query": "x"},
+            fakes.deps(discovery=fakes.UnavailableDiscovery()),
+        ),
+        (
             "degraded crawl reason",
             {"query": "x"},
             fakes.deps(extractor=fakes.EmptyExtractor()),
@@ -131,4 +142,6 @@ def test_rest_mcp_parity_over_fake_dependency_cases(monkeypatch, name, request_j
     rest = TestClient(appmod.app).post("/search", json=request_json).json()
     mcp = anyio.run(lambda: mcpmod.web_search(**request_json))
 
+    rest["stats"]["elapsed_ms"] = 0
+    mcp["stats"]["elapsed_ms"] = 0
     assert mcp == rest, name

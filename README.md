@@ -32,7 +32,7 @@ All inter-service traffic travels over an internal Compose network. Crawl4AI's o
 
 | Path | Type | Description |
 |---|---|---|
-| `orchestrator/` | service | FastAPI app: `/v1/search`, `/search` (compat), `/healthz`, MCP `/mcp` |
+| `orchestrator/` | service | FastAPI app: `/v1/search`, `/search` (compat), `/livez`, `/healthz`, MCP `/mcp` |
 | `semantic-chunking-service/` | service | FastAPI chunker: `/chunk`, `/healthz` — ClusterSemanticChunker + OpenAI-compatible embedding client |
 | `thorondor_cli/` | tool | Textual configurator, env/deploy helpers, native `thorondor-mcp` proxy, and harness writers |
 | `ssrf-proxy/` | service | Minimal async HTTP CONNECT proxy that blocks RFC-1918 and embedded-IPv4 IPv6 targets |
@@ -55,7 +55,7 @@ All inter-service traffic travels over an internal Compose network. Crawl4AI's o
 
 - **Docker Desktop** — installed, running, and configured for Linux containers.
 - **GGUF model files** (llama.cpp profile only) — `bge-m3.gguf` and `bge-reranker-v2-m3.gguf` placed under `models/`. Verify model license terms before downloading weights.
-- **Hardware** — tested on Windows 10/11 with Docker Desktop (WSL2 backend) and on ARM64 (NVIDIA DGX Spark). The llama.cpp image is pinned to a SHA known to work on both architectures. GPU acceleration is not required; CPU inference works but is slower.
+- **Hardware** — tested on Windows 10/11 with Docker Desktop (WSL2 backend) and on ARM64 (NVIDIA DGX Spark). The llama.cpp image is pinned to a SHA known to work on both architectures and supports CPU inference. The bundled TEI image requires an AMD64 NVIDIA CUDA host.
 - **PowerShell 7+** for the deploy and smoke scripts. Bash equivalents exist under `scripts/`.
 
 ## Quickstart — Textual Configurator
@@ -77,7 +77,7 @@ thorondor
 ```
 
 The `thorondor` dashboard writes complete `.env` files, can probe endpoints,
-generates `SEARXNG_SECRET` when blank, and drives the existing Compose stack.
+generates `SEARXNG_SECRET` and `CRAWL4AI_API_KEY` when blank, and drives the existing Compose stack.
 The dashboard uses the same keyboard model as the Imladris TUI: `↑/↓` to move
 through the action menu, `Enter` to open a screen, `←/→` to focus the action
 menu or the components table, and `Esc` to back out of a form. The left rail
@@ -98,8 +98,8 @@ status and harness status:
 
 The llama.cpp mode also exposes a `Download models` button (and a `thorondor
 download-models` subcommand for non-interactive use) that fetches the two Q8
-GGUF files from the default HuggingFace sources into `models/` without
-changing the active mode. Both are wired into `scripts/deploy-llamacpp.ps1`
+GGUF files from immutable Hugging Face revisions into `models/` and verifies
+their SHA-256 checksums without changing the active mode. Both are wired into `scripts/deploy-llamacpp.ps1`
 and `scripts/deploy-llamacpp.sh` so a fresh clone can deploy the llamacpp
 profile with no manual file placement.
 
@@ -133,7 +133,7 @@ Copy-Item .env.llamacpp.example .env.llamacpp
 New-Item -ItemType Directory -Force models | Out-Null
 # Copy bge-m3.gguf and bge-reranker-v2-m3.gguf into models\
 
-# 4. Deploy: copies env files, generates SEARXNG_SECRET, validates Compose,
+# 4. Deploy: copies env files, generates internal service secrets, validates Compose,
 #    builds first-party images, starts all services, runs a smoke search
 .\scripts\deploy-llamacpp.ps1
 ```
@@ -181,6 +181,8 @@ Copy-Item .env.example .env
 
 The `bundled-models` profile (TEI containers) is still available if you want to run embedding and reranker inside Docker without GGUF files:
 
+This profile requires an AMD64 host with NVIDIA Container Toolkit GPU access.
+
 ```powershell
 .\scripts\deploy.ps1 -Profile bundled-models
 ```
@@ -205,6 +207,31 @@ docker compose `
 ```
 
 `docker-compose.production.yml` expects Tengwar's external `app-network` and externally managed `embedding` and `reranker` services. It does not start extra model containers.
+
+### Tengwar development integration
+
+For the integrated development stack, run the Tengwar-owned recipe from the
+Tengwar checkout:
+
+```bash
+cd ../Tengwar
+just thorondor-deploy
+```
+
+The recipe builds the three first-party `:local` images from the sibling
+Thorondor checkout when selected, attaches the Thorondor orchestrator and
+chunker to `tengwar-shared`, points them at Tengwar's `embedding` and `reranker`
+services, and waits for Thorondor `/healthz`. It also generates and preserves
+`CRAWL4AI_API_KEY`, which Crawl4AI 0.9.2 requires before accepting network
+traffic. The recipe recreates only the Thorondor Compose project; do not use
+`down -v` or remove the shared network when switching versions.
+
+Use `/livez` for recurring process liveness and `/healthz` for dependency
+readiness. `/livez` performs no dependency or public-web request. Tengwar's MCP
+registry separately pins the discovered `web_search` descriptor checksum and
+withholds the tool when that descriptor changes; reapprove a changed descriptor
+through the admin MCP workflow before expecting `mcp_thorondor_web_search` to be
+exposed.
 
 ## REST API
 
@@ -288,6 +315,10 @@ curl -s -X POST http://localhost:8080/v1/search \
   ],
   "stats": {
     "sub_queries": ["..."],
+    "discovery_status": "degraded",
+    "unresponsive_engines": [
+      { "engine": "mojeek", "reason": "access denied" }
+    ],
     "urls_discovered": 18,
     "urls_selected": 6,
     "urls_crawled_ok": 5,
@@ -307,12 +338,14 @@ Key `stats` fields:
 
 | Field | Meaning |
 |---|---|
+| `discovery_status` | `ok` when SearXNG reports no engine failures, `degraded` when results remain usable despite failed engines, or `unavailable` when engine failures leave no usable discovery results. |
+| `unresponsive_engines` | SearXNG engine names and reported failure or suspension reasons. |
 | `reranked` | `false` when the reranker was unreachable; passages are still returned sorted by position. |
-| `reason` | Non-null closed enum when the search ended before normal assembly: `no_results_from_discovery`, `no_urls_after_selection`, `all_crawls_failed`, `no_chunks_after_dedup`, `no_chunks_after_rerank`. |
+| `reason` | Non-null closed enum when the search ended before normal assembly: `search_provider_unavailable`, `no_results_from_discovery`, `no_urls_after_selection`, `all_crawls_failed`, `no_chunks_after_dedup`, `no_chunks_after_rerank`. |
 | `embedding_degraded` | `true` when the chunker fell back to token-based splitting because embeddings failed. |
 | `url_diagnostics` | Per-URL selection decisions (populated when `include_raw_markdown` is true or the investigation smoke test is used). |
 
-An empty-passage response with `stats.reason` set is a normal 200, not an error. The caller should read `reason` rather than interpreting `passages.length == 0` alone.
+An empty-passage response with `stats.reason` set is a normal 200, not an error. The caller should read `reason` rather than interpreting `passages.length == 0` alone. `search_provider_unavailable` means SearXNG reported at least one failed engine and returned no usable discovery results; a healthy empty search remains `no_results_from_discovery`.
 
 `POST /search` is a backwards-compatible alias for `POST /v1/search`.
 
@@ -345,6 +378,12 @@ The MCP server also supports stdio transport via `python -m orchestrator.mcp_ser
 
 ## Health and Observability
 
+### /livez
+
+`GET /livez` is the process-only liveness endpoint used by the orchestrator
+container health check. It returns `{"status":"ok"}` without probing SearXNG or
+any other dependency.
+
 ### /healthz
 
 ```json
@@ -362,7 +401,12 @@ The MCP server also supports stdio transport via `python -m orchestrator.mcp_ser
 }
 ```
 
-`status` is `"degraded"` if any dependency probe fails. `hard_failures` lists `searxng` or `chunker` — either alone causes `SearchDependencyUnavailable` (503). `degraded_dependencies` lists `crawl4ai`, `embedding`, and `reranker`; the pipeline tolerates their absence with reduced quality.
+`GET /healthz` is the dependency-readiness endpoint. `status` is `"degraded"`
+if any dependency probe fails. The SearXNG probe calls its local `/healthz`
+endpoint and never performs a public search. `hard_failures` lists `searxng` or
+`chunker` — either alone causes `SearchDependencyUnavailable` (503).
+`degraded_dependencies` lists `crawl4ai`, `embedding`, and `reranker`; the
+pipeline tolerates their absence with reduced quality.
 
 ### X-Request-ID
 
@@ -477,6 +521,7 @@ All keys must be present in `.env` (leave optional keys blank rather than deleti
 |---|---|---|
 | `EMBEDDING_ENDPOINT` | `http://embedding:80` | OpenAI-compatible `/v1/embeddings` server base URL. |
 | `EMBEDDING_MODEL` | `BAAI/bge-m3` | Model name sent in embedding requests. |
+| `EMBEDDING_MODEL_REVISION` | `5617a9f61b028005a4858fdac845db406aefb181` | Immutable Hub revision used by the bundled TEI embedding container. |
 | `EMBEDDING_API_KEY` | _(blank)_ | Optional bearer token for the embedding server. |
 | `EMBEDDING_BATCH_SIZE` | `64` | Texts per embedding API call. |
 | `EMBEDDING_TIMEOUT_S` | `60` | Embedding request timeout in seconds. |
@@ -487,6 +532,7 @@ All keys must be present in `.env` (leave optional keys blank rather than deleti
 |---|---|---|
 | `RERANKER_ENDPOINT` | `http://reranker:80` | Reranker server base URL. |
 | `RERANKER_MODEL` | `BAAI/bge-reranker-v2-m3` | Model name sent in rerank requests. |
+| `RERANKER_MODEL_REVISION` | `953dc6f6f85a1b2dbfca4c34a2796e7dde08d41e` | Immutable Hub revision used by the bundled TEI reranker container. |
 | `RERANKER_PATH` | `/rerank` | Rerank endpoint path. |
 | `RERANKER_HEALTH_PATH` | `/health` | Reranker health endpoint path. |
 | `RERANKER_API_KEY` | _(blank)_ | Optional bearer token for the reranker. |
@@ -557,7 +603,7 @@ All keys must be present in `.env` (leave optional keys blank rather than deleti
 |---|---|---|
 | `SEARXNG_SECRET` | _(blank — generated by deploy script)_ | SearXNG instance secret. Generated by `deploy.ps1`; never commit a real value. |
 | `SEARXNG_API_KEY` | _(blank)_ | Optional bearer token accepted by SearXNG for its JSON API. |
-| `CRAWL4AI_API_KEY` | _(blank)_ | Optional bearer token for the Crawl4AI API. |
+| `CRAWL4AI_API_KEY` | _(blank — generated by deploy script)_ | Bearer token shared by the orchestrator and managed Crawl4AI container. BYO endpoints may leave it blank only when unauthenticated. |
 | `CHUNKER_API_KEY` | _(blank)_ | Optional bearer token for the chunking service. |
 | `RERANKER_API_KEY` | _(blank)_ | Optional bearer token for the reranker. |
 | `EMBEDDING_API_KEY` | _(blank)_ | Optional bearer token for the embedding server (read by chunker). |
@@ -567,7 +613,7 @@ All keys must be present in `.env` (leave optional keys blank rather than deleti
 
 | Variable | Default | Description |
 |---|---|---|
-| `LLAMACPP_IMAGE` | `ghcr.io/ggml-org/llama.cpp:server@sha256:4c52f549...` | Pinned llama.cpp server image SHA. |
+| `LLAMACPP_IMAGE` | `ghcr.io/ggml-org/llama.cpp:server@sha256:bde659bf...` | Pinned llama.cpp build `b10276` server image SHA. |
 | `LLAMACPP_EMBEDDING_MODEL` | `/models/bge-m3.gguf` | Container path to the embedding GGUF (mounted from `./models`). |
 | `LLAMACPP_EMBEDDING_ALIAS` | `bge-m3` | Model alias used in embedding API requests. |
 | `LLAMACPP_EMBEDDING_POOLING` | `cls` | Pooling strategy for the embedding model. |
@@ -583,10 +629,8 @@ All keys must be present in `.env` (leave optional keys blank rather than deleti
 ```powershell
 # Create or activate a Python environment, then install test dependencies
 python -m pip install `
-  -r orchestrator\requirements.txt `
-  -r orchestrator\requirements-dev.txt `
-  -r semantic-chunking-service\requirements.txt `
-  -r semantic-chunking-service\requirements-dev.txt
+  -r orchestrator\requirements-dev.lock `
+  -r semantic-chunking-service\requirements-dev.lock
 
 # Run all tests
 python -m pytest semantic-chunking-service\tests orchestrator\tests -v
@@ -615,6 +659,8 @@ Start Docker Desktop and wait until its system tray icon reports "running". Then
 **Missing GGUF files**
 `deploy-llamacpp.ps1` validates model paths before starting Compose. Either place the files under `models\` matching the paths in `.env.llamacpp`, or edit `.env.llamacpp` to point to your actual filenames.
 
+`thorondor download-models` verifies the pinned SHA-256 for both default GGUF files. On a mismatch it preserves the existing file and exits non-zero; remove or replace that file only after confirming its provenance.
+
 **`embedding=false` in /healthz**
 The chunker is running but cannot reach the embedding server. Check `EMBEDDING_ENDPOINT` in `.env` and verify the embedding container is healthy: `docker compose logs embedding`.
 
@@ -632,6 +678,9 @@ Compose binds the orchestrator to `127.0.0.1` by default. To expose it to anothe
 
 **`SEARXNG_SECRET not set` error**
 Run `.\scripts\deploy.ps1` (or `deploy-llamacpp.ps1`) rather than `docker compose up` directly — the deploy script generates the secret when the field is blank.
+
+**Crawl4AI returns 401 or is unreachable**
+Run the deploy script so `CRAWL4AI_API_KEY` is generated and passed to both services. Crawl4AI 0.9.2 binds only to loopback and creates an ephemeral unknown token when the configured token is blank.
 
 **All crawls failing (`urls_crawled_ok=0`)**
 Check Crawl4AI logs: `docker compose logs crawl4ai`. Common causes: slow network, robots.txt refusals (`CRAWL_RESPECT_ROBOTS_TXT=true`), or proxy misconfiguration. Increase `CRAWL_TIMEOUT_S` for slow sites.

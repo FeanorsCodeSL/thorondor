@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import base64
 import os
+import secrets
 
 
 def generate_searxng_secret() -> str:
@@ -11,3 +12,7 @@ def generate_searxng_secret() -> str:
     return base64.b64encode(os.urandom(32)).decode("ascii").translate(
         str.maketrans("", "", "+/=")
     )
+
+
+def generate_crawl4ai_api_key() -> str:
+    return secrets.token_hex(32)

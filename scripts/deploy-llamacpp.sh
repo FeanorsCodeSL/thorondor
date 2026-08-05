@@ -36,6 +36,7 @@ ensure_env_value() {
 }
 
 ensure_env_value SEARXNG_SECRET
+ensure_env_value CRAWL4AI_API_KEY
 
 read_env_value() {
   local key="$1"

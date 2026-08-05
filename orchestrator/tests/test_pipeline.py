@@ -8,7 +8,14 @@ from orchestrator.clients.searxng_client import DiscoveryUnavailable
 from orchestrator.models import SearchRequest
 from orchestrator.prefilter import CandidatePrefilterImpl
 from orchestrator.pipeline import SearchDependencyUnavailable, run_search
-from orchestrator.types import Chunk, DiscoveryResult, Page, ScoredChunk
+from orchestrator.types import (
+    Chunk,
+    DiscoveryEngineFailure,
+    DiscoveryOutcome,
+    DiscoveryResult,
+    Page,
+    ScoredChunk,
+)
 from orchestrator.url_safety import UrlSafetyPolicy, filter_safe_discovery_results
 
 
@@ -17,10 +24,13 @@ class _StaticDiscovery:
         self.urls = urls
 
     async def search(self, subquery: str, freshness: str | None = None):
-        return [
-            DiscoveryResult(f"T{index}", url, "snip", "fake", 1.0 - (index * 0.01))
-            for index, url in enumerate(self.urls)
-        ]
+        return DiscoveryOutcome(
+            [
+                DiscoveryResult(f"T{index}", url, "snip", "fake", 1.0 - (index * 0.01))
+                for index, url in enumerate(self.urls)
+            ],
+            [],
+        )
 
 
 class _RecordingExtractor:
@@ -38,7 +48,25 @@ class _CountingDiscovery:
 
     async def search(self, subquery: str, freshness: str | None = None):
         self.queries.append(subquery)
-        return [DiscoveryResult(subquery, f"https://{subquery}.test/article", "snip", "fake", 1.0)]
+        return DiscoveryOutcome(
+            [DiscoveryResult(subquery, f"https://{subquery}.test/article", "snip", "fake", 1.0)],
+            [],
+        )
+
+
+class _OutcomeDiscovery:
+    def __init__(self, results, failures):
+        self.results = results
+        self.failures = failures
+
+    async def search(self, subquery: str, freshness: str | None = None):
+        return DiscoveryOutcome(
+            results=self.results,
+            unresponsive_engines=[
+                DiscoveryEngineFailure(engine=engine, reason=reason)
+                for engine, reason in self.failures
+            ],
+        )
 
 
 class _ManyPlanner:
@@ -264,6 +292,35 @@ def test_no_discovery_returns_reason():
     deps = fakes.deps(discovery=fakes.EmptyDiscovery())
     resp = anyio.run(run_search, SearchRequest(query="x"), deps)
     assert resp.passages == [] and resp.stats.reason == "no_results_from_discovery"
+    assert resp.stats.discovery_status == "ok"
+    assert resp.stats.unresponsive_engines == []
+
+
+def test_partial_engine_failure_returns_results_as_degraded():
+    discovery = _OutcomeDiscovery(
+        [DiscoveryResult("A", "https://a.test/article", "snip", "bing", 1.0)],
+        [("mojeek", "access denied")],
+    )
+
+    resp = anyio.run(run_search, SearchRequest(query="x"), fakes.deps(discovery=discovery))
+
+    assert resp.passages
+    assert resp.stats.reason is None
+    assert resp.stats.discovery_status == "degraded"
+    assert [item.model_dump() for item in resp.stats.unresponsive_engines] == [
+        {"engine": "mojeek", "reason": "access denied"}
+    ]
+
+
+def test_engine_failure_without_results_is_provider_unavailable():
+    discovery = _OutcomeDiscovery([], [("qwant", "Suspended: access denied")])
+
+    resp = anyio.run(run_search, SearchRequest(query="x"), fakes.deps(discovery=discovery))
+
+    assert resp.passages == []
+    assert resp.stats.reason == "search_provider_unavailable"
+    assert resp.stats.discovery_status == "unavailable"
+    assert [item.engine for item in resp.stats.unresponsive_engines] == ["qwant"]
 
 
 def test_reranker_down_degrades_not_fails():

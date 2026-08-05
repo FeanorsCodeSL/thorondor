@@ -9,8 +9,20 @@ from .assembly import ResultAssemblerImpl
 from .markdown_cleaner import MarkdownCleanerImpl
 from .prefilter import CandidatePrefilterImpl
 from .selection import SelectionPolicyImpl
-from .types import AssembledCitation, AssembledPassage, Chunk, DiscoveryResult, Page, ScoredChunk
-from .types import PrefilteredChunks
+from .types import (
+    AssembledCitation,
+    AssembledPassage,
+    Chunk,
+    DiscoveryEngineFailure,
+    DiscoveryOutcome,
+    DiscoveryResult,
+    Page,
+    PrefilteredChunks,
+    ScoredChunk,
+)
+
+
+FAKE_ARTICLE_URL = "https://a.test/article"
 
 
 def _fake_extract(html: str, **_kwargs) -> str:
@@ -53,29 +65,53 @@ class FakeDiscovery:
     def __init__(self):
         self.freshness_seen: list[str | None] = []
 
-    async def search(self, _subquery: str, freshness: str | None = None) -> list[DiscoveryResult]:
+    async def search(self, _subquery: str, freshness: str | None = None) -> DiscoveryOutcome:
         await _async_boundary()
         self.freshness_seen.append(freshness)
-        return [
-            DiscoveryResult("A", "https://a.test/article", "snip", "fake", 0.9),
-            DiscoveryResult("B", "https://b.test/article", "snip", "fake", 0.8),
-        ]
+        return DiscoveryOutcome(
+            [
+                DiscoveryResult("A", FAKE_ARTICLE_URL, "snip", "fake", 0.9),
+                DiscoveryResult("B", "https://b.test/article", "snip", "fake", 0.8),
+            ],
+            [],
+        )
 
 
 class EmptyDiscovery:
-    async def search(self, _subquery: str, _freshness: str | None = None) -> list[DiscoveryResult]:
+    async def search(self, _subquery: str, _freshness: str | None = None) -> DiscoveryOutcome:
         await _async_boundary()
-        return []
+        return DiscoveryOutcome([], [])
 
 
 class PartialDiscovery:
-    async def search(self, _subquery: str, _freshness: str | None = None) -> list[DiscoveryResult]:
+    async def search(self, _subquery: str, _freshness: str | None = None) -> DiscoveryOutcome:
         await _async_boundary()
-        return [DiscoveryResult("A", "https://a.test/article", "snip", "fake", 0.9)]
+        return DiscoveryOutcome(
+            [DiscoveryResult("A", FAKE_ARTICLE_URL, "snip", "fake", 0.9)],
+            [],
+        )
+
+
+class DegradedDiscovery:
+    async def search(self, _subquery: str, _freshness: str | None = None) -> DiscoveryOutcome:
+        await _async_boundary()
+        return DiscoveryOutcome(
+            [DiscoveryResult("A", FAKE_ARTICLE_URL, "snip", "bing", 0.9)],
+            [DiscoveryEngineFailure("mojeek", "access denied")],
+        )
+
+
+class UnavailableDiscovery:
+    async def search(self, _subquery: str, _freshness: str | None = None) -> DiscoveryOutcome:
+        await _async_boundary()
+        return DiscoveryOutcome(
+            [],
+            [DiscoveryEngineFailure("qwant", "Suspended: access denied")],
+        )
 
 
 class DownDiscovery:
-    async def search(self, _subquery: str, _freshness: str | None = None) -> list[DiscoveryResult]:
+    async def search(self, _subquery: str, _freshness: str | None = None) -> DiscoveryOutcome:
         await _async_boundary()
         raise DiscoveryUnavailable("down")
 

@@ -126,9 +126,6 @@ def download_models_command(project_dir: str | Path | None = None) -> int:
         else draft.llamacpp_env
     )
     _present, missing = llamacpp_models_status(project.root, values)
-    if not missing:
-        print("All llamacpp model files are already present.")
-        return 0
     for model in missing:
         url = LLAMACPP_MODEL_SOURCES.get(model.filename, "<no default URL>")
         license = LLAMACPP_MODEL_LICENSES.get(model.filename, "see HuggingFace")

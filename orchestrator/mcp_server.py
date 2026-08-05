@@ -2,7 +2,7 @@
 import os
 from typing import Literal
 
-from mcp.server.fastmcp import FastMCP
+from mcp.server.mcpserver import MCPServer
 from mcp.server.transport_security import TransportSecuritySettings
 
 from .models import SearchRequest
@@ -31,16 +31,7 @@ def _csv_env(name: str, default: tuple[str, ...]) -> list[str]:
     return [part.strip() for part in raw.split(",") if part.strip()]
 
 
-mcp = FastMCP(
-    "thorondor",
-    streamable_http_path="/",
-    stateless_http=True,
-    transport_security=TransportSecuritySettings(
-        enable_dns_rebinding_protection=True,
-        allowed_hosts=_csv_env("MCP_ALLOWED_HOSTS", DEFAULT_MCP_ALLOWED_HOSTS),
-        allowed_origins=_csv_env("MCP_ALLOWED_ORIGINS", DEFAULT_MCP_ALLOWED_ORIGINS),
-    ),
-)
+mcp = MCPServer("thorondor")
 deps_override = None
 
 
@@ -101,8 +92,10 @@ async def web_search(
     Returns:
         A versioned response envelope with `query`, `passages`, `citations`,
         `stats`, optional `raw_markdown`, and `schema_version`. Each passage has
-        `text`, `score`, `token_count`, and `citation_id`; `stats.reason` is a
-        closed enum when the call returns an empty/degraded 200 response.
+        `text`, `score`, `token_count`, and `citation_id`;
+        `stats.discovery_status` and `stats.unresponsive_engines` report search
+        engine degradation, while `stats.reason` is a closed enum when the call
+        returns an empty 200 response.
     """
     request_data = {
         "query": query,
@@ -119,6 +112,17 @@ async def web_search(
     request = SearchRequest(**{key: value for key, value in request_data.items() if value is not None})
     response = await run_search(request, _get_deps())
     return response.model_dump()
+
+
+mcp_http_app = mcp.streamable_http_app(
+    streamable_http_path="/",
+    stateless_http=True,
+    transport_security=TransportSecuritySettings(
+        enable_dns_rebinding_protection=True,
+        allowed_hosts=_csv_env("MCP_ALLOWED_HOSTS", DEFAULT_MCP_ALLOWED_HOSTS),
+        allowed_origins=_csv_env("MCP_ALLOWED_ORIGINS", DEFAULT_MCP_ALLOWED_ORIGINS),
+    ),
+)
 
 
 def main() -> None:

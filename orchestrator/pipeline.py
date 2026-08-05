@@ -24,7 +24,16 @@ from .interfaces import (
     SemanticChunker,
 )
 from .merge import merge_dedup
-from .models import Citation, Passage, RawMarkdown, SearchRequest, SearchResponse, SearchStats, UrlDiagnostic
+from .models import (
+    Citation,
+    Passage,
+    RawMarkdown,
+    SearchRequest,
+    SearchResponse,
+    SearchStats,
+    UnresponsiveEngine,
+    UrlDiagnostic,
+)
 from .observability import query_hash
 from .types import DiscoveryResult, Page, ScoredChunk
 from .url_safety import filter_safe_discovery_results, is_safe_crawl_url
@@ -119,7 +128,7 @@ async def _discover_results(
     started: float,
 ) -> list[DiscoveryResult]:
     try:
-        result_sets = await asyncio.gather(
+        outcomes = await asyncio.gather(
             *(deps.discovery.search(query, req.freshness) for query in subqueries)
         )
     except DiscoveryUnavailable as exc:
@@ -127,7 +136,23 @@ async def _discover_results(
         _log_search_summary(req.query, stats, "searxng_unavailable")
         raise SearchDependencyUnavailable("searxng", "searxng_unavailable") from exc
 
-    merged = merge_dedup(result_sets)
+    failures = sorted(
+        {
+            (failure.engine, failure.reason)
+            for outcome in outcomes
+            for failure in outcome.unresponsive_engines
+        }
+    )
+    stats.unresponsive_engines = [
+        UnresponsiveEngine(engine=engine, reason=reason)
+        for engine, reason in failures
+    ]
+    if failures:
+        stats.discovery_status = "degraded"
+
+    merged = merge_dedup([outcome.results for outcome in outcomes])
+    if not merged and failures:
+        stats.discovery_status = "unavailable"
     stats.urls_discovered = len(merged)
     return merged
 
@@ -301,7 +326,12 @@ async def run_search(req: SearchRequest, deps: PipelineDeps) -> SearchResponse:
     merged = await _discover_results(req, deps, stats, subqueries, started)
     if not merged:
         stats.elapsed_ms = _elapsed_ms(started)
-        return _empty_response(req.query, stats, "no_results_from_discovery")
+        reason = (
+            "search_provider_unavailable"
+            if stats.discovery_status == "unavailable"
+            else "no_results_from_discovery"
+        )
+        return _empty_response(req.query, stats, reason)
 
     safe_candidates = deps.url_safety(merged)
     selected = _select_results(req, deps, safe_candidates, max_urls, stats)

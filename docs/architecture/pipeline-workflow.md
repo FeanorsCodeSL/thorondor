@@ -73,10 +73,13 @@ flowchart TD
     E --> F
 
     F -- DiscoveryUnavailable --> FAIL503[503 SearchDependencyUnavailable\ndependency=searxng]
-    F --> G[merge_dedup results]
+    F --> G[merge_dedup results\ncapture unresponsive_engines]
     G --> H{urls_discovered == 0?}
-    H -- yes --> EMPTY1[200 empty\nreason=no_results_from_discovery]
-    H -- no --> I[URL safety filter]
+    H -- yes, engine failures --> EMPTY0[200 empty\ndiscovery_status=unavailable\nreason=search_provider_unavailable]
+    H -- yes, no failures --> EMPTY1[200 empty\ndiscovery_status=ok\nreason=no_results_from_discovery]
+    H -- no, engine failures --> DEG[discovery_status=degraded]
+    H -- no failures --> I[URL safety filter]
+    DEG --> I
 
     I --> J[Domain blocklist + allowlist]
     J --> K[SelectionPolicyImpl\nengine diversity → domain diversity → score]
@@ -111,6 +114,10 @@ flowchart TD
 ```
 
 ## 3. Degraded-Mode Branches
+
+### Search engines degraded
+
+SearXNG returns engine failures and suspension reasons in `unresponsive_engines` even when the HTTP response is 200. The orchestrator preserves these entries in `stats.unresponsive_engines`. If other engines still provide usable results, the pipeline continues with `stats.discovery_status=degraded`. If reported engine failures leave no usable results, the response is an empty 200 with `stats.discovery_status=unavailable` and `stats.reason=search_provider_unavailable`. An empty result with no reported engine failures remains a healthy empty search with `stats.discovery_status=ok` and `stats.reason=no_results_from_discovery`.
 
 ### Reranker unavailable
 
@@ -150,9 +157,16 @@ flowchart LR
 
 A per-URL crawl failure is silent at the URL level — the URL is skipped and `stats.urls_crawled_failed` is incremented. The pipeline continues with whatever pages were successfully crawled. An empty response is only returned when **all** crawls fail.
 
-## 4. Health Check Flow
+## 4. Liveness and Readiness Flow
 
-`GET /healthz` probes all five dependencies concurrently and assembles a single response. No dependency probe is blocking; timeouts are governed by `HEALTHCHECK_TIMEOUT_S`.
+`GET /livez` verifies only that the orchestrator process can serve requests. It
+does not call any dependency and is the endpoint used by the Docker health
+check.
+
+`GET /healthz` probes all five dependencies concurrently and assembles a single
+readiness response. No dependency probe performs a public search. The SearXNG
+probe uses SearXNG's local `/healthz` endpoint, while other probe timeouts are
+governed by `HEALTHCHECK_TIMEOUT_S`.
 
 ```mermaid
 sequenceDiagram
@@ -166,8 +180,8 @@ sequenceDiagram
     Client->>Orchestrator: GET /healthz
 
     par concurrent probes
-        Orchestrator->>SearXNG: GET /search?q=health&format=json (with X-Real-IP header)
-        SearXNG-->>Orchestrator: 200 (or error)
+        Orchestrator->>SearXNG: GET /healthz
+        SearXNG-->>Orchestrator: OK (or error)
     and
         Orchestrator->>Crawl4AI: GET /health
         Crawl4AI-->>Orchestrator: 200 (or error)
@@ -193,7 +207,7 @@ The MCP `web_search` tool is a thin wrapper over the same `run_search` pipeline.
 ```mermaid
 sequenceDiagram
     participant AgentClient as MCP Client (Agent)
-    participant MCPServer as FastMCP (thorondor)
+    participant MCPServer as MCPServer (thorondor)
     participant Pipeline as run_search()
 
     AgentClient->>MCPServer: tools/call web_search {query, search_profile, ...}

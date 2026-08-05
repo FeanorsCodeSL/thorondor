@@ -30,7 +30,7 @@ An unmodified upstream SearXNG Docker image, configured through `searxng/setting
 
 ### Crawl4AI
 
-The public upstream Crawl4AI self-hosted Docker API (`unclecode/crawl4ai@sha256:b243f684...`), consumed over the internal Compose network. The orchestrator submits `POST /crawl` requests to extract page content. Crawl4AI handles JavaScript rendering, robots.txt checking, and returns both raw HTML and Markdown forms of the page content. Thorondor never vendors or patches Crawl4AI source.
+The public upstream Crawl4AI 0.9.2 self-hosted Docker API (`unclecode/crawl4ai@sha256:bd36741e...`), consumed over the internal Compose network. The orchestrator submits `POST /crawl` requests to extract page content. Crawl4AI handles JavaScript rendering, robots.txt checking, and returns both raw HTML and Markdown forms of the page content. Thorondor never vendors or patches Crawl4AI source.
 
 Crawl4AI's outbound HTTP traffic routes through the embedded SSRF egress proxy to block requests to RFC-1918 and embedded-IPv4 IPv6 addresses.
 
@@ -60,7 +60,7 @@ A single search request proceeds as follows:
 
 2. **Query planning** — if `decompose=true` and an LLM planner is configured, the query is sent to the LLM planner which returns 1–3 sub-queries as a JSON array. The list is capped to `MAX_SUBQUERIES`. If planning fails, the original query is used.
 
-3. **URL discovery** — each sub-query is dispatched concurrently to SearXNG (`GET /search?q=...`). Results from all sub-queries are merged and deduplicated by URL, preserving the highest score for each URL. `stats.urls_discovered` is set.
+3. **URL discovery** — each sub-query is dispatched concurrently to SearXNG (`GET /search?q=...`). Results from all sub-queries are merged and deduplicated by URL, preserving the highest score for each URL. SearXNG's `unresponsive_engines` entries are retained in `stats`. Usable results with reported engine failures set `stats.discovery_status=degraded`; reported failures with no usable results set it to `unavailable` and return `reason=search_provider_unavailable`. A response with no results and no reported engine failures remains `reason=no_results_from_discovery`. `stats.urls_discovered` is set.
 
 4. **URL safety filter** — each discovered URL is checked against the `UrlSafetyPolicy`: the hostname is resolved, all returned IPs are checked against blocked categories and special IPs, and IPv6 addresses are expanded to find embedded IPv4 equivalents. Unsafe URLs are dropped silently.
 
@@ -92,7 +92,7 @@ The `llamacpp-models` Compose profile activates two llama.cpp containers that lo
 
 ### (b) Bundled TEI containers profile
 
-The `bundled-models` profile (base `docker-compose.yml`) activates Hugging Face TEI containers for embedding and reranking. The containers download model weights from HuggingFace Hub on first start. GPU acceleration is available if configured in the TEI image. Suitable for deployments where pre-downloading GGUF files is not practical.
+The `bundled-models` profile (base `docker-compose.yml`) activates Hugging Face TEI containers for embedding and reranking. The pinned image is AMD64-only and requires NVIDIA CUDA runtime access. The containers download model weights from the immutable Hub revisions declared in `.env` on first start. This profile is suitable for AMD64 NVIDIA deployments where pre-downloading GGUF files is not practical.
 
 ### (c) BYO remote endpoints
 
@@ -100,7 +100,7 @@ Set `EMBEDDING_ENDPOINT`, `RERANKER_ENDPOINT`, and optionally `LLM_ENDPOINT` to 
 
 ### (d) ARM64 / DGX Spark
 
-The llama.cpp image is pinned to a specific SHA (`4c52f549...`) that is verified to build for both `linux/amd64` and `linux/arm64`. On ARM64 hosts the same `deploy-llamacpp.ps1` command applies with the same env files. The TEI image pin is also a multi-arch manifest. There are no known ARM64-specific caveats in the Thorondor first-party code.
+The llama.cpp build `b10276` image is pinned to a specific SHA (`bde659bf...`) that is verified for both `linux/amd64` and `linux/arm64`. On ARM64 hosts the same `deploy-llamacpp.ps1` command applies with the same env files. The pinned TEI revision `4150561` is AMD64-only, so the bundled-models profile is not supported natively on ARM64. The Thorondor first-party code itself remains architecture-independent.
 
 ## 5. Extension Points
 

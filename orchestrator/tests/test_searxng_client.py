@@ -21,7 +21,8 @@ def test_parses_searxng_json_and_freshness(monkeypatch):
 
     out = anyio.run(SearxngDiscovery("http://searxng:8080").search, "q", "week")
 
-    assert out[0].url == "https://a.test" and out[0].engine == "brave"
+    assert out.results[0].url == "https://a.test" and out.results[0].engine == "brave"
+    assert out.unresponsive_engines == []
     assert "time_range=week" in seen["query"]
 
 
@@ -48,8 +49,44 @@ def test_zero_scores_fall_back_to_rank_order(monkeypatch):
 
     out = anyio.run(SearxngDiscovery("http://searxng:8080").search, "q")
 
-    assert [item.url for item in out] == ["https://first.test", "https://second.test", "https://third.test"]
-    assert [item.score for item in out] == [1.0, 0.5, 1 / 3]
+    assert [item.url for item in out.results] == [
+        "https://first.test",
+        "https://second.test",
+        "https://third.test",
+    ]
+    assert [item.score for item in out.results] == [1.0, 0.5, 1 / 3]
+
+
+def test_parses_unresponsive_engines(monkeypatch):
+    def handler(req):
+        return httpx.Response(
+            200,
+            json={
+                "results": [
+                    {
+                        "title": "T",
+                        "url": "https://a.test",
+                        "engine": "bing",
+                        "score": 1.0,
+                    }
+                ],
+                "unresponsive_engines": [
+                    ["mojeek", "access denied"],
+                    ["startpage", "Suspended: CAPTCHA"],
+                ],
+            },
+        )
+
+    transport = httpx.MockTransport(handler)
+    real_async_client = httpx.AsyncClient
+    monkeypatch.setattr(httpx, "AsyncClient", lambda *a, **k: real_async_client(transport=transport))
+
+    out = anyio.run(SearxngDiscovery("http://searxng:8080").search, "q")
+
+    assert [(item.engine, item.reason) for item in out.unresponsive_engines] == [
+        ("mojeek", "access denied"),
+        ("startpage", "Suspended: CAPTCHA"),
+    ]
 
 
 def test_api_key_is_sent_as_bearer_header(monkeypatch):

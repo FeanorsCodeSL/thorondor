@@ -10,7 +10,7 @@ def _cleaner(calls):
     return MarkdownCleanerImpl(
         extractor=extract,
         extractor_name="trafilatura",
-        extractor_version="2.1.0",
+        extractor_version="2.2.0",
         favor_recall=True,
         include_comments=False,
         include_tables=True,
@@ -29,7 +29,7 @@ def test_cleaner_uses_configured_html_extractor_and_preserves_original_markdown(
 
     cleaned = _cleaner(calls).clean(page)
 
-    assert cleaned.cleaner_version == "trafilatura@2.1.0"
+    assert cleaned.cleaner_version == "trafilatura@2.2.0"
     assert cleaned.page.markdown == "# Article\n\nThe useful article body remains."
     assert cleaned.page.original_markdown == page.markdown
     assert calls == [

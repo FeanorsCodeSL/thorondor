@@ -1,7 +1,17 @@
 """Protocols for orchestrator pipeline stages."""
 from typing import Protocol
 
-from .types import AssembledCitation, AssembledPassage, Chunk, CleanedPage, DiscoveryResult, Page, PrefilteredChunks, ScoredChunk
+from .types import (
+    AssembledCitation,
+    AssembledPassage,
+    Chunk,
+    CleanedPage,
+    DiscoveryOutcome,
+    DiscoveryResult,
+    Page,
+    PrefilteredChunks,
+    ScoredChunk,
+)
 
 
 class QueryPlanner(Protocol):
@@ -9,7 +19,7 @@ class QueryPlanner(Protocol):
 
 
 class SearchDiscovery(Protocol):
-    async def search(self, subquery: str, freshness: str | None = None) -> list[DiscoveryResult]: ...
+    async def search(self, subquery: str, freshness: str | None = None) -> DiscoveryOutcome: ...
 
 
 class SelectionPolicy(Protocol):

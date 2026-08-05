@@ -6,21 +6,48 @@ from orchestrator.clients.reranker_client import RerankerClient
 from orchestrator.models import SearchRequest
 from orchestrator.pipeline import run_search
 from orchestrator.prefilter import CandidatePrefilterImpl
-from orchestrator.types import Chunk, DiscoveryResult, Page
+from orchestrator.types import Chunk, DiscoveryOutcome, DiscoveryResult, Page
 
 
 class _InvestigationDiscovery:
     async def search(self, subquery: str, freshness: str | None = None):
-        return [
-            DiscoveryResult("Atomic", "https://atomicarchive.com/oppenheimer", "born New York", "bing", 0.95),
-            DiscoveryResult("NPS", "https://nps.gov/oppenheimer", "born New York City", "mojeek", 0.9),
-            DiscoveryResult("Britannica", "https://britannica.com/oppenheimer", "physicist biography", "qwant", 0.88),
-            DiscoveryResult("NYT", "https://nytimes.com/oppenheimer", "obituary born New York", "startpage", 0.86),
-            DiscoveryResult("Same A", "https://same.test/a", "duplicate domain", "bing", 0.84),
-            DiscoveryResult("Same B", "https://same.test/b", "duplicate domain", "bing", 0.83),
-            DiscoveryResult("Same C", "https://same.test/c", "duplicate domain", "bing", 0.82),
-            DiscoveryResult("Low", "https://low.test/x", "low relevance", "yep", 0.2),
-        ]
+        return DiscoveryOutcome(
+            [
+                DiscoveryResult(
+                    "Atomic",
+                    "https://atomicarchive.com/oppenheimer",
+                    "born New York",
+                    "bing",
+                    0.95,
+                ),
+                DiscoveryResult(
+                    "NPS",
+                    "https://nps.gov/oppenheimer",
+                    "born New York City",
+                    "mojeek",
+                    0.9,
+                ),
+                DiscoveryResult(
+                    "Britannica",
+                    "https://britannica.com/oppenheimer",
+                    "physicist biography",
+                    "qwant",
+                    0.88,
+                ),
+                DiscoveryResult(
+                    "NYT",
+                    "https://nytimes.com/oppenheimer",
+                    "obituary born New York",
+                    "startpage",
+                    0.86,
+                ),
+                DiscoveryResult("Same A", "https://same.test/a", "duplicate domain", "bing", 0.84),
+                DiscoveryResult("Same B", "https://same.test/b", "duplicate domain", "bing", 0.83),
+                DiscoveryResult("Same C", "https://same.test/c", "duplicate domain", "bing", 0.82),
+                DiscoveryResult("Low", "https://low.test/x", "low relevance", "yep", 0.2),
+            ],
+            [],
+        )
 
 
 class _BoilerplateExtractor:

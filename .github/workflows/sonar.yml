@@ -11,17 +11,19 @@ jobs:
   scan:
     runs-on: [self-hosted, truenas]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7.0.1
         with:
           fetch-depth: 0
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7.0.0
         with:
           python-version: "3.13"
           cache: pip
           cache-dependency-path: |
             orchestrator/requirements*.txt
+            orchestrator/requirements*.lock
             semantic-chunking-service/requirements*.txt
+            semantic-chunking-service/requirements*.lock
 
       - name: Validate SonarQube environment
         shell: bash
@@ -39,17 +41,13 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           python -m pip install \
-            -r orchestrator/requirements.txt \
-            -r orchestrator/requirements-dev.txt \
-            -r semantic-chunking-service/requirements.txt \
-            -r semantic-chunking-service/requirements-dev.txt
+            -r orchestrator/requirements-dev.lock \
+            -r semantic-chunking-service/requirements-dev.lock
 
       - name: Run tests with coverage
         run: |
           python -m coverage run \
-            --source=orchestrator \
-            --source=semantic-chunking-service/chunking \
-            --source=ssrf-proxy \
+            --source=orchestrator,semantic-chunking-service/chunking,ssrf-proxy \
             -m pytest semantic-chunking-service/tests orchestrator/tests -v -p no:cacheprovider
           python -m coverage xml -o coverage.xml
           rm -rf .pytest_cache .scannerwork
@@ -57,7 +55,7 @@ jobs:
       - name: Install SonarScanner CLI
         shell: bash
         run: |
-          scanner_version="8.0.1.6346"
+          scanner_version="8.1.0.6389"
           scanner_zip="$RUNNER_TEMP/sonar-scanner-cli.zip"
           scanner_root="$RUNNER_TEMP/sonar-scanner"
           curl -fsSL "https://binaries.sonarsource.com/Distribution/sonar-scanner-cli/sonar-scanner-cli-${scanner_version}-linux-x64.zip" -o "$scanner_zip"
