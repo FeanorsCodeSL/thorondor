@@ -2,7 +2,7 @@
 import os
 from typing import Literal
 
-from mcp.server.fastmcp import FastMCP
+from mcp.server.mcpserver import MCPServer
 from mcp.server.transport_security import TransportSecuritySettings
 
 from .models import SearchRequest
@@ -31,16 +31,7 @@ def _csv_env(name: str, default: tuple[str, ...]) -> list[str]:
     return [part.strip() for part in raw.split(",") if part.strip()]
 
 
-mcp = FastMCP(
-    "thorondor",
-    streamable_http_path="/",
-    stateless_http=True,
-    transport_security=TransportSecuritySettings(
-        enable_dns_rebinding_protection=True,
-        allowed_hosts=_csv_env("MCP_ALLOWED_HOSTS", DEFAULT_MCP_ALLOWED_HOSTS),
-        allowed_origins=_csv_env("MCP_ALLOWED_ORIGINS", DEFAULT_MCP_ALLOWED_ORIGINS),
-    ),
-)
+mcp = MCPServer("thorondor")
 deps_override = None
 
 
@@ -121,6 +112,17 @@ async def web_search(
     request = SearchRequest(**{key: value for key, value in request_data.items() if value is not None})
     response = await run_search(request, _get_deps())
     return response.model_dump()
+
+
+mcp_http_app = mcp.streamable_http_app(
+    streamable_http_path="/",
+    stateless_http=True,
+    transport_security=TransportSecuritySettings(
+        enable_dns_rebinding_protection=True,
+        allowed_hosts=_csv_env("MCP_ALLOWED_HOSTS", DEFAULT_MCP_ALLOWED_HOSTS),
+        allowed_origins=_csv_env("MCP_ALLOWED_ORIGINS", DEFAULT_MCP_ALLOWED_ORIGINS),
+    ),
+)
 
 
 def main() -> None:

@@ -55,6 +55,15 @@ def test_build_env_values_is_complete_and_rewrites_host_endpoint():
     assert values["EMBEDDING_ENDPOINT"] == "http://host.docker.internal:8082"
     assert values["RERANKER_ENDPOINT"] == "http://host.docker.internal:8081"
     assert values["SEARXNG_SECRET"]
+    assert values["CRAWL4AI_API_KEY"]
+
+
+def test_build_env_values_preserves_existing_crawl4ai_api_key():
+    values = build_env_values(
+        ConfigAnswers(mode="bundled-models"),
+        existing={"CRAWL4AI_API_KEY": "keep-crawl-key"},
+    )
+    assert values["CRAWL4AI_API_KEY"] == "keep-crawl-key"
 
 
 def test_compose_overlays_only_for_external_embedding():
@@ -98,4 +107,6 @@ def test_write_complete_env_allows_bundled_mode(tmp_path):
     persist_env_changes(root, ConfigAnswers(mode="bundled-models"))
     values = read_env(root / ".env")
     assert values["EMBEDDING_ENDPOINT"] == "http://embedding:80"
+    assert values["EMBEDDING_MODEL_REVISION"] == "5617a9f61b028005a4858fdac845db406aefb181"
     assert values["RERANKER_ENDPOINT"] == "http://reranker:80"
+    assert values["RERANKER_MODEL_REVISION"] == "953dc6f6f85a1b2dbfca4c34a2796e7dde08d41e"

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import tomllib
 
@@ -10,7 +11,7 @@ import httpx
 import pytest
 import respx
 from textual.widgets import Static
-from thorondor_cli.models import LLAMACPP_MODEL_SOURCES
+from thorondor_cli.models import LLAMACPP_MODEL_SHA256, LLAMACPP_MODEL_SOURCES
 from thorondor_cli.state import ConfigAnswers, persist_env_changes
 from thorondor_cli.tui import ThorondorApp
 from thorondor_cli.tui.screens.dashboard import DashboardScreen
@@ -173,10 +174,20 @@ def test_endpoint_form_cancel_does_not_write_env(tmp_path):
     assert (root / ".env").read_text(encoding="utf-8") == original
 
 
-def test_model_mode_llamacpp_auto_downloads_then_saves(tmp_path):
+def test_model_mode_llamacpp_auto_downloads_then_saves(tmp_path, monkeypatch):
     root = _make_project(tmp_path)
     embedding_payload = b"GGUF\x00" * 600
     reranker_payload = b"GGUF\x11" * 600
+    monkeypatch.setitem(
+        LLAMACPP_MODEL_SHA256,
+        "bge-m3.gguf",
+        hashlib.sha256(embedding_payload).hexdigest(),
+    )
+    monkeypatch.setitem(
+        LLAMACPP_MODEL_SHA256,
+        "bge-reranker-v2-m3.gguf",
+        hashlib.sha256(reranker_payload).hexdigest(),
+    )
 
     async def run() -> None:
         with respx.mock(assert_all_called=True) as router:
@@ -211,9 +222,11 @@ def test_model_mode_llamacpp_auto_downloads_then_saves(tmp_path):
     assert "LLAMACPP_IMAGE=" in llamacpp_text
 
 
-def test_model_mode_download_button_fetches_models_without_changing_mode(tmp_path):
+def test_model_mode_download_button_fetches_models_without_changing_mode(tmp_path, monkeypatch):
     root = _make_project(tmp_path)
     payload = b"GGUF\x22" * 200
+    for filename in LLAMACPP_MODEL_SHA256:
+        monkeypatch.setitem(LLAMACPP_MODEL_SHA256, filename, hashlib.sha256(payload).hexdigest())
 
     async def run() -> None:
         with respx.mock(assert_all_called=True) as router:

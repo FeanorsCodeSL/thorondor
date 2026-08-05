@@ -9,7 +9,7 @@ from urllib.parse import urlsplit, urlunsplit
 
 from .envfile import ENV_TEMPLATE, LLAMACPP_TEMPLATE, read_env, seed_from_example, write_env
 from .project import missing_project_paths
-from .secret import generate_searxng_secret
+from .secret import generate_crawl4ai_api_key, generate_searxng_secret
 
 Mode = Literal["byo", "bundled-models", "llamacpp"]
 Action = Literal["Mode", "Endpoints", "Search/crawl", "Validate", "Deploy", "MCP", "Manual repair"]
@@ -238,6 +238,8 @@ def compute_issues(draft: Draft, harness_status: dict[str, bool] | None = None) 
         )
     if not draft.env.get("SEARXNG_SECRET", "").strip():
         issues.append(Issue("SEARXNG_SECRET blank - generated on save", "Mode"))
+    if not draft.env.get("CRAWL4AI_API_KEY", "").strip():
+        issues.append(Issue("CRAWL4AI_API_KEY blank - generated on save", "Mode"))
     for key in draft.invalid_values:
         issues.append(Issue(f"{key} has an invalid value", "Search/crawl", "error"))
     if draft.mode == "byo":
@@ -280,7 +282,9 @@ def build_env_values(
         reranker_endpoint = "http://reranker:80"
         values.update(
             EMBEDDING_MODEL="BAAI/bge-m3",
+            EMBEDDING_MODEL_REVISION="5617a9f61b028005a4858fdac845db406aefb181",
             RERANKER_MODEL="BAAI/bge-reranker-v2-m3",
+            RERANKER_MODEL_REVISION="953dc6f6f85a1b2dbfca4c34a2796e7dde08d41e",
             RERANKER_PATH="/rerank",
             RERANKER_HEALTH_PATH="/health",
         )
@@ -319,6 +323,8 @@ def build_env_values(
     values.update(answers.search_overrides)
     if not values.get("SEARXNG_SECRET", "").strip():
         values["SEARXNG_SECRET"] = generate_searxng_secret()
+    if not values.get("CRAWL4AI_API_KEY", "").strip():
+        values["CRAWL4AI_API_KEY"] = generate_crawl4ai_api_key()
     return values
 
 
@@ -410,7 +416,7 @@ def persist_env_changes(project_dir: str | Path, answers: ConfigAnswers) -> Draf
         root / ".env",
         values,
         template_values=template,
-        preserve_existing_nonblank=("SEARXNG_SECRET",),
+        preserve_existing_nonblank=("SEARXNG_SECRET", "CRAWL4AI_API_KEY"),
     )
     if answers.mode == "llamacpp":
         write_env(

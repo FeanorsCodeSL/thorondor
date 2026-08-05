@@ -11,7 +11,7 @@ service, reranks passages, and returns citation-bearing evidence through REST
 and MCP.
 
 The project slug is `thorondor`; it is used by Compose (`name:`), the MCP server
-id (`FastMCP("thorondor")`), and local agent skill naming.
+id (`MCPServer("thorondor")`), and local agent skill naming.
 
 ## Current Status
 

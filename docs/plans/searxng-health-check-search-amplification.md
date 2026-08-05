@@ -4,7 +4,7 @@
 Stop Thorondor health monitoring from generating public web searches, distinguish upstream search-engine failure from a genuine empty result, and verify the correction before deploying immutable Thorondor images to the demo Spark.
 
 ## Current status
-The issue was reproduced on both Sparks 1 and Sparks 2 during demo preparation on 2026-07-31. Phase 1 implementation and offline verification completed locally on 2026-08-05. Live-container verification remains pending, so the phase is still in progress. Phase 2 is completed. Phase 3 is pending. Phase 4 Part A is completed and awaiting the user's update selection; Part B has not started.
+The issue was reproduced on both Sparks 1 and Sparks 2 during demo preparation on 2026-07-31. Phase 1 implementation and offline verification completed locally on 2026-08-05. Live-container verification remains pending, so the phase is still in progress. Phase 2 is completed. Phase 3 is pending. Phase 4 Part A is completed. Every approved Part B update is implemented and verified locally; Phase 4 awaits user acceptance and a separately authorized deployment smoke check.
 
 ## Problem
 The orchestrator Docker health check calls `GET /healthz` every 30 seconds. The SearXNG dependency probe inside that endpoint calls:
@@ -230,24 +230,58 @@ A high-frequency Docker liveness or readiness probe must never perform the synth
 - Resolved the current and candidate OCI digests and architectures for SearXNG, Crawl4AI, TEI, llama.cpp, and the Python base image from their registries.
 - Found two existing documentation errors: the pinned Crawl4AI manifest includes ARM64, while the pinned TEI manifest is AMD64-only.
 - Confirmed that Part A changed only the plan and its review artifact. No dependency, image, model, workflow, container, or deployment was changed.
-- Part B remains blocked on the user's explicit approval of individual identifiers or named groups.
+- The inventory was committed and pushed as `a232765` before Part B implementation began.
 
 ### Part B - Apply only approved updates
 
 #### Tasks
 
-- [ ] Record the explicitly approved update set and retain rejected or deferred items unchanged.
-- [ ] Update only approved Python pins, lock entries, image references, model artifacts, packaged assets, examples, and related license or provenance documentation.
-- [ ] Keep duplicated manifests and packaged CLI assets synchronized, and use immutable image digests whenever the registry provides them.
-- [ ] Apply updates in reviewable logical batches with a clear rollback boundary and no unrelated refactoring.
-- [ ] Preserve SearXNG as an unmodified third-party dependency and preserve existing REST and MCP contracts unless a separately approved update requires a documented compatibility change.
+- [x] Record the explicitly approved update set and retain rejected or deferred items unchanged.
+- [x] Update only approved Python pins, lock entries, image references, model artifacts, packaged assets, examples, and related license or provenance documentation.
+- [x] Keep duplicated manifests and packaged CLI assets synchronized, and use immutable image digests whenever the registry provides them.
+- [x] Apply updates in reviewable logical batches with a clear rollback boundary and no unrelated refactoring.
+- [x] Preserve SearXNG as an unmodified third-party dependency and preserve existing REST and MCP contracts unless a separately approved update requires a documented compatibility change.
+
+#### Approved sequence
+
+- Apply L1-L4 as one low-risk batch, then build and test.
+- Apply M1-M9 as one medium-risk batch, then build and test.
+- Apply and verify H1-H6 individually, in order.
+
+#### Low-risk batch report
+
+- Updated L1-L4: MCP 1.28.1, Textual 8.2.8, and the approved transitive CLI lock entries.
+- Built the affected orchestrator image and confirmed the installed versions.
+- Complete offline suite: 328 passed with three upstream deprecation warnings.
+- Runtime dependency audits for the orchestrator and chunker reported no known vulnerabilities.
+- `uv lock --check` and `git diff --check` passed.
+
+#### Medium-risk batch report
+
+- Updated M1-M9: FastAPI 0.141.1, Uvicorn 0.52.1, NumPy 2.5.1, Trafilatura 2.2.0, Ruff 0.16.1, the immutable Python 3.13.14 base-image digest, exact service transitive locks, GitHub Actions, and SonarScanner CLI 8.1.0.6389.
+- Added automated lock synchronization checks and connected them to both release-guard scripts.
+- Complete offline suite using the exact development locks: 330 passed with three upstream deprecation warnings.
+- Built the orchestrator, chunker, and egress proxy for both AMD64 and ARM64; installed dependency versions matched the approved pins.
+- Runtime dependency audits reported no known vulnerabilities. Bundled-model, llama.cpp, and production Compose validation passed, as did workflow YAML parsing, `uv lock --check`, the new requirement-lock check, and `git diff --check`.
+- The repository-wide Ruff 0.16.1 run exposed 245 pre-existing lint findings; Ruff is not currently a CI gate and no unrelated code was rewritten.
+- The full release guard still fails on pre-existing differences between repository environment examples and packaged templates. The new requirement-lock check itself passes; the unrelated template differences remain unchanged.
+- Updated GitHub Action majors were syntax-checked locally but still require execution on the configured GitHub runners.
+
+#### High-risk item reports
+
+- **H1 SearXNG:** updated the unmodified upstream image to `2026.8.4-c63835bd2` at `sha256:f4c8e59de166ed71f6380c0847c312ca51f0d41996e31d0559163b6b09ecde52`. Registry inspection confirmed AMD64, ARM64, and ARM/v7 manifests. An isolated container using the repository configuration and no external network returned `200 OK` from `/healthz`; all Compose profiles rendered, all 330 offline tests passed with three upstream deprecation warnings, stale references were absent, and `git diff --check` passed. No deployed container was changed.
+- **H2 Crawl4AI:** updated the upstream image to 0.9.2 at `sha256:bd36741e7bdd35ddc1a05d9183e1d6d8cefb61dd640d944a25d026b76e917690`; registry inspection confirmed AMD64 and ARM64 manifests. Isolated testing found that 0.9.2 no longer exposes `/crawl` to the Compose network without a configured token, so the deploy scripts and configurator now generate and preserve `CRAWL4AI_API_KEY`. With that key, a network-isolated container accepted the existing `/crawl` payload and returned both static and JavaScript-rendered content. Focused tests were 19 passed, the complete offline suite was 332 passed with three upstream deprecation warnings, all Compose profiles rendered, script parsing and stale-reference checks passed, and `git diff --check` passed. No deployed container was changed.
+- **H3 TEI:** updated the rolling image from revision `5bc4d889` to `4150561` at `sha256:af92a3852c965393cbdd111865c3a72445d2b430c7daf84269ffdb5cf178f4eb`. Registry and image-config inspection confirmed the approved revision, Apache-2.0 metadata, AMD64-only architecture, CUDA runtime requirement, and continued `--model-id` CLI support. Documentation now states that bundled TEI requires an AMD64 NVIDIA host; the previous ARM64 claim was incorrect for both the old and new pins. All 332 offline tests passed with three upstream deprecation warnings, all Compose profiles rendered, stale-reference and `git diff --check` checks passed. Runtime inference could not be exercised on the ARM64 host because the image has no ARM64 manifest and requires NVIDIA runtime injection; no deployed container was changed.
+- **H4 llama.cpp:** updated the server image from build `b9570` to the current `server` build `b10276` at `sha256:bde659bfc300ee7d4d2e558e8a97e06211bc2bf079e31d22b61497f4f2cd85b1`. Registry inspection confirmed AMD64, ARM64, and s390x manifests. The native ARM64 container reported version `10276 (6ea215d17)`, and its help output confirmed every CLI flag used by the Compose overlay, including embedding and reranking modes. All 332 offline tests passed with three upstream deprecation warnings, all Compose profiles rendered, packaged and repository llama.cpp env templates matched, stale references were absent, and `git diff --check` passed. Model-quality testing remains a deployment-time check because GGUF weights are not committed; no deployed container was changed.
+- **H5 MCP Python SDK:** migrated the orchestrator and stdio proxy from `mcp 1.28.1` and `FastMCP` to `mcp 2.0.0` and `MCPServer`, including the renamed HTTP transport client and the v2 `httpx2` transport. The public endpoint remains `/mcp`, its stateless behavior and DNS-rebinding policy are preserved, and tests exercise both the legacy initialize handshake and the modern `server/discover` negotiation. Focused MCP tests were 18 passed; the complete offline suite was 332 passed. The native ARM64 orchestrator image built successfully and contained `mcp 2.0.0`; MCP's platform-independent wheels preserve AMD64 compatibility already established by the medium-risk multi-architecture build. The runtime audit reported no known vulnerabilities, all Compose profiles rendered, exact lock validation and source compilation passed, stale references were absent, and `git diff --check` passed. No deployed container was changed.
+- **H6 immutable model artifacts:** replaced the two nonexistent mutable GGUF source URLs with public `gpustack` repositories pinned to exact commits, recorded their Hub LFS SHA-256 values, and made the downloader verify new and existing default files without overwriting a mismatch. Added exact BAAI model revisions to the bundled TEI commands and synchronized the source templates, managed Compose asset, CLI bundled-mode state, notices, and architecture documentation. Live Hub metadata matched both pinned revisions, SHA-256 values, and file sizes. Focused tests were 32 passed, the complete offline suite was 334 passed, and Ruff passed on every affected Python file. The CLI wheel and source distribution built and contained the revision and checksum metadata; all Compose profiles rendered, both runtime audits reported no known vulnerabilities, and lock, compilation, and `git diff --check` validation passed. The 1.27 GB of GGUF weights were not downloaded, and TEI inference could not run on this ARM64 host without the AMD64 NVIDIA runtime. No deployed container was changed.
 
 #### Verification
 
-- [ ] Run focused tests appropriate to every approved update, then run the complete offline test suite.
-- [ ] Validate every supported Compose profile, including bundled models, llama.cpp, and production image deployments.
-- [ ] Build affected first-party images when an approved dependency or base-image update changes their contents.
-- [ ] Verify resolved image digests, supported architectures, model checksums, and license/provenance records for updated artifacts.
+- [x] Run focused tests appropriate to every approved update, then run the complete offline test suite.
+- [x] Validate every supported Compose profile, including bundled models, llama.cpp, and production image deployments.
+- [x] Build affected first-party images when an approved dependency or base-image update changes their contents.
+- [x] Verify resolved image digests, supported architectures, model checksums, and license/provenance records for updated artifacts.
 - [ ] Run live smoke checks only after separate deployment authorization, and report the applied versions, exact verification results, deferred updates, and residual risks.
 
 ## Acceptance criteria

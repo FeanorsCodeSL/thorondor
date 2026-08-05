@@ -8,8 +8,8 @@ jobs:
   release-guard:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v7.0.1
+      - uses: actions/setup-python@v7.0.0
         with:
           python-version: "3.13"
       - name: Check pinned runtime images and SearXNG boundary
@@ -18,24 +18,24 @@ jobs:
   test:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v7.0.1
+      - uses: actions/setup-python@v7.0.0
         with:
           python-version: "3.13"
           cache: pip
           cache-dependency-path: |
             pyproject.toml
             orchestrator/requirements*.txt
+            orchestrator/requirements*.lock
             semantic-chunking-service/requirements*.txt
+            semantic-chunking-service/requirements*.lock
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
           python -m pip install -e ".[dev]"
           python -m pip install \
-            -r orchestrator/requirements.txt \
-            -r orchestrator/requirements-dev.txt \
-            -r semantic-chunking-service/requirements.txt \
-            -r semantic-chunking-service/requirements-dev.txt
+            -r orchestrator/requirements-dev.lock \
+            -r semantic-chunking-service/requirements-dev.lock
       - name: Compile Python sources
         run: python -m compileall orchestrator semantic-chunking-service ssrf-proxy thorondor_cli -q
       - name: Run offline tests

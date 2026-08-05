@@ -30,7 +30,7 @@ An unmodified upstream SearXNG Docker image, configured through `searxng/setting
 
 ### Crawl4AI
 
-The public upstream Crawl4AI self-hosted Docker API (`unclecode/crawl4ai@sha256:b243f684...`), consumed over the internal Compose network. The orchestrator submits `POST /crawl` requests to extract page content. Crawl4AI handles JavaScript rendering, robots.txt checking, and returns both raw HTML and Markdown forms of the page content. Thorondor never vendors or patches Crawl4AI source.
+The public upstream Crawl4AI 0.9.2 self-hosted Docker API (`unclecode/crawl4ai@sha256:bd36741e...`), consumed over the internal Compose network. The orchestrator submits `POST /crawl` requests to extract page content. Crawl4AI handles JavaScript rendering, robots.txt checking, and returns both raw HTML and Markdown forms of the page content. Thorondor never vendors or patches Crawl4AI source.
 
 Crawl4AI's outbound HTTP traffic routes through the embedded SSRF egress proxy to block requests to RFC-1918 and embedded-IPv4 IPv6 addresses.
 
@@ -92,7 +92,7 @@ The `llamacpp-models` Compose profile activates two llama.cpp containers that lo
 
 ### (b) Bundled TEI containers profile
 
-The `bundled-models` profile (base `docker-compose.yml`) activates Hugging Face TEI containers for embedding and reranking. The containers download model weights from HuggingFace Hub on first start. GPU acceleration is available if configured in the TEI image. Suitable for deployments where pre-downloading GGUF files is not practical.
+The `bundled-models` profile (base `docker-compose.yml`) activates Hugging Face TEI containers for embedding and reranking. The pinned image is AMD64-only and requires NVIDIA CUDA runtime access. The containers download model weights from the immutable Hub revisions declared in `.env` on first start. This profile is suitable for AMD64 NVIDIA deployments where pre-downloading GGUF files is not practical.
 
 ### (c) BYO remote endpoints
 
@@ -100,7 +100,7 @@ Set `EMBEDDING_ENDPOINT`, `RERANKER_ENDPOINT`, and optionally `LLM_ENDPOINT` to 
 
 ### (d) ARM64 / DGX Spark
 
-The llama.cpp image is pinned to a specific SHA (`4c52f549...`) that is verified to build for both `linux/amd64` and `linux/arm64`. On ARM64 hosts the same `deploy-llamacpp.ps1` command applies with the same env files. The TEI image pin is also a multi-arch manifest. There are no known ARM64-specific caveats in the Thorondor first-party code.
+The llama.cpp build `b10276` image is pinned to a specific SHA (`bde659bf...`) that is verified for both `linux/amd64` and `linux/arm64`. On ARM64 hosts the same `deploy-llamacpp.ps1` command applies with the same env files. The pinned TEI revision `4150561` is AMD64-only, so the bundled-models profile is not supported natively on ARM64. The Thorondor first-party code itself remains architecture-independent.
 
 ## 5. Extension Points
 

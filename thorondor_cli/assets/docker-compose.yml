@@ -148,14 +148,14 @@ services:
     profiles: ["bundled-models"]
     image: "${THORONDOR_TEI_IMAGE}"
     networks: [internal, egress]
-    command: ["--model-id", "${EMBEDDING_MODEL}"]
+    command: ["--model-id", "${EMBEDDING_MODEL}", "--revision", "${EMBEDDING_MODEL_REVISION}"]
 
   reranker:
     <<: *internal
     profiles: ["bundled-models"]
     image: "${THORONDOR_TEI_IMAGE}"
     networks: [internal, egress]
-    command: ["--model-id", "${RERANKER_MODEL}"]
+    command: ["--model-id", "${RERANKER_MODEL}", "--revision", "${RERANKER_MODEL_REVISION}"]
 
 networks:
   internal:

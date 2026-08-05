@@ -1,9 +1,10 @@
+import hashlib
 import subprocess
 
 import httpx
 import respx
 from thorondor_cli import app
-from thorondor_cli.models import LLAMACPP_MODEL_SOURCES
+from thorondor_cli.models import LLAMACPP_MODEL_SHA256, LLAMACPP_MODEL_SOURCES
 from thorondor_cli.project import ensure_managed_project
 from thorondor_cli.state import ConfigAnswers, persist_env_changes
 
@@ -59,11 +60,21 @@ def test_uninstall_removes_managed_project_without_removing_tool(monkeypatch, tm
     assert "Kept the thorondor command" in out
 
 
-def test_download_models_subcommand_fetches_missing_gguf(tmp_path, capsys):
+def test_download_models_subcommand_fetches_missing_gguf(tmp_path, capsys, monkeypatch):
     project = ensure_managed_project(tmp_path / "thorondor")
     persist_env_changes(project.root, ConfigAnswers(mode="bundled-models"))
     (project.root / "models").mkdir()
     (project.root / "models" / "bge-m3.gguf").write_bytes(b"already here")
+    monkeypatch.setitem(
+        LLAMACPP_MODEL_SHA256,
+        "bge-m3.gguf",
+        hashlib.sha256(b"already here").hexdigest(),
+    )
+    monkeypatch.setitem(
+        LLAMACPP_MODEL_SHA256,
+        "bge-reranker-v2-m3.gguf",
+        hashlib.sha256(b"reranker-bytes").hexdigest(),
+    )
 
     with respx.mock(assert_all_called=True) as router:
         router.get(LLAMACPP_MODEL_SOURCES["bge-reranker-v2-m3.gguf"]).mock(

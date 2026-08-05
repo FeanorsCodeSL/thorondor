@@ -18,7 +18,7 @@ Defines six services:
 | `embedding` | `bundled-models` | HuggingFace TEI embedding server |
 | `reranker` | `bundled-models` | HuggingFace TEI reranker server |
 
-The `bundled-models` profile is intended for deployments where you want Docker to manage the embedding and reranker containers using TEI images that download model weights from HuggingFace Hub. Activate it with `--profile bundled-models`.
+The `bundled-models` profile is intended for AMD64 NVIDIA CUDA deployments where Docker manages the embedding and reranker containers using TEI images that download model weights from the immutable Hub revisions in `.env`. The host must provide NVIDIA Container Toolkit GPU access. Activate it with `--profile bundled-models`.
 
 Without any profile flag, only the five base services start. In this mode `EMBEDDING_ENDPOINT` and `RERANKER_ENDPOINT` must point to externally operated servers.
 
@@ -96,11 +96,13 @@ Copy from `.env.example`:
 Copy-Item .env.example .env
 ```
 
-**Optional keys** — variables like `SEARXNG_API_KEY`, `CRAWL4AI_API_KEY`, `LLM_ENDPOINT`, `DOMAIN_BLOCKLIST`, etc. must be present in `.env` but may be blank. Blank means disabled. Do not delete these keys — the loader raises if the key is entirely absent.
+**Optional keys** — variables like `SEARXNG_API_KEY`, `LLM_ENDPOINT`, and `DOMAIN_BLOCKLIST` must be present in `.env` but may be blank. Blank means disabled. Do not delete these keys — the loader raises if the key is entirely absent. `CRAWL4AI_API_KEY` is generated for the managed Crawl4AI container; it may remain blank only for an unauthenticated BYO endpoint.
 
 **ORCHESTRATOR_HOST** — defaults to `127.0.0.1` in `.env.example`, which keeps the public REST/MCP port local to the host. Set it to `0.0.0.0` only when a firewall, TLS, authentication, and rate limiting are already in front of the service.
 
 **SEARXNG_SECRET** — this key must be non-blank when SearXNG starts. The deploy scripts generate a random 32-byte base64 secret when the field is blank. Do not commit a real secret value. Rotate by blanking the key in `.env` and re-running `deploy.ps1`.
+
+**CRAWL4AI_API_KEY** — Crawl4AI 0.9.2 requires a credential before it binds to the Compose network. The deploy scripts and configurator generate a random value when this field is blank and preserve existing non-blank values.
 
 ### `.env.llamacpp`
 
@@ -217,7 +219,7 @@ loading.
 
 2. **Env file bootstrap** — if `.env` does not exist, it is copied from `.env.example`. This means the first run always produces a valid `.env` from the example.
 
-3. **SEARXNG_SECRET generation** — `Ensure-DotEnvValue` reads `.env`, finds the `SEARXNG_SECRET=` line, and if the value is blank, replaces it with a randomly generated 32-byte base64 string (using `System.Security.Cryptography.RandomNumberGenerator`). Existing non-blank values are never overwritten.
+3. **Internal secret generation** — `Ensure-DotEnvValue` generates non-blank `SEARXNG_SECRET` and `CRAWL4AI_API_KEY` values with `System.Security.Cryptography.RandomNumberGenerator`. Existing non-blank values are never overwritten.
 
 4. **Compose validation** — `docker compose config` is run. Any misconfiguration (missing variable, bad override) raises a non-zero exit and stops the script.
 
@@ -317,19 +319,20 @@ Since Thorondor has no persistent corpus, there is no data migration. Restart is
 
 Edit `LLAMACPP_IMAGE` in `.env.llamacpp` to the new pinned SHA, then re-run `deploy-llamacpp.ps1`. The script will pull the new image and restart the model containers.
 
-**Rotate SEARXNG_SECRET:**
+**Rotate managed service secrets:**
 
-Blank the `SEARXNG_SECRET=` value in `.env`, then re-run `deploy.ps1`. The script will generate a new secret and restart the SearXNG container with it.
+Blank `SEARXNG_SECRET=` or `CRAWL4AI_API_KEY=` in `.env`, then re-run `deploy.ps1`. The script generates a new value and restarts the affected service with it.
 
 ## 8. Running on ARM64 / DGX Spark
 
-The llama.cpp image SHA `4c52f549b6612fc1b4aee696c4cfb4a9dceecb10216bb7e677cf97db909e1b4a` is a multi-arch manifest that includes `linux/arm64`. The TEI image SHA is similarly multi-arch.
+The llama.cpp build `b10276` image SHA `bde659bfc300ee7d4d2e558e8a97e06211bc2bf079e31d22b61497f4f2cd85b1` is a multi-arch manifest that includes `linux/arm64`. The pinned TEI revision `4150561` is AMD64-only, so ARM64 deployments must use the llama.cpp profile or BYO model endpoints.
 
 No ARM64-specific code changes are needed. Run the same `deploy-llamacpp.ps1` command. Docker Desktop or Docker Engine on the ARM64 host will pull the correct architecture layer.
 
 Known considerations:
 - CPU inference is the default. CUDA or Metal acceleration in llama.cpp requires rebuilding the image with GPU support — beyond the scope of this deployment guide.
-- The SearXNG image (`sha256:02d441bb...`) and Crawl4AI image (`sha256:b243f684...`) are pulled from Docker Hub; verify ARM64 manifest availability for any image digest update.
+- The SearXNG image (`sha256:f4c8e59d...`) and Crawl4AI image (`sha256:bd36741e...`) are pulled from Docker Hub; both pinned manifests include AMD64 and ARM64.
+- The bundled TEI profile cannot run natively on ARM64 with the pinned image.
 
 ## 8. Production Hardening Checklist
 
@@ -339,7 +342,7 @@ Known considerations:
 - [ ] **Rotate SEARXNG_SECRET** — ensure `SEARXNG_SECRET` is a strong random value (the deploy script generates one; verify it is set in `.env` before first production start).
 - [ ] **Enable ALLOWLIST_ONLY** — set `ALLOWLIST_ONLY=true` and populate `DOMAIN_ALLOWLIST` for deployments where crawling should be restricted to known domains.
 - [ ] **SSRF proxy** — the egress proxy is enabled by default in Compose. Verify `PROXY_BLOCKED_IP_CATEGORIES` and `PROXY_BLOCKED_SPECIAL_IPS` match your network topology. Add any additional internal subnets to `DOMAIN_BLOCKLIST` or to blocked categories.
-- [ ] **API keys on internal seams** — set `SEARXNG_API_KEY`, `CRAWL4AI_API_KEY`, `CHUNKER_API_KEY`, `RERANKER_API_KEY`, and `EMBEDDING_API_KEY` if the corresponding services are accessible beyond the internal Docker network.
+- [ ] **API keys on internal seams** — verify the generated `CRAWL4AI_API_KEY`; set `SEARXNG_API_KEY`, `CHUNKER_API_KEY`, `RERANKER_API_KEY`, and `EMBEDDING_API_KEY` if the corresponding services are accessible beyond the internal Docker network.
 - [ ] **Log shipping** — the orchestrator emits JSON logs to stdout. Configure a log driver or sidecar to ship to your log aggregation system.
 - [ ] **Container resource limits** — set memory limits for all containers, especially `CHUNKER_MEM_LIMIT` (default `768m`) for large documents with many segments. The DP chunker allocates O(N²) during similarity matrix computation.
 - [ ] **Health monitoring** — use `/livez` for process liveness and `/healthz` for dependency readiness. Alert on `hard_failures` being non-empty.

@@ -113,7 +113,7 @@ services:
 
   searxng:
     <<: *internal
-    image: searxng/searxng@sha256:02d441bbb647b7be422d21041420115cddadac4644368f67c7c7f407bbe72e22
+    image: searxng/searxng@sha256:f4c8e59de166ed71f6380c0847c312ca51f0d41996e31d0559163b6b09ecde52
     networks: [internal, egress]
     volumes:
       - ./searxng:/etc/searxng
@@ -126,7 +126,7 @@ services:
     networks: [internal, egress]
     # Public upstream self-hosted Docker API. Keep this as an image dependency
     # and integrate over HTTP; do not vendor or build Crawl4AI in this repo.
-    image: unclecode/crawl4ai@sha256:b243f684ad20f71ee108ab3fc3f31f3349eb5b31a9947b9e563d868417141aad
+    image: unclecode/crawl4ai@sha256:bd36741e7bdd35ddc1a05d9183e1d6d8cefb61dd640d944a25d026b76e917690
     environment:
       CRAWL4AI_API_TOKEN: "${CRAWL4AI_API_KEY?}"
       HTTP_PROXY: "${CRAWL4AI_HTTP_PROXY}"
@@ -152,16 +152,16 @@ services:
   embedding:
     <<: *internal
     profiles: ["bundled-models"]
-    image: ghcr.io/huggingface/text-embeddings-inference@sha256:b3e0169969c0dc4b22ab6bf6ad5699374d4cb720fc43fb66868a679586ea806f
+    image: ghcr.io/huggingface/text-embeddings-inference@sha256:af92a3852c965393cbdd111865c3a72445d2b430c7daf84269ffdb5cf178f4eb
     networks: [internal, egress]
-    command: ["--model-id", "${EMBEDDING_MODEL}"]
+    command: ["--model-id", "${EMBEDDING_MODEL}", "--revision", "${EMBEDDING_MODEL_REVISION}"]
 
   reranker:
     <<: *internal
     profiles: ["bundled-models"]
-    image: ghcr.io/huggingface/text-embeddings-inference@sha256:b3e0169969c0dc4b22ab6bf6ad5699374d4cb720fc43fb66868a679586ea806f
+    image: ghcr.io/huggingface/text-embeddings-inference@sha256:af92a3852c965393cbdd111865c3a72445d2b430c7daf84269ffdb5cf178f4eb
     networks: [internal, egress]
-    command: ["--model-id", "${RERANKER_MODEL}"]
+    command: ["--model-id", "${RERANKER_MODEL}", "--revision", "${RERANKER_MODEL_REVISION}"]
 
 networks:
   internal:

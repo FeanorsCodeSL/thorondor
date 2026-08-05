@@ -2,12 +2,17 @@
 
 from __future__ import annotations
 
+import hashlib
+import re
+
 import httpx
 import pytest
 import respx
 from thorondor_cli.models import (
     CHUNK_BYTES,
+    LLAMACPP_MODEL_SHA256,
     LLAMACPP_MODEL_SOURCES,
+    download_model,
     ensure_llamacpp_models,
     llamacpp_models_status,
     required_llamacpp_models,
@@ -15,6 +20,11 @@ from thorondor_cli.models import (
 from thorondor_cli.state import ConfigAnswers, build_llamacpp_env_values
 
 LLAMACPP_VALUES = build_llamacpp_env_values(ConfigAnswers(mode="llamacpp"))
+
+
+def _set_expected(monkeypatch, payloads):
+    for filename, payload in payloads.items():
+        monkeypatch.setitem(LLAMACPP_MODEL_SHA256, filename, hashlib.sha256(payload).hexdigest())
 
 
 def _make_project(tmp_path):
@@ -37,6 +47,9 @@ def test_required_llamacpp_models_lists_expected_filenames(tmp_path):
     for model in required:
         assert model.target == root / "models" / model.filename
         assert model.url == LLAMACPP_MODEL_SOURCES[model.filename]
+        assert model.sha256 == LLAMACPP_MODEL_SHA256[model.filename]
+        assert re.search(r"/resolve/[0-9a-f]{40}/", model.url)
+        assert re.fullmatch(r"[0-9a-f]{64}", model.sha256)
         assert "MIT" in model.license or "Apache" in model.license
 
 
@@ -57,9 +70,10 @@ def test_llamacpp_models_status_splits_present_and_missing(tmp_path):
     assert [m.filename for m in missing] == ["bge-reranker-v2-m3.gguf"]
 
 
-def test_ensure_llamacpp_models_writes_files_and_reports_progress(tmp_path):
+def test_ensure_llamacpp_models_writes_files_and_reports_progress(tmp_path, monkeypatch):
     root = _make_project(tmp_path)
     payload = b"GGUF\x00" * (CHUNK_BYTES // 2 + 7)
+    _set_expected(monkeypatch, {filename: payload for filename in LLAMACPP_MODEL_SOURCES})
     with respx.mock(assert_all_called=True) as router:
         router.get(LLAMACPP_MODEL_SOURCES["bge-m3.gguf"]).mock(
             return_value=httpx.Response(200, content=payload)
@@ -80,11 +94,18 @@ def test_ensure_llamacpp_models_writes_files_and_reports_progress(tmp_path):
     assert all(name in ("bge-m3.gguf", "bge-reranker-v2-m3.gguf") for name, _, _ in progress)
 
 
-def test_ensure_llamacpp_models_skips_present_files(tmp_path):
+def test_ensure_llamacpp_models_skips_present_files(tmp_path, monkeypatch):
     root = _make_project(tmp_path)
     (root / "models").mkdir()
     existing = root / "models" / "bge-m3.gguf"
     existing.write_bytes(b"existing")
+    _set_expected(
+        monkeypatch,
+        {
+            "bge-m3.gguf": b"existing",
+            "bge-reranker-v2-m3.gguf": b"reranker",
+        },
+    )
     with respx.mock(assert_all_called=True) as router:
         router.get(LLAMACPP_MODEL_SOURCES["bge-reranker-v2-m3.gguf"]).mock(
             return_value=httpx.Response(200, content=b"reranker")
@@ -106,8 +127,15 @@ def test_ensure_llamacpp_models_raises_on_http_error(tmp_path):
     assert not (root / "models" / "bge-m3.gguf").exists()
 
 
-def test_ensure_llamacpp_models_writes_atomically(tmp_path):
+def test_ensure_llamacpp_models_writes_atomically(tmp_path, monkeypatch):
     root = _make_project(tmp_path)
+    _set_expected(
+        monkeypatch,
+        {
+            "bge-m3.gguf": b"embedding",
+            "bge-reranker-v2-m3.gguf": b"reranker",
+        },
+    )
     with respx.mock(assert_all_called=True) as router:
         router.get(LLAMACPP_MODEL_SOURCES["bge-m3.gguf"]).mock(
             return_value=httpx.Response(200, content=b"embedding")
@@ -118,3 +146,33 @@ def test_ensure_llamacpp_models_writes_atomically(tmp_path):
         ensure_llamacpp_models(root, LLAMACPP_VALUES)
     assert not (root / "models" / "bge-m3.gguf.part").exists()
     assert not (root / "models" / "bge-reranker-v2-m3.gguf.part").exists()
+
+
+def test_download_model_rejects_checksum_mismatch_without_installing_file(tmp_path):
+    target = tmp_path / "model.gguf"
+    with respx.mock(assert_all_called=True) as router:
+        router.get("https://models.test/model.gguf").mock(
+            return_value=httpx.Response(200, content=b"wrong")
+        )
+        with pytest.raises(ValueError, match="SHA-256 mismatch"):
+            download_model(
+                "https://models.test/model.gguf",
+                target,
+                expected_sha256=hashlib.sha256(b"expected").hexdigest(),
+            )
+    assert not target.exists()
+    assert not target.with_suffix(".gguf.part").exists()
+
+
+def test_download_model_rejects_existing_checksum_mismatch_without_overwriting(tmp_path):
+    target = tmp_path / "model.gguf"
+    target.write_bytes(b"existing")
+
+    with pytest.raises(ValueError, match="SHA-256 mismatch"):
+        download_model(
+            "https://models.test/model.gguf",
+            target,
+            expected_sha256=hashlib.sha256(b"expected").hexdigest(),
+        )
+
+    assert target.read_bytes() == b"existing"

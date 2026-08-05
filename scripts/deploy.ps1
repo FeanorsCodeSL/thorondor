@@ -58,6 +58,7 @@ function Ensure-DotEnvValue {
 }
 
 Ensure-DotEnvValue -Path ".env" -Key "SEARXNG_SECRET" -Value (New-SecretValue)
+Ensure-DotEnvValue -Path ".env" -Key "CRAWL4AI_API_KEY" -Value (New-SecretValue)
 
 function Read-DotEnv {
     param([string]$Path)

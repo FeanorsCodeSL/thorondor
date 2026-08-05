@@ -7,7 +7,7 @@ import httpx
 
 from .clients.searxng_client import SEARXNG_INTERNAL_HEADERS
 from .models import SearchRequest, SearchResponse
-from .mcp_server import mcp
+from .mcp_server import mcp, mcp_http_app
 from .observability import configure_json_logging, new_request_id, reset_request_id, set_request_id
 from .pipeline import SearchDependencyUnavailable, build_deps_from_settings, run_search
 from .settings import load_settings
@@ -160,4 +160,4 @@ async def healthz():
         ],
     }
 
-app.mount("/mcp", mcp.streamable_http_app())
+app.mount("/mcp", mcp_http_app)

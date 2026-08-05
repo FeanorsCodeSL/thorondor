@@ -98,6 +98,11 @@ foreach ($dockerfile in @("orchestrator/Dockerfile", "semantic-chunking-service/
     }
 }
 
+& $Python scripts/check_requirement_locks.py
+if ($LASTEXITCODE -ne 0) {
+    exit $LASTEXITCODE
+}
+
 if ((Get-Content (Join-Path $Root "scripts/deploy.ps1") -Raw) -notmatch "health\.dependencies\.PSObject\.Properties") {
     Write-Error "scripts/deploy.ps1: deploy health polling must inspect dependency values."
     exit 1

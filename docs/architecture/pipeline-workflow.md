@@ -207,7 +207,7 @@ The MCP `web_search` tool is a thin wrapper over the same `run_search` pipeline.
 ```mermaid
 sequenceDiagram
     participant AgentClient as MCP Client (Agent)
-    participant MCPServer as FastMCP (thorondor)
+    participant MCPServer as MCPServer (thorondor)
     participant Pipeline as run_search()
 
     AgentClient->>MCPServer: tools/call web_search {query, search_profile, ...}

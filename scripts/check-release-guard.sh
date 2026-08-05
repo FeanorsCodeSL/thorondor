@@ -73,6 +73,8 @@ for dockerfile in orchestrator/Dockerfile semantic-chunking-service/Dockerfile s
   fi
 done
 
+"$PYTHON_BIN" scripts/check_requirement_locks.py
+
 if ! grep -q 'health.dependencies.PSObject.Properties' scripts/deploy.ps1; then
   echo "scripts/deploy.ps1: deploy health polling must inspect dependency values." >&2
   exit 1
