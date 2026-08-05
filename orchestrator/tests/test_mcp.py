@@ -142,4 +142,6 @@ def test_rest_mcp_parity_over_fake_dependency_cases(monkeypatch, name, request_j
     rest = TestClient(appmod.app).post("/search", json=request_json).json()
     mcp = anyio.run(lambda: mcpmod.web_search(**request_json))
 
+    rest["stats"]["elapsed_ms"] = 0
+    mcp["stats"]["elapsed_ms"] = 0
     assert mcp == rest, name

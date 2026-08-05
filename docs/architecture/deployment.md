@@ -75,6 +75,18 @@ The production slice joins Tengwar's external network through
 config directory via `THORONDOR_SEARXNG_CONFIG_DIR`; do not mount the Thorondor
 source tree on the production host.
 
+For the Tengwar development integration, the Tengwar repository owns the wrapper
+recipe. Run `just thorondor-deploy` from the Tengwar checkout. It forces
+`THORONDOR_APP_NETWORK=tengwar-shared`, points the orchestrator and chunker at
+Tengwar's `embedding` and `reranker` services, builds configured `:local`
+first-party images from the sibling checkout, generates `CRAWL4AI_API_KEY` when
+needed, and waits for `/healthz`. This is a development Compose workflow; the
+immutable production candidate path remains the source-free image slice above.
+
+The wrapper recreates only the Thorondor Compose project. Preserve the external
+network and all volumes; do not use `down -v`, volume pruning, or a whole-host
+Compose shutdown to change Thorondor versions.
+
 Validate the production config with:
 
 ```powershell

@@ -73,9 +73,7 @@ if (-not $SkipTests) {
     }
 
     & $python -m coverage run `
-        --source=orchestrator `
-        --source=semantic-chunking-service/chunking `
-        --source=ssrf-proxy `
+        --source=orchestrator,semantic-chunking-service/chunking,ssrf-proxy `
         -m pytest semantic-chunking-service\tests orchestrator\tests -v -p no:cacheprovider
     if ($LASTEXITCODE -ne 0) {
         exit $LASTEXITCODE

@@ -22,6 +22,9 @@ from .types import (
 )
 
 
+FAKE_ARTICLE_URL = "https://a.test/article"
+
+
 def _fake_extract(html: str, **_kwargs) -> str:
     return html
 
@@ -67,7 +70,7 @@ class FakeDiscovery:
         self.freshness_seen.append(freshness)
         return DiscoveryOutcome(
             [
-                DiscoveryResult("A", "https://a.test/article", "snip", "fake", 0.9),
+                DiscoveryResult("A", FAKE_ARTICLE_URL, "snip", "fake", 0.9),
                 DiscoveryResult("B", "https://b.test/article", "snip", "fake", 0.8),
             ],
             [],
@@ -84,7 +87,7 @@ class PartialDiscovery:
     async def search(self, _subquery: str, _freshness: str | None = None) -> DiscoveryOutcome:
         await _async_boundary()
         return DiscoveryOutcome(
-            [DiscoveryResult("A", "https://a.test/article", "snip", "fake", 0.9)],
+            [DiscoveryResult("A", FAKE_ARTICLE_URL, "snip", "fake", 0.9)],
             [],
         )
 
@@ -93,7 +96,7 @@ class DegradedDiscovery:
     async def search(self, _subquery: str, _freshness: str | None = None) -> DiscoveryOutcome:
         await _async_boundary()
         return DiscoveryOutcome(
-            [DiscoveryResult("A", "https://a.test/article", "snip", "bing", 0.9)],
+            [DiscoveryResult("A", FAKE_ARTICLE_URL, "snip", "bing", 0.9)],
             [DiscoveryEngineFailure("mojeek", "access denied")],
         )
 

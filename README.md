@@ -208,6 +208,31 @@ docker compose `
 
 `docker-compose.production.yml` expects Tengwar's external `app-network` and externally managed `embedding` and `reranker` services. It does not start extra model containers.
 
+### Tengwar development integration
+
+For the integrated development stack, run the Tengwar-owned recipe from the
+Tengwar checkout:
+
+```bash
+cd ../Tengwar
+just thorondor-deploy
+```
+
+The recipe builds the three first-party `:local` images from the sibling
+Thorondor checkout when selected, attaches the Thorondor orchestrator and
+chunker to `tengwar-shared`, points them at Tengwar's `embedding` and `reranker`
+services, and waits for Thorondor `/healthz`. It also generates and preserves
+`CRAWL4AI_API_KEY`, which Crawl4AI 0.9.2 requires before accepting network
+traffic. The recipe recreates only the Thorondor Compose project; do not use
+`down -v` or remove the shared network when switching versions.
+
+Use `/livez` for recurring process liveness and `/healthz` for dependency
+readiness. `/livez` performs no dependency or public-web request. Tengwar's MCP
+registry separately pins the discovered `web_search` descriptor checksum and
+withholds the tool when that descriptor changes; reapprove a changed descriptor
+through the admin MCP workflow before expecting `mcp_thorondor_web_search` to be
+exposed.
+
 ## REST API
 
 ### POST /v1/search
