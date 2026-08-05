@@ -82,6 +82,20 @@ def test_invalid_bounds_are_422_before_fanout(monkeypatch):
     assert client.post("/search", json={"query": "x", "max_urls": 999}).status_code == 422
 
 
+def test_livez_is_process_only(monkeypatch):
+    class FailingHealthClient:
+        async def get(self, url, headers=None):
+            raise AssertionError(f"unexpected dependency probe: {url}")
+
+    monkeypatch.setattr(appmod, "get_health_client", lambda: FailingHealthClient())
+    client = TestClient(appmod.app)
+
+    for _ in range(3):
+        response = client.get("/livez")
+        assert response.status_code == 200
+        assert response.json() == {"status": "ok"}
+
+
 def test_healthz_probes_even_when_deps_are_warm(monkeypatch):
     monkeypatch.setattr(appmod, "deps", fakes.deps())
     monkeypatch.setattr(appmod, "settings", _health_settings(searxng_url="http://closed-port:9"))
@@ -131,28 +145,54 @@ def test_healthz_reports_all_green(monkeypatch):
     }
 
 
+def test_repeated_healthz_requests_never_search_searxng(monkeypatch):
+    seen = []
+
+    class FakeHealthClient:
+        async def get(self, url, headers=None):
+            seen.append((url, headers))
+            if "chunker" in url:
+                return httpx.Response(200, json={"status": "ok", "embedding": True})
+            return httpx.Response(200, json={"status": "ok"})
+
+    monkeypatch.setattr(appmod, "settings", _health_settings())
+    monkeypatch.setattr(appmod, "get_health_client", lambda: FakeHealthClient())
+    client = TestClient(appmod.app)
+
+    for _ in range(3):
+        assert client.get("/healthz").json()["dependencies"]["searxng"] is True
+
+    searxng_requests = [request for request in seen if request[0].startswith("http://searxng:8080")]
+    assert searxng_requests == [
+        ("http://searxng:8080/healthz", {"X-Real-IP": "127.0.0.1"})
+    ] * 3
+    assert all("/search" not in url for url, _headers in seen)
+
+
 def test_join_url_normalizes_slashes():
     assert appmod._join_url("http://reranker:8080/", "health") == "http://reranker:8080/health"
     assert appmod._join_url("http://reranker:8080", "/health") == "http://reranker:8080/health"
 
 
-def test_health_check_can_send_internal_headers(monkeypatch):
-    seen = {}
-
+def test_health_check_rejects_non_success_status(monkeypatch):
     class FakeHealthClient:
         async def get(self, url, headers=None):
-            seen["url"] = url
-            seen["headers"] = headers
-            return httpx.Response(200)
+            return httpx.Response(404)
 
     monkeypatch.setattr(appmod, "get_health_client", lambda: FakeHealthClient())
 
-    name, ok = anyio.run(
-        appmod._check_url,
-        "searxng",
-        "http://searxng:8080/search?q=health&format=json",
-        appmod.SEARXNG_INTERNAL_HEADERS,
-    )
+    name, ok = anyio.run(appmod._check_url, "searxng", "http://searxng:8080/healthz")
 
-    assert (name, ok) == ("searxng", True)
-    assert seen["headers"] == {"X-Real-IP": "127.0.0.1"}
+    assert (name, ok) == ("searxng", False)
+
+
+def test_health_check_rejects_timeout(monkeypatch):
+    class FakeHealthClient:
+        async def get(self, url, headers=None):
+            raise httpx.ReadTimeout("timed out")
+
+    monkeypatch.setattr(appmod, "get_health_client", lambda: FakeHealthClient())
+
+    name, ok = anyio.run(appmod._check_url, "searxng", "http://searxng:8080/healthz")
+
+    assert (name, ok) == ("searxng", False)

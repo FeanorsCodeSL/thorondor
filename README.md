@@ -32,7 +32,7 @@ All inter-service traffic travels over an internal Compose network. Crawl4AI's o
 
 | Path | Type | Description |
 |---|---|---|
-| `orchestrator/` | service | FastAPI app: `/v1/search`, `/search` (compat), `/healthz`, MCP `/mcp` |
+| `orchestrator/` | service | FastAPI app: `/v1/search`, `/search` (compat), `/livez`, `/healthz`, MCP `/mcp` |
 | `semantic-chunking-service/` | service | FastAPI chunker: `/chunk`, `/healthz` — ClusterSemanticChunker + OpenAI-compatible embedding client |
 | `thorondor_cli/` | tool | Textual configurator, env/deploy helpers, native `thorondor-mcp` proxy, and harness writers |
 | `ssrf-proxy/` | service | Minimal async HTTP CONNECT proxy that blocks RFC-1918 and embedded-IPv4 IPv6 targets |
@@ -345,6 +345,12 @@ The MCP server also supports stdio transport via `python -m orchestrator.mcp_ser
 
 ## Health and Observability
 
+### /livez
+
+`GET /livez` is the process-only liveness endpoint used by the orchestrator
+container health check. It returns `{"status":"ok"}` without probing SearXNG or
+any other dependency.
+
 ### /healthz
 
 ```json
@@ -362,7 +368,12 @@ The MCP server also supports stdio transport via `python -m orchestrator.mcp_ser
 }
 ```
 
-`status` is `"degraded"` if any dependency probe fails. `hard_failures` lists `searxng` or `chunker` — either alone causes `SearchDependencyUnavailable` (503). `degraded_dependencies` lists `crawl4ai`, `embedding`, and `reranker`; the pipeline tolerates their absence with reduced quality.
+`GET /healthz` is the dependency-readiness endpoint. `status` is `"degraded"`
+if any dependency probe fails. The SearXNG probe calls its local `/healthz`
+endpoint and never performs a public search. `hard_failures` lists `searxng` or
+`chunker` — either alone causes `SearchDependencyUnavailable` (503).
+`degraded_dependencies` lists `crawl4ai`, `embedding`, and `reranker`; the
+pipeline tolerates their absence with reduced quality.
 
 ### X-Request-ID
 

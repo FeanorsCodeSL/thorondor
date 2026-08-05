@@ -150,9 +150,16 @@ flowchart LR
 
 A per-URL crawl failure is silent at the URL level — the URL is skipped and `stats.urls_crawled_failed` is incremented. The pipeline continues with whatever pages were successfully crawled. An empty response is only returned when **all** crawls fail.
 
-## 4. Health Check Flow
+## 4. Liveness and Readiness Flow
 
-`GET /healthz` probes all five dependencies concurrently and assembles a single response. No dependency probe is blocking; timeouts are governed by `HEALTHCHECK_TIMEOUT_S`.
+`GET /livez` verifies only that the orchestrator process can serve requests. It
+does not call any dependency and is the endpoint used by the Docker health
+check.
+
+`GET /healthz` probes all five dependencies concurrently and assembles a single
+readiness response. No dependency probe performs a public search. The SearXNG
+probe uses SearXNG's local `/healthz` endpoint, while other probe timeouts are
+governed by `HEALTHCHECK_TIMEOUT_S`.
 
 ```mermaid
 sequenceDiagram
@@ -166,8 +173,8 @@ sequenceDiagram
     Client->>Orchestrator: GET /healthz
 
     par concurrent probes
-        Orchestrator->>SearXNG: GET /search?q=health&format=json (with X-Real-IP header)
-        SearXNG-->>Orchestrator: 200 (or error)
+        Orchestrator->>SearXNG: GET /healthz
+        SearXNG-->>Orchestrator: OK (or error)
     and
         Orchestrator->>Crawl4AI: GET /health
         Crawl4AI-->>Orchestrator: 200 (or error)

@@ -1,0 +1,216 @@
+# SearXNG Health Check Search Amplification
+
+## Goal
+Stop Thorondor health monitoring from generating public web searches, distinguish upstream search-engine failure from a genuine empty result, and verify the correction before deploying immutable Thorondor images to the demo Spark.
+
+## Current status
+The issue was reproduced on both Sparks 1 and Sparks 2 during demo preparation on 2026-07-31. Phase 1 implementation and offline verification completed locally on 2026-08-05. Live-container verification remains pending, so the phase is still in progress. Phases 2-4 have not started.
+
+## Problem
+The orchestrator Docker health check calls `GET /healthz` every 30 seconds. The SearXNG dependency probe inside that endpoint calls:
+
+```text
+GET /search?q=health&format=json
+```
+
+This is not a passive health check. It causes SearXNG to submit a real public search to its configured engines on every probe. With the stack running on two machines behind the same public IP, routine container health monitoring produces continuous upstream traffic without any user search.
+
+The health contract also has a false-positive failure mode. The orchestrator treats any HTTP success from SearXNG as healthy, even when SearXNG reports engine failures or returns no usable results. The search client then treats an HTTP 200 response with an empty `results` array as a genuine empty search and does not inspect `unresponsive_engines`. The pipeline consequently reports `no_results_from_discovery`, masking provider degradation as an absence of information.
+
+## Verified evidence
+
+The following observations were collected from the live Sparks 1 and Sparks 2 deployments:
+
+| Evidence | Sparks 1 | Sparks 2 |
+|---|---:|---:|
+| Automatic `q=health` searches in one hour | 118 | 115 |
+| Docker health interval | 30 seconds | 30 seconds |
+| Thorondor/SearXNG image and settings | Identical | Identical |
+| Public egress IP | Shared | Shared |
+| Freshness-constrained reproduction | Empty in 3-5 ms | Empty in 3-5 ms |
+
+Additional evidence:
+
+- SearXNG logged upstream HTTP 403 or access-denied failures for Mojeek, Qwant, and Yep, including temporary engine suspensions.
+- Equivalent searches without the freshness constraint sometimes discovered ten URLs and continued through crawling and reranking. This shows that an empty result is dependent on engine availability and query constraints rather than the whole Thorondor pipeline being unavailable.
+- The failing searches reproduced on both machines. This rules out a Sparks 1 image-packaging or deployment-only defect.
+- The user had performed only a few manual searches, while the health probes generated hundreds of SearXNG searches per hour across the two machines.
+- SearXNG can fan one query out to the five configured engines. The observed 233 health searches per hour therefore represent up to 1,165 upstream engine requests per hour before accounting for engines that SearXNG temporarily suspended.
+
+The continuous synthetic traffic is sufficient to trigger or materially contribute to upstream rate limiting and anti-bot controls. The exact provider thresholds are opaque, so the health traffic should not be described as the sole proven cause of every HTTP 403. It is, however, the dominant self-generated search load and must be removed regardless of provider behavior.
+
+## Root cause
+
+1. `orchestrator/Dockerfile` invokes the orchestrator `/healthz` endpoint every 30 seconds.
+2. `orchestrator/app.py` implements the SearXNG dependency check by issuing a real `/search?q=health` request.
+3. SearXNG fans that request out to public search engines.
+4. Both Spark units repeat the same probe while sharing one public egress IP.
+5. Search engines reject or suspend the resulting traffic.
+6. `orchestrator/clients/searxng_client.py` ignores SearXNG's `unresponsive_engines` response field.
+7. `orchestrator/pipeline.py` maps the resulting empty discovery set to `no_results_from_discovery`.
+8. `/healthz` can still report SearXNG as healthy because it checks HTTP reachability rather than the payload's engine state.
+
+This conflates three different operational concerns:
+
+- **Liveness:** whether the Thorondor process is running.
+- **Readiness:** whether required local dependencies are reachable and able to accept work.
+- **Synthetic search:** whether a complete public-web search succeeds through external providers.
+
+A high-frequency Docker liveness or readiness probe must never perform the synthetic-search function.
+
+## User-visible impact
+
+- Normal container monitoring can consume public search-engine quotas and trigger anti-bot blocking.
+- Search failures are reported as “no results” instead of dependency degradation.
+- The same public-IP reputation affects both development and demo units.
+- A deployment can appear healthy while discovery is unable to obtain evidence.
+- Tengwar may receive no sources or citations and can still produce an unsupported answer unless the caller fails closed.
+- Restarting or redeploying containers does not guarantee recovery from an upstream IP-based restriction.
+
+## References
+
+- `orchestrator/Dockerfile` - invokes `/healthz` as the recurring container health check.
+- `orchestrator/app.py` - implements the SearXNG health probe as a real search.
+- `orchestrator/clients/searxng_client.py` - sends freshness constraints and currently ignores `unresponsive_engines`.
+- `orchestrator/pipeline.py` - maps an empty discovery set to `no_results_from_discovery`.
+- `orchestrator/mcp_server.py` - defines the structured MCP search inputs, including `domains` and freshness.
+- `orchestrator/tests/test_app_rest.py` - currently asserts the real-search health-check behavior.
+- `searxng/settings.yml` - defines the public engines used by the bundled SearXNG service.
+- `docs/architecture/pipeline-workflow.md` - documents the current health flow.
+- `docs/architecture/deployment.md` - uses `/healthz` as a deployment and monitoring gate.
+- `README.md` - documents the public health and search response contracts.
+
+## Build & run
+
+- **Containerized:** yes
+- **Build command:** `docker compose --env-file .env.example --env-file .env.production.example -f docker-compose.production.yml config`
+- **Test command:** `python -m pytest semantic-chunking-service/tests orchestrator/tests -v`
+
+## Required health model
+
+- The liveness check verifies only the Thorondor process and does not call SearXNG or any public service.
+- The readiness check may verify local dependency reachability, but its SearXNG probe must not use `/search` or generate external traffic.
+- A full end-to-end synthetic search, if retained, is a separate explicit operation with a low frequency, an identifiable query, independent alerting, and no role in Docker container liveness.
+- Health responses must distinguish process failure, local dependency unavailability, and external search-provider degradation.
+
+## Phase 1 - Stop health-check search traffic
+
+**Status:** in_progress
+**Kind:** logic
+
+### Tasks
+
+- [x] Replace the SearXNG portion of `/healthz` with a non-search local reachability or readiness probe.
+- [x] Separate orchestrator liveness from dependency readiness if one endpoint cannot express both contracts clearly.
+- [x] Preserve detection of connection failures, timeouts, and non-success HTTP responses.
+- [x] Ensure the Docker health check uses the process-only liveness contract.
+- [x] Update REST tests so repeated health requests prove that no SearXNG `/search` call occurs.
+- [x] Update the README and architecture/deployment documentation to match the corrected contracts.
+
+### Implementation report
+
+- Added process-only `GET /livez` and pointed the orchestrator Docker health check to it.
+- Kept `GET /healthz` as the dependency-readiness contract used by deployment tooling.
+- Replaced SearXNG `/search?q=health` with the pinned image's passive local `/healthz` endpoint.
+- Preserved the internal `X-Real-IP` header on the passive probe so SearXNG bot detection accepts it without logging a missing-client-IP error.
+- Required successful 2xx responses from readiness probes instead of accepting all responses below 500.
+- Added REST regression coverage for repeated passive probes, process-only liveness, timeouts, connection failures, and non-success HTTP responses.
+- Updated the README and architecture documents to distinguish liveness from readiness.
+
+### Verification
+
+- [x] Run the focused orchestrator health tests.
+- [x] Run the complete offline orchestrator test suite.
+- [ ] Observe a running container for at least ten minutes and confirm that its health probes produce zero SearXNG search requests.
+- [ ] Stop or disconnect SearXNG and confirm readiness reports it unavailable without generating public traffic.
+
+### Verification report
+
+- Focused REST health suite: 14 passed with one upstream deprecation warning.
+- Complete offline chunker and orchestrator suites: 255 passed with three upstream deprecation warnings.
+- Follow-up after restoring the internal SearXNG probe header: 211 orchestrator tests passed with three upstream deprecation warnings.
+- Production Compose configuration validation passed.
+- `git diff --check` passed, and static inspection confirmed Docker targets `/livez` while readiness targets SearXNG `/healthz`.
+- Live-container observation and dependency-disconnection checks were not run because no deployment or running-stack mutation was authorized in this phase.
+
+## Phase 2 - Report search-provider degradation accurately
+
+**Status:** pending
+**Kind:** logic
+
+### Tasks
+
+- [ ] Parse and evaluate SearXNG's `unresponsive_engines` field.
+- [ ] Define a structured result that distinguishes a healthy empty search from partial engine degradation and complete discovery unavailability.
+- [ ] Prevent upstream engine failures from collapsing silently into `no_results_from_discovery`.
+- [ ] Preserve equivalent failure semantics for the REST and MCP interfaces.
+- [ ] Add tests for HTTP 200 responses with healthy empty results, partially failed engines, and no responsive engines.
+- [ ] Document the new response reason or error contract.
+
+### Verification
+
+- [ ] Prove that a healthy SearXNG response with no matches remains a genuine empty result.
+- [ ] Prove that HTTP 200 with failed or suspended engines is surfaced as degraded or unavailable.
+- [ ] Prove that REST and MCP callers receive equivalent structured outcomes.
+
+## Phase 3 - Make external discovery reliable
+
+**Status:** pending
+**Kind:** logic
+
+### Tasks
+
+- [ ] Evaluate an explicitly configured API-backed search provider for reliable demo and production discovery.
+- [ ] Keep provider credentials in runtime secrets and retain SearXNG as an unmodified, opaque third-party dependency.
+- [ ] Ensure caller-supplied domain constraints use the existing structured `domains` input.
+- [ ] Define an explicit retry or fallback policy for freshness-constrained searches.
+- [ ] Do not silently remove a user's domain or freshness constraint to obtain results.
+- [ ] Require an explicit evidence-unavailable outcome when discovery cannot provide sources.
+
+### Verification
+
+- [ ] Exercise a controlled `reddit.com` domain-constrained search through both REST and MCP.
+- [ ] Exercise the same query with and without a freshness constraint and verify the response reports any constraint-related failure accurately.
+- [ ] Confirm successful responses contain usable source URLs and unsuccessful responses do not imply that the requested information does not exist.
+
+## Phase 4 - Deploy and verify the correction
+
+**Status:** pending
+**Kind:** logic
+
+### Tasks
+
+- [ ] Build and publish new first-party Thorondor images from the corrected commit.
+- [ ] Record immutable image digests for the orchestrator, chunker, and egress proxy.
+- [ ] Deploy and verify the images on Sparks 2 first.
+- [ ] Allow existing SearXNG engine suspensions to expire or recover only after automatic search traffic has stopped.
+- [ ] Deploy the same immutable image digests to Sparks 1 without copying or cloning Thorondor source code onto the demo unit.
+- [ ] Preserve the existing separation between the Tengwar and Thorondor Compose projects.
+
+### Verification
+
+- [ ] Confirm both units use the recorded image digests and expected SearXNG configuration.
+- [ ] Confirm ten minutes of container health checks on each unit produce zero public search requests.
+- [ ] Confirm local dependency loss is still visible through readiness.
+- [ ] Run one controlled domain-constrained search and verify that it returns cited evidence or an explicit provider-degradation response.
+- [ ] Confirm Sparks 1 contains runtime images and configuration only, with no Thorondor source or test tree.
+
+## Acceptance criteria
+
+- Ten minutes of normal Docker health probing generate zero `/search?q=health` requests and zero other public searches.
+- Orchestrator liveness remains healthy when the process can serve requests.
+- Readiness reports SearXNG unavailable when its container cannot be reached.
+- SearXNG engine failures or suspensions are not reported as `no_results_from_discovery`.
+- A healthy search with genuinely no matching results retains an explicit empty-result outcome.
+- REST and MCP expose equivalent degradation semantics.
+- Domain and freshness constraints are never silently weakened.
+- A live constrained search either returns usable citations or explicitly reports that evidence is unavailable.
+- The demo unit runs immutable production images without Thorondor source code or tests.
+
+## Operational constraints
+
+- No recurring health probe may generate public web traffic.
+- Do not patch or redistribute modified SearXNG source as part of this fix.
+- Do not assume a container restart clears an upstream IP restriction.
+- Do not hide provider failures behind a successful HTTP status or an empty result.
+- Do not deploy mutable tags when an immutable digest is available.

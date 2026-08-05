@@ -102,7 +102,7 @@ async def search(req: SearchRequest) -> SearchResponse:
 async def _check_url(name: str, url: str, headers: dict[str, str] | None = None) -> tuple[str, bool]:
     try:
         response = await get_health_client().get(url, headers=headers)
-        return name, response.status_code < 500
+        return name, response.is_success
     except Exception:
         return name, False
 
@@ -110,7 +110,7 @@ async def _check_url(name: str, url: str, headers: dict[str, str] | None = None)
 async def _check_chunker(url: str) -> tuple[tuple[str, bool], tuple[str, bool]]:
     try:
         response = await get_health_client().get(url)
-        if response.status_code >= 500:
+        if not response.is_success:
             return ("chunker", False), ("embedding", False)
         payload = response.json()
         return ("chunker", True), ("embedding", bool(payload.get("embedding", False)))
@@ -123,13 +123,18 @@ def _join_url(base_url: str, path: str) -> str:
     return f"{base_url.rstrip('/')}{normalized_path}"
 
 
+@app.get("/livez")
+async def livez():
+    return {"status": "ok"}
+
+
 @app.get("/healthz")
 async def healthz():
     s = get_settings()
     searxng, crawl4ai, chunker_pair, reranker = await asyncio.gather(
         _check_url(
             "searxng",
-            f"{s.searxng_url.rstrip('/')}/search?q=health&format=json",
+            f"{s.searxng_url.rstrip('/')}/healthz",
             SEARXNG_INTERNAL_HEADERS,
         ),
         _check_url("crawl4ai", f"{s.crawl4ai_url.rstrip('/')}/health"),

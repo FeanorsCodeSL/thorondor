@@ -190,15 +190,22 @@ Compose `depends_on` relationships (no `condition: service_healthy` by default, 
 ```
 orchestrator
   └── depends_on: searxng, crawl4ai, chunker
+  └── healthcheck: GET /livez (interval 30s, 3 retries)
 
 crawl4ai
   └── depends_on: egress-proxy
   └── healthcheck: redis-cli ping + curl /health (interval 30s, 3 retries, 5s start_period)
 ```
 
-All other services (`searxng`, `chunker`, `egress-proxy`, `embedding`, `reranker`) start without explicit health-gate dependencies and are polled by the deploy script via `GET /healthz` on the orchestrator.
+All other services (`searxng`, `chunker`, `egress-proxy`, `embedding`, `reranker`) start without explicit health-gate dependencies and are polled by the deploy script via `GET /healthz` on the orchestrator. This readiness endpoint checks SearXNG through its local `/healthz` route and does not submit a search.
 
-The deploy script waits up to 120 seconds (60 attempts x 2s sleep) for `/healthz` to return a response with at least one dependency value and no `false` values in the `dependencies` object. The smoke script waits up to 180 seconds before issuing live search requests, which gives model containers extra time to finish loading.
+The orchestrator container health check calls process-only `GET /livez`, so its
+30-second polling interval generates no dependency or public-web traffic. The
+deploy script waits up to 120 seconds (60 attempts x 2s sleep) for `/healthz` to
+return a response with at least one dependency value and no `false` values in
+the `dependencies` object. The smoke script waits up to 180 seconds before
+issuing live search requests, which gives model containers extra time to finish
+loading.
 
 ## 5. The Deploy Script
 
@@ -335,6 +342,6 @@ Known considerations:
 - [ ] **API keys on internal seams** — set `SEARXNG_API_KEY`, `CRAWL4AI_API_KEY`, `CHUNKER_API_KEY`, `RERANKER_API_KEY`, and `EMBEDDING_API_KEY` if the corresponding services are accessible beyond the internal Docker network.
 - [ ] **Log shipping** — the orchestrator emits JSON logs to stdout. Configure a log driver or sidecar to ship to your log aggregation system.
 - [ ] **Container resource limits** — set memory limits for all containers, especially `CHUNKER_MEM_LIMIT` (default `768m`) for large documents with many segments. The DP chunker allocates O(N²) during similarity matrix computation.
-- [ ] **Health monitoring** — integrate `/healthz` with your monitoring system. Alert on `hard_failures` being non-empty.
+- [ ] **Health monitoring** — use `/livez` for process liveness and `/healthz` for dependency readiness. Alert on `hard_failures` being non-empty.
 - [ ] **Docker socket exposure** — Thorondor does not require access to the Docker socket. Verify no container has it mounted.
 - [ ] **Secrets management** — do not commit `.env` or `.env.llamacpp` files containing secrets. Use a secrets manager or CI/CD vault to inject values at deploy time.
