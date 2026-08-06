@@ -4,7 +4,7 @@ from pathlib import Path
 import pytest
 from pydantic import ValidationError
 
-from orchestrator.models import MAX_QUERY_CHARS, MAX_SELECTED_URLS, MAX_TOKEN_BUDGET, SearchRequest, SearchResponse, SearchStats
+from orchestrator.models import MAX_QUERY_CHARS, MAX_SELECTED_URLS, MAX_TOKEN_BUDGET, Passage, SearchRequest, SearchResponse, SearchStats
 
 
 def test_search_request_defaults():
@@ -83,6 +83,19 @@ def test_passages_are_labeled_external_untrusted():
 
     assert passage.provenance == "external_web"
     assert passage.trust == "untrusted"
+
+
+def test_non_verbatim_passages_cannot_claim_evidence_ids():
+    with pytest.raises(ValidationError):
+        Passage(
+            text="rewritten",
+            score=1.0,
+            token_count=1,
+            citation_id=1,
+            verbatim=False,
+            document_id="1" * 64,
+            evidence_id="2" * 64,
+        )
 
 
 def test_search_response_schema_matches_golden():

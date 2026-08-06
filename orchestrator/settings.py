@@ -2,10 +2,14 @@
 from dataclasses import dataclass
 import ipaddress
 import os
+import re
+from urllib.parse import urlparse
 
 from .url_safety import UrlSafetyPolicy
 
 MAX_CRAWL_CONCURRENCY = 20
+CRAWLER_ROBOTS_TOKEN = re.compile(r"[A-Za-z][A-Za-z0-9._-]*")
+CRAWLER_CONTACT_URL = re.compile(r"https?://[^\s()<>]+")
 
 
 def _required(name: str) -> str:
@@ -58,6 +62,14 @@ def _ipv6_networks_env(name: str) -> list[ipaddress.IPv6Network]:
     return [network for network in networks if isinstance(network, ipaddress.IPv6Network)]
 
 
+def _has_contact_url(user_agent: str) -> bool:
+    for candidate in CRAWLER_CONTACT_URL.findall(user_agent):
+        parsed = urlparse(candidate)
+        if parsed.scheme in {"http", "https"} and parsed.hostname:
+            return True
+    return False
+
+
 @dataclass(frozen=True)
 class SearchProfileDefaults:
     token_budget: int
@@ -97,8 +109,8 @@ class Settings:
     allowlist_only: bool
     crawl_respect_robots_txt: bool
     crawl_per_host_concurrency: int
-    crawl_validate_redirects: bool
-    crawl_max_preflight_redirects: int
+    crawler_user_agent: str
+    crawler_robots_user_agent: str
     searxng_api_key: str | None
     crawl4ai_api_key: str | None
     chunker_api_key: str | None
@@ -121,8 +133,14 @@ class Settings:
             raise RuntimeError(f"CRAWL_CONCURRENCY must be between 1 and {MAX_CRAWL_CONCURRENCY}")
         if self.crawl_per_host_concurrency < 1:
             raise RuntimeError("CRAWL_PER_HOST_CONCURRENCY must be >= 1")
-        if self.crawl_max_preflight_redirects < 1:
-            raise RuntimeError("CRAWL_MAX_PREFLIGHT_REDIRECTS must be >= 1")
+        if "\r" in self.crawler_user_agent or "\n" in self.crawler_user_agent:
+            raise RuntimeError("CRAWLER_USER_AGENT must not contain newline characters")
+        if not _has_contact_url(self.crawler_user_agent):
+            raise RuntimeError("CRAWLER_USER_AGENT must contain an http or https contact URL")
+        if not CRAWLER_ROBOTS_TOKEN.fullmatch(self.crawler_robots_user_agent):
+            raise RuntimeError("CRAWLER_ROBOTS_USER_AGENT must be a robots user-agent token")
+        if self.crawler_robots_user_agent.casefold() not in self.crawler_user_agent.casefold():
+            raise RuntimeError("CRAWLER_ROBOTS_USER_AGENT must appear in CRAWLER_USER_AGENT")
         if self.reranker_batch_size < 1:
             raise RuntimeError("RERANKER_BATCH_SIZE must be >= 1")
         if self.reranker_timeout_s < 1:
@@ -163,8 +181,8 @@ def load_settings() -> Settings:
         allowlist_only=_bool_env("ALLOWLIST_ONLY"),
         crawl_respect_robots_txt=_bool_env("CRAWL_RESPECT_ROBOTS_TXT"),
         crawl_per_host_concurrency=_int_env("CRAWL_PER_HOST_CONCURRENCY"),
-        crawl_validate_redirects=_bool_env("CRAWL_VALIDATE_REDIRECTS"),
-        crawl_max_preflight_redirects=_int_env("CRAWL_MAX_PREFLIGHT_REDIRECTS"),
+        crawler_user_agent=_required("CRAWLER_USER_AGENT"),
+        crawler_robots_user_agent=_required("CRAWLER_ROBOTS_USER_AGENT"),
         searxng_api_key=_configured_optional("SEARXNG_API_KEY"),
         crawl4ai_api_key=_configured_optional("CRAWL4AI_API_KEY"),
         chunker_api_key=_configured_optional("CHUNKER_API_KEY"),

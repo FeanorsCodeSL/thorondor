@@ -26,8 +26,8 @@ REQUIRED = [
     "ALLOWLIST_ONLY",
     "CRAWL_RESPECT_ROBOTS_TXT",
     "CRAWL_PER_HOST_CONCURRENCY",
-    "CRAWL_VALIDATE_REDIRECTS",
-    "CRAWL_MAX_PREFLIGHT_REDIRECTS",
+    "CRAWLER_USER_AGENT",
+    "CRAWLER_ROBOTS_USER_AGENT",
     "SEARXNG_API_KEY",
     "CRAWL4AI_API_KEY",
     "CHUNKER_API_KEY",
@@ -83,8 +83,8 @@ def set_required_env(monkeypatch):
         "ALLOWLIST_ONLY": "false",
         "CRAWL_RESPECT_ROBOTS_TXT": "true",
         "CRAWL_PER_HOST_CONCURRENCY": "1",
-        "CRAWL_VALIDATE_REDIRECTS": "true",
-        "CRAWL_MAX_PREFLIGHT_REDIRECTS": "5",
+        "CRAWLER_USER_AGENT": "ThorondorBot/1.0 (+https://example.test/contact)",
+        "CRAWLER_ROBOTS_USER_AGENT": "ThorondorBot",
         "SEARXNG_API_KEY": "",
         "CRAWL4AI_API_KEY": "",
         "CHUNKER_API_KEY": "",
@@ -146,8 +146,8 @@ def test_domain_blocklist_parses_explicit_configuration(monkeypatch):
     assert settings.allowlist_only is True
     assert settings.crawl_respect_robots_txt is False
     assert settings.crawl_per_host_concurrency == 2
-    assert settings.crawl_validate_redirects is True
-    assert settings.crawl_max_preflight_redirects == 5
+    assert settings.crawler_user_agent == "ThorondorBot/1.0 (+https://example.test/contact)"
+    assert settings.crawler_robots_user_agent == "ThorondorBot"
     assert settings.reranker_api_key == "secret"
     assert settings.max_urls == 6
     assert settings.crawl_concurrency == 4
@@ -206,4 +206,21 @@ def test_invalid_crawl_concurrency_rejected(monkeypatch):
     monkeypatch.setenv("CRAWL_CONCURRENCY", "999")
 
     with pytest.raises(RuntimeError):
+        load_settings()
+
+
+@pytest.mark.parametrize(
+    ("name", "value", "match"),
+    [
+        ("CRAWLER_USER_AGENT", "ThorondorBot/1.0", "contact URL"),
+        ("CRAWLER_USER_AGENT", "ThorondorBot/1.0\r\nX: y (+https://example.test/contact)", "newline"),
+        ("CRAWLER_ROBOTS_USER_AGENT", "*", "robots user-agent token"),
+        ("CRAWLER_ROBOTS_USER_AGENT", "AnotherBot", "must appear"),
+    ],
+)
+def test_invalid_crawler_identity_rejected(monkeypatch, name, value, match):
+    set_required_env(monkeypatch)
+    monkeypatch.setenv(name, value)
+
+    with pytest.raises(RuntimeError, match=match):
         load_settings()

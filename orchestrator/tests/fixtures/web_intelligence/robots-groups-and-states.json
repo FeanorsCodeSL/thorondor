@@ -1,0 +1,25 @@
+{
+  "groups": [
+    {
+      "user_agent": "ThorondorBot",
+      "allow": ["/public"],
+      "disallow": ["/private"],
+      "crawl_delay_seconds": 2
+    },
+    {
+      "user_agent": "*",
+      "allow": ["/"],
+      "disallow": ["/preview"]
+    }
+  ],
+  "states": [
+    {
+      "status": 404,
+      "descriptor": "robots_unavailable_allow"
+    },
+    {
+      "status": 503,
+      "descriptor": "robots_unreachable_disallow"
+    }
+  ]
+}

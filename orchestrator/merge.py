@@ -20,6 +20,7 @@ def merge_dedup(result_sets: list[list[DiscoveryResult]]) -> list[DiscoveryResul
             result.snippet,
             result.engine,
             result.score + ((counts[normalize_url(result.url)] - 1) * 0.0001),
+            result.published_at,
         )
         for result in best.values()
     ]

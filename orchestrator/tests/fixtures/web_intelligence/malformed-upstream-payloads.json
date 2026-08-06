@@ -1,0 +1,93 @@
+{
+  "searxng": [
+    {
+      "name": "non-object-envelope",
+      "payload": []
+    },
+    {
+      "name": "missing-plural-engines",
+      "payload": {
+        "results": [
+          {
+            "positions": [1],
+            "publishedDate": "2026-08-04T10:15:00Z"
+          }
+        ]
+      }
+    },
+    {
+      "name": "wrong-position-type",
+      "payload": {
+        "results": [
+          {
+            "engines": ["fixture-news"],
+            "positions": "first",
+            "publishedDate": "2026-08-04T10:15:00Z"
+          }
+        ]
+      }
+    }
+  ],
+  "crawl4ai": [
+    {
+      "name": "empty-results",
+      "payload": {
+        "results": []
+      }
+    },
+    {
+      "name": "missing-response-headers",
+      "payload": {
+        "results": [
+          {
+            "redirected_url": "https://fixtures.thorondor.test/articles/final",
+            "status_code": 200,
+            "links": {
+              "internal": [],
+              "external": []
+            },
+            "metadata": {}
+          }
+        ]
+      }
+    },
+    {
+      "name": "wrong-status-type",
+      "payload": {
+        "results": [
+          {
+            "redirected_url": "https://fixtures.thorondor.test/articles/final",
+            "status_code": "200",
+            "response_headers": {},
+            "links": {
+              "internal": [],
+              "external": []
+            },
+            "metadata": {}
+          }
+        ]
+      }
+    },
+    {
+      "name": "wrong-nested-link-href-type",
+      "payload": {
+        "results": [
+          {
+            "redirected_url": "https://fixtures.thorondor.test/articles/final",
+            "status_code": 200,
+            "response_headers": {},
+            "links": {
+              "internal": [
+                {
+                  "href": 7
+                }
+              ],
+              "external": []
+            },
+            "metadata": {}
+          }
+        ]
+      }
+    }
+  ]
+}

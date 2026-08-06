@@ -1,10 +1,15 @@
 import anyio
+import asyncio
 from types import SimpleNamespace
 from fastapi.testclient import TestClient
 import httpx
+import ipaddress
+import time
 
 import orchestrator.app as appmod
 from orchestrator import fakes
+import orchestrator.url_safety as url_safety
+from orchestrator.types import DiscoveryOutcome, DiscoveryResult, Page
 
 
 def _health_settings(**overrides):
@@ -29,6 +34,61 @@ def test_search_happy_path(monkeypatch):
     assert body["citations"]
     assert body["stats"]
     assert body["schema_version"] == "thorondor.search.v1"
+    passage = body["passages"][0]
+    citation = body["citations"][0]
+    assert passage["verbatim"] is True
+    assert passage["document_id"] == citation["document_id"]
+    assert passage["evidence_id"] == citation["evidence_spans"][0]["evidence_id"]
+    assert citation["metadata"]["title"]["source"] == "fetch_title"
+
+
+def test_search_exposes_publication_modification_sources_and_conflicts(monkeypatch):
+    class PublishedDiscovery:
+        async def search(self, _query, _freshness=None):
+            return DiscoveryOutcome(
+                [
+                    DiscoveryResult(
+                        "Discovered",
+                        "https://a.test/article",
+                        "snippet",
+                        "fixture",
+                        1.0,
+                        published_at="2026-08-04T08:00:00Z",
+                    )
+                ],
+                [],
+            )
+
+    class MetadataExtractor:
+        async def extract(self, urls):
+            html = """
+            <html lang="en"><head>
+              <title>Evidence title</title>
+              <script type="application/ld+json">
+                {"datePublished":"2026-08-04T10:15:00+02:00","dateModified":"2026-08-05T11:30:00+02:00"}
+              </script>
+            </head></html>
+            """
+            return [Page(urls[0], "Fetched", "# Heading\n\nEvidence body.", html=html)]
+
+    monkeypatch.setattr(
+        appmod,
+        "deps",
+        fakes.deps(discovery=PublishedDiscovery(), extractor=MetadataExtractor()),
+    )
+
+    body = TestClient(appmod.app).post("/search", json={"query": "x"}).json()
+    citation = body["citations"][0]
+
+    assert citation["published"] == "2026-08-04T08:15:00Z"
+    assert citation["modified_at"] == "2026-08-05T09:30:00Z"
+    assert citation["metadata"]["published_at"]["source"] == "json_ld"
+    assert citation["metadata"]["modified_at"]["source"] == "json_ld"
+    conflicts = {item["field"]: item for item in citation["metadata"]["conflicts"]}
+    assert {candidate["source"] for candidate in conflicts["published_at"]["candidates"]} == {
+        "json_ld",
+        "discovery",
+    }
 
 
 def test_search_returns_request_id_header(monkeypatch):
@@ -57,6 +117,11 @@ def test_search_includes_raw_markdown(monkeypatch):
     body = client.post("/search", json={"query": "x", "include_raw_markdown": True}).json()
 
     assert body["raw_markdown"]
+    raw = body["raw_markdown"][0]
+    citation = next(item for item in body["citations"] if item["id"] == raw["citation_id"])
+    passage = next(item for item in body["passages"] if item["citation_id"] == raw["citation_id"])
+    assert raw["document_id"] == citation["document_id"] == passage["document_id"]
+    assert raw["cleaned_markdown"][passage["start_index"]:passage["end_index"]] == passage["text"]
 
 
 def test_dependency_outage_maps_to_503(monkeypatch):
@@ -94,6 +159,51 @@ def test_livez_is_process_only(monkeypatch):
         response = client.get("/livez")
         assert response.status_code == 200
         assert response.json() == {"status": "ok"}
+
+
+def test_livez_stays_responsive_while_url_safety_dns_is_slow(monkeypatch):
+    policy = url_safety.UrlSafetyPolicy(
+        blocked_ip_categories={
+            "loopback",
+            "link_local",
+            "private",
+            "reserved",
+            "multicast",
+            "unspecified",
+        },
+        blocked_special_ips={
+            ipaddress.ip_address("169.254.169.254"),
+            ipaddress.ip_address("fd00:ec2::254"),
+        },
+        nat64_networks=[ipaddress.ip_network("64:ff9b::/96")],
+        six_to_four_networks=[ipaddress.ip_network("2002::/16")],
+        ipv4_compat_networks=[ipaddress.ip_network("::/96")],
+    )
+
+    def slow_resolver(_host):
+        time.sleep(0.2)
+        return [ipaddress.ip_address("93.184.216.34")]
+
+    monkeypatch.setattr(url_safety, "resolve_host_ips", slow_resolver)
+
+    async def exercise():
+        started = time.perf_counter()
+        safety_task = asyncio.create_task(url_safety.is_safe_crawl_url_async("https://slow.example", policy))
+        await asyncio.sleep(0)
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=appmod.app),
+            base_url="http://testserver",
+        ) as client:
+            response = await client.get("/livez")
+        elapsed = time.perf_counter() - started
+        return response, elapsed, await safety_task
+
+    response, elapsed, is_safe = anyio.run(exercise)
+
+    assert response.status_code == 200
+    assert response.json() == {"status": "ok"}
+    assert elapsed < 0.1
+    assert is_safe is True
 
 
 def test_healthz_probes_even_when_deps_are_warm(monkeypatch):

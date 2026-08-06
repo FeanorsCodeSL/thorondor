@@ -25,6 +25,49 @@
           ],
           "default": null,
           "title": "Published"
+        },
+        "modified_at": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Modified At"
+        },
+        "document_id": {
+          "anyOf": [
+            {
+              "pattern": "^[0-9a-f]{64}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Document Id"
+        },
+        "evidence_spans": {
+          "items": {
+            "$ref": "#/$defs/EvidenceSpan"
+          },
+          "title": "Evidence Spans",
+          "type": "array"
+        },
+        "metadata": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/CitationMetadata"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
         }
       },
       "required": [
@@ -33,6 +76,230 @@
         "title"
       ],
       "title": "Citation",
+      "type": "object"
+    },
+    "CitationMetadata": {
+      "properties": {
+        "title": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/MetadataValue"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "description": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/MetadataValue"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "published_at": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/MetadataValue"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "modified_at": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/MetadataValue"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "author": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/MetadataValue"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "language": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/MetadataValue"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "declared_canonical_url": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/MetadataValue"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "conflicts": {
+          "items": {
+            "$ref": "#/$defs/MetadataConflict"
+          },
+          "maxItems": 7,
+          "title": "Conflicts",
+          "type": "array"
+        }
+      },
+      "title": "CitationMetadata",
+      "type": "object"
+    },
+    "EvidenceSpan": {
+      "properties": {
+        "start_index": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Start Index"
+        },
+        "end_index": {
+          "anyOf": [
+            {
+              "exclusiveMinimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "End Index"
+        },
+        "verbatim": {
+          "default": false,
+          "title": "Verbatim",
+          "type": "boolean"
+        },
+        "evidence_id": {
+          "anyOf": [
+            {
+              "pattern": "^[0-9a-f]{64}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Evidence Id"
+        },
+        "section_heading": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Section Heading"
+        }
+      },
+      "title": "EvidenceSpan",
+      "type": "object"
+    },
+    "MetadataConflict": {
+      "properties": {
+        "field": {
+          "enum": [
+            "title",
+            "description",
+            "published_at",
+            "modified_at",
+            "author",
+            "language",
+            "declared_canonical_url"
+          ],
+          "title": "Field",
+          "type": "string"
+        },
+        "candidates": {
+          "items": {
+            "$ref": "#/$defs/MetadataValue"
+          },
+          "maxItems": 8,
+          "title": "Candidates",
+          "type": "array"
+        }
+      },
+      "required": [
+        "field",
+        "candidates"
+      ],
+      "title": "MetadataConflict",
+      "type": "object"
+    },
+    "MetadataValue": {
+      "properties": {
+        "value": {
+          "maxLength": 8192,
+          "title": "Value",
+          "type": "string"
+        },
+        "source": {
+          "enum": [
+            "html_title",
+            "html_canonical",
+            "html_lang",
+            "json_ld",
+            "html_meta",
+            "page_metadata",
+            "discovery",
+            "sitemap",
+            "fetch_title"
+          ],
+          "title": "Source",
+          "type": "string"
+        },
+        "confidence": {
+          "enum": [
+            "high",
+            "medium",
+            "low"
+          ],
+          "title": "Confidence",
+          "type": "string"
+        }
+      },
+      "required": [
+        "value",
+        "source",
+        "confidence"
+      ],
+      "title": "MetadataValue",
       "type": "object"
     },
     "Passage": {
@@ -52,6 +319,75 @@
         "citation_id": {
           "title": "Citation Id",
           "type": "integer"
+        },
+        "start_index": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Start Index"
+        },
+        "end_index": {
+          "anyOf": [
+            {
+              "exclusiveMinimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "End Index"
+        },
+        "verbatim": {
+          "default": false,
+          "title": "Verbatim",
+          "type": "boolean"
+        },
+        "document_id": {
+          "anyOf": [
+            {
+              "pattern": "^[0-9a-f]{64}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Document Id"
+        },
+        "evidence_id": {
+          "anyOf": [
+            {
+              "pattern": "^[0-9a-f]{64}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Evidence Id"
+        },
+        "section_heading": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Section Heading"
         },
         "provenance": {
           "const": "external_web",
@@ -84,6 +420,31 @@
         "markdown": {
           "title": "Markdown",
           "type": "string"
+        },
+        "cleaned_markdown": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Cleaned Markdown"
+        },
+        "document_id": {
+          "anyOf": [
+            {
+              "pattern": "^[0-9a-f]{64}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Document Id"
         }
       },
       "required": [

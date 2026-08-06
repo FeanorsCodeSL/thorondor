@@ -6,7 +6,7 @@ from fastapi import FastAPI, HTTPException, Request
 from .settings import load_settings
 from .cluster_semantic import ClusterSemanticChunker
 from .embedding_function import EmbeddingFunction
-from .models import ChunkOut, ChunkRequest, ChunkResponse
+from .models import ChunkOut, ChunkRequest, ChunkResponse, SourceType
 from .observability import new_request_id, reset_request_id, set_request_id
 from .strategies import resolve_strategy
 from .textprep import preclean
@@ -59,7 +59,8 @@ def chunk(req: ChunkRequest) -> ChunkResponse:
     except (KeyError, ValueError) as exc:
         raise HTTPException(status_code=400, detail=str(exc))
 
-    text = preclean(req.text, req.source_type.value)
+    preserve_offsets = req.source_type == SourceType.ORCHESTRATOR_MARKDOWN
+    text = req.text if preserve_offsets else preclean(req.text, req.source_type.value)
 
     chunker = ClusterSemanticChunker(
         embedding_function=_embedder,
@@ -69,7 +70,7 @@ def chunk(req: ChunkRequest) -> ChunkResponse:
         length_function=_length,
     )
 
-    results = chunker.split_text_with_metadata(text)
+    results = chunker.split_text_with_metadata(text, preserve_offsets=preserve_offsets)
 
     chunks = [
         ChunkOut(
@@ -78,6 +79,7 @@ def chunk(req: ChunkRequest) -> ChunkResponse:
             position=i,
             start_index=r.start_index,
             end_index=r.end_index,
+            verbatim=r.verbatim,
             metadata={
                 **req.metadata,
                 "strategy_version": version,

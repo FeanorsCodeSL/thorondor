@@ -1,0 +1,15 @@
+{
+  "requested_url": "https://fixtures.thorondor.test/start",
+  "hops": [
+    {
+      "status": 302,
+      "location": "/intermediate"
+    },
+    {
+      "status": 308,
+      "location": "https://fixtures.thorondor.test/final"
+    }
+  ],
+  "final_url": "https://fixtures.thorondor.test/final",
+  "final_status": 200
+}

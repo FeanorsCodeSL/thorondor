@@ -20,6 +20,7 @@ from .types import (
     PrefilteredChunks,
     ScoredChunk,
 )
+from .url_identity import build_document_identity, evidence_id_for
 
 
 FAKE_ARTICLE_URL = "https://a.test/article"
@@ -182,11 +183,36 @@ class DownExtractor:
         raise RuntimeError("extractor down")
 
 
+def _chunk_page(page: Page, position: int) -> Chunk:
+    identity = build_document_identity(page.final_url or page.url, page.markdown)
+    return Chunk(
+        text=page.markdown,
+        token_count=len(page.markdown.split()),
+        source_url=identity.final_url,
+        title=page.title,
+        position=position,
+        source_id=page.source_id,
+        start_index=0,
+        end_index=len(page.markdown),
+        verbatim=True,
+        document_id=identity.document_id,
+        evidence_id=evidence_id_for(
+            identity.final_url,
+            identity.cleaned_markdown_sha256,
+            0,
+            len(page.markdown),
+        ),
+        final_url=identity.final_url,
+        cleaned_markdown_sha256=identity.cleaned_markdown_sha256,
+        evidence_metadata=page.evidence_metadata,
+    )
+
+
 class FakeChunker:
     async def chunk(self, pages: list[Page]) -> list[Chunk]:
         await _async_boundary()
         return [
-            Chunk(page.markdown, len(page.markdown.split()), page.url, page.title, index, page.source_id)
+            _chunk_page(page, index)
             for page in pages
             for index in [0]
         ]
@@ -203,7 +229,7 @@ class PartialChunker:
         await _async_boundary()
         kept = pages[: max(1, len(pages) - 1)]
         return [
-            Chunk(page.markdown, len(page.markdown.split()), page.url, page.title, index, page.source_id)
+            _chunk_page(page, index)
             for page in kept
             for index in [0]
         ]

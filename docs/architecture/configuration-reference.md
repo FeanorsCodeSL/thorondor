@@ -56,8 +56,8 @@ All environment variables must be present in `.env` (and `.env.llamacpp` or `.en
 | `CRAWL_PER_HOST_CONCURRENCY` | Required / `1` | int (≥ 1) | Concurrent requests to the same hostname. | `CRAWL_CONCURRENCY` |
 | `CRAWL_TIMEOUT_S` | Required / `15` | int (> 0) | Per-URL crawl timeout in seconds. Also the asyncio.wait timeout for the batch. | `CRAWL_CONCURRENCY` |
 | `CRAWL_RESPECT_ROBOTS_TXT` | Required / `true` | bool | Pass `check_robots_txt` to Crawl4AI. | — |
-| `CRAWL_VALIDATE_REDIRECTS` | Required / `true` | bool | Perform preflight HEAD requests to follow and validate redirect chains before crawling. | `CRAWL_MAX_PREFLIGHT_REDIRECTS` |
-| `CRAWL_MAX_PREFLIGHT_REDIRECTS` | Required / `5` | int (≥ 1) | Max redirect hops to follow during preflight validation. | `CRAWL_VALIDATE_REDIRECTS` |
+| `CRAWLER_USER_AGENT` | Required / `ThorondorBot/1.0 (+https://github.com/FeanorsCodeSL/thorondor)` | string | Stable outbound Crawl4AI browser identity. Must contain an HTTP(S) contact URL and no newline characters. | `CRAWLER_ROBOTS_USER_AGENT` |
+| `CRAWLER_ROBOTS_USER_AGENT` | Required / `ThorondorBot` | token | Stable robots matching token. Must use letters, digits, `.`, `_`, or `-` and appear in `CRAWLER_USER_AGENT`. | `CRAWLER_USER_AGENT` |
 
 ### Markdown Extraction
 
@@ -209,7 +209,8 @@ The settings loader enforces the following constraints at startup time:
 |---|---|
 | `CRAWL_CONCURRENCY` must be between 1 and 20 | `RuntimeError: CRAWL_CONCURRENCY must be between 1 and {MAX_CRAWL_CONCURRENCY}` |
 | `CRAWL_PER_HOST_CONCURRENCY` ≥ 1 | `RuntimeError` |
-| `CRAWL_MAX_PREFLIGHT_REDIRECTS` ≥ 1 | `RuntimeError` |
+| `CRAWLER_USER_AGENT` contains a contact URL and no newlines | `RuntimeError` |
+| `CRAWLER_ROBOTS_USER_AGENT` is a valid token included in the outbound identity | `RuntimeError` |
 | `RERANKER_BATCH_SIZE` ≥ 1 | `RuntimeError` |
 | `RERANKER_TIMEOUT_S` ≥ 1 | `RuntimeError` |
 | `HEALTHCHECK_TIMEOUT_S` > 0 | `RuntimeError` |

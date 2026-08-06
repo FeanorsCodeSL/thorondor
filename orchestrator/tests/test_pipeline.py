@@ -615,6 +615,8 @@ def test_raw_markdown_uses_source_id_not_url_matching():
         {
             "citation_id": resp.citations[0].id,
             "markdown": "Markdown for https://a.test/article",
+            "cleaned_markdown": "Markdown for https://a.test/article",
+            "document_id": None,
         }
     ]
 

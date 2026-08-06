@@ -20,7 +20,7 @@ The orchestrator is the only service that speaks to all other components. It hol
 
 ### Semantic Chunking Service (`semantic-chunking-service/`)
 
-A standalone FastAPI service exposing `POST /chunk` and `GET /healthz`. It receives page markdown from the orchestrator and returns semantically coherent chunks with token counts and provenance metadata.
+A standalone FastAPI service exposing `POST /chunk` and `GET /healthz`. It receives page markdown from the orchestrator and returns semantically coherent chunks with token counts, provenance metadata, and exact Unicode code-point spans. The orchestrator uses `ORCHESTRATOR_MARKDOWN` mode so already-cleaned Markdown is not destructively pre-cleaned again.
 
 The core algorithm is `ClusterSemanticChunker`: it splits text into ~50-token segments, generates embeddings for each segment using the configured OpenAI-compatible embedding server, builds an N×N cosine-similarity matrix, and uses dynamic programming to find globally optimal chunk boundaries that maximize semantic coherence within each chunk. When the segment count exceeds `CHUNKER_MAX_SEGMENTS_DP` (OOM guard), it falls back to a greedy-semantic algorithm that computes only adjacent-pair similarities. If the embedding server is unreachable, it falls back further to token-based splitting and marks chunks `embedding_degraded=true`.
 
@@ -62,17 +62,17 @@ A single search request proceeds as follows:
 
 3. **URL discovery** — each sub-query is dispatched concurrently to SearXNG (`GET /search?q=...`). Results from all sub-queries are merged and deduplicated by URL, preserving the highest score for each URL. SearXNG's `unresponsive_engines` entries are retained in `stats`. Usable results with reported engine failures set `stats.discovery_status=degraded`; reported failures with no usable results set it to `unavailable` and return `reason=search_provider_unavailable`. A response with no results and no reported engine failures remains `reason=no_results_from_discovery`. `stats.urls_discovered` is set.
 
-4. **URL safety filter** — each discovered URL is checked against the `UrlSafetyPolicy`: the hostname is resolved, all returned IPs are checked against blocked categories and special IPs, and IPv6 addresses are expanded to find embedded IPv4 equivalents. Unsafe URLs are dropped silently.
+4. **URL safety filter** — each discovered URL is checked against the `UrlSafetyPolicy`: hostname resolution is moved off the event loop with bounded concurrency, all returned IPs are checked against blocked categories and special IPs, and IPv6 addresses are expanded to find embedded IPv4 equivalents. Unsafe URLs are dropped silently.
 
 5. **URL selection** — the `SelectionPolicyImpl` scores candidates by a combination of the SearXNG discovery score and a lexical overlap with the original query. It enforces per-domain limits (max 3 URLs per domain unless the allowed domain set has ≤ 1 entry), engine diversity, and domain diversity passes before filling by score. `stats.urls_selected` is set.
 
-6. **Content extraction** — the orchestrator submits `POST /crawl` to Crawl4AI for each selected URL, up to `CRAWL_CONCURRENCY` in parallel with `CRAWL_PER_HOST_CONCURRENCY` per hostname. If `CRAWL_VALIDATE_REDIRECTS=true`, the orchestrator first performs a preflight HEAD request to follow and validate the redirect chain before handing the URL to Crawl4AI. Pages that return no markdown content are dropped. `stats.urls_crawled_ok` and `stats.urls_crawled_failed` are updated.
+6. **Content extraction** — the orchestrator submits the original selected URL and configured crawler identity to Crawl4AI with `POST /crawl`, up to `CRAWL_CONCURRENCY` in parallel with `CRAWL_PER_HOST_CONCURRENCY` per hostname. Crawl4AI has no direct egress network and reaches target sites only through the SSRF proxy. The orchestrator captures bounded final URL, status, content type, validators, links, and metadata, then revalidates every changed final URL before accepting the page. Pages that return no markdown content are dropped. `stats.urls_crawled_ok` and `stats.urls_crawled_failed` are updated.
 
 7. **Markdown cleaning** — each page's HTML is passed through trafilatura to produce clean markdown. Boilerplate, navigation, footers, and comment sections (if disabled) are removed. `stats.markdown_chars_before` and `stats.markdown_chars_after` reflect the reduction.
 
 8. **Content deduplication** — near-duplicate pages (based on content hashing) are dropped. `stats.pages_deduped` records how many were removed.
 
-9. **Semantic chunking** — the orchestrator calls `POST /chunk` on the chunking service for each page. The chunker splits page markdown into semantically coherent chunks using `ClusterSemanticChunker`. Chunk metadata includes `source_url`, `title`, `position`, `source_id`, `chunk_strategy`, and `embedding_degraded`. If the chunker returns a 5xx error, a `ChunkerUnavailable` exception propagates and the orchestrator returns a 503.
+9. **Semantic chunking** — the orchestrator calls `POST /chunk` on the chunking service for each page. The chunker splits page markdown into semantically coherent chunks using `ClusterSemanticChunker`. Exact mode returns each chunk as `cleaned_markdown[start_index:end_index]`; the orchestrator verifies that equality before issuing `document_id` and `evidence_id`. Chunk metadata also includes `source_url`, `title`, `position`, `source_id`, `chunk_strategy`, and `embedding_degraded`. If the chunker returns a 5xx error, a `ChunkerUnavailable` exception propagates and the orchestrator returns a 503.
 
 10. **Candidate prefilter** — if more than 50 chunks were returned, the `CandidatePrefilterImpl` applies a fast lexical scorer to select the top-50 before reranking. The filter is source-preserving: it ensures at least one chunk from each crawled source is represented. `stats.chunks_prefiltered` records how many were dropped.
 
@@ -80,9 +80,9 @@ A single search request proceeds as follows:
 
 12. **Relevance floor** — if `RELEVANCE_SCORE_FLOOR > 0.0` and reranking succeeded, passages scoring at or below the floor are dropped (unless all passages would be dropped, in which case all are kept).
 
-13. **Token-budget assembly** — `ResultAssemblerImpl` sorts by descending score and greedily selects chunks until either the `token_budget` is exhausted or `max_passages` is reached. Citations are deduplicated by URL, and each passage references its citation by ID.
+13. **Token-budget assembly** — `ResultAssemblerImpl` sorts by descending score and greedily selects chunks until either the `token_budget` is exhausted or `max_passages` is reached. A final exact chunk may be truncated to the remaining word-token budget by shortening its end-exclusive span and recomputing its evidence ID. Citations are deduplicated by source-document identity when available, and each passage references its citation by compatibility integer ID.
 
-14. **Response** — `SearchResponse` is serialised and returned. If `include_raw_markdown=true`, the original crawled markdown for each cited page is appended. The structured log summary is emitted.
+14. **Response** — `SearchResponse` is serialised and returned with additive evidence spans, stable identities, section headings, and bounded source-attributed metadata. If `include_raw_markdown=true`, both original and exact cleaned Markdown for each cited page are appended. The structured log summary is emitted.
 
 ## 4. Deployment Topologies
 

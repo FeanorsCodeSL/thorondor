@@ -42,11 +42,11 @@ sequenceDiagram
     Orchestrator->>Orchestrator: trafilatura clean + content dedup
 
     loop for each page (sequential)
-        Orchestrator->>Chunker: POST /chunk {text, source_type, metadata}
+        Orchestrator->>Chunker: POST /chunk {text, source_type=ORCHESTRATOR_MARKDOWN, metadata}
         Chunker->>Embedding: POST /v1/embeddings [segments...]
         Embedding-->>Chunker: [[vector...], ...]
         Chunker->>Chunker: similarity matrix + DP optimization
-        Chunker-->>Orchestrator: {chunks: [...], strategy_version, embedding_degraded}
+        Chunker-->>Orchestrator: {chunks: [{text, start_index, end_index, verbatim, ...}], strategy_version, embedding_degraded}
     end
 
     Orchestrator->>Orchestrator: candidate prefilter (top-50)
@@ -215,7 +215,7 @@ sequenceDiagram
     MCPServer->>Pipeline: await run_search(request, get_deps())
     Pipeline-->>MCPServer: SearchResponse
     MCPServer->>MCPServer: response.model_dump()
-    MCPServer-->>AgentClient: dict {query, passages, citations, stats, schema_version}
+    MCPServer-->>AgentClient: dict {query, passages with evidence IDs/spans, citations with document metadata, stats, schema_version}
 ```
 
 The MCP server is mounted at `/mcp` using `mcp.streamable_http_app()` with `stateless_http=True`. Stdio transport is available via `python -m orchestrator.mcp_server` for environments that require it.

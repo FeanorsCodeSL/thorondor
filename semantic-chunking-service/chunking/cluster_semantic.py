@@ -113,7 +113,8 @@ class ClusterSemanticChunker:
     def split_text_with_metadata(
         self,
         text: str,
-        progress_callback: Optional[Callable[[int, int, str], None]] = None
+        progress_callback: Optional[Callable[[int, int, str], None]] = None,
+        preserve_offsets: bool = False,
     ) -> List[ChunkResult]:
         """
         Split text into chunks with full metadata.
@@ -137,7 +138,19 @@ class ClusterSemanticChunker:
             chunk_overlap=0,
             length_function=self._length_function
         )
-        segments = splitter.split_text(text)
+        if preserve_offsets:
+            try:
+                segment_spans = splitter.split_text_with_spans(text)
+            except ValueError:
+                segments = splitter.split_text(text)
+                segment_positions = []
+                preserve_offsets = False
+            else:
+                segments = [segment for segment, _, _ in segment_spans]
+                segment_positions = [(start, end) for _, start, end in segment_spans]
+        else:
+            segments = splitter.split_text(text)
+            segment_positions = []
 
         segment_time = time.perf_counter() - segment_start_time
 
@@ -150,13 +163,15 @@ class ClusterSemanticChunker:
                 f"[ClusterSemantic] Single segment document ({len(text):,} chars), "
                 f"returning as single chunk"
             )
+            start_index, end_index = segment_positions[0] if segment_positions else (0, len(segments[0]))
             return [ChunkResult(
-                text=segments[0],
-                start_index=0,
-                end_index=len(segments[0]),
+                text=text[start_index:end_index] if preserve_offsets else segments[0],
+                start_index=start_index,
+                end_index=end_index,
                 token_count=self._length_function(segments[0]),
                 segment_indices=[0],
-                chunk_strategy="cluster-semantic-single"
+                chunk_strategy="cluster-semantic-single",
+                verbatim=preserve_offsets,
             )]
 
         logger.info(
@@ -178,14 +193,20 @@ class ClusterSemanticChunker:
                 f"Similarity matrix would require ~{estimated_memory_gb:.2f} GB. "
                 f"Using greedy semantic fallback (O(N) memory) instead of DP (O(N^2) memory)."
             )
-            segment_positions = self._calculate_segment_positions(text, segments)
+            if not preserve_offsets:
+                segment_positions = self._calculate_segment_positions(text, segments)
             segment_lengths = [self._length_function(s) for s in segments]
             return self._greedy_semantic_chunking(
-                segments, segment_positions, segment_lengths, progress_callback
+                segments,
+                segment_positions,
+                segment_lengths,
+                progress_callback,
+                text if preserve_offsets else None,
             )
 
         # Step 2: Calculate segment positions in original text
-        segment_positions = self._calculate_segment_positions(text, segments)
+        if not preserve_offsets:
+            segment_positions = self._calculate_segment_positions(text, segments)
 
         # Step 3: Calculate token count for each segment
         segment_lengths = [self._length_function(s) for s in segments]
@@ -206,7 +227,12 @@ class ClusterSemanticChunker:
         )
         embeddings, embed_time = self._generate_embeddings_for_segments(segments, logger)
         if embeddings is None:
-            return self._fallback_chunking(segments, segment_positions, segment_lengths)
+            return self._fallback_chunking(
+                segments,
+                segment_positions,
+                segment_lengths,
+                text if preserve_offsets else None,
+            )
 
         embed_dim = len(embeddings[0]) if embeddings[0] else 0
         logger.info(
@@ -276,7 +302,8 @@ class ClusterSemanticChunker:
             segments,
             groupings,
             segment_positions,
-            segment_lengths
+            segment_lengths,
+            text if preserve_offsets else None,
         )
 
         total_time = segment_time + embed_time + sim_time + dp_time
@@ -553,29 +580,35 @@ class ClusterSemanticChunker:
         segments: List[str],
         groupings: List[Tuple[int, int]],
         segment_positions: List[Tuple[int, int]],
-        segment_lengths: List[int]
+        segment_lengths: List[int],
+        source_text: str | None = None,
     ) -> List[ChunkResult]:
         """Build ChunkResult objects from segment groupings."""
         results = []
 
         for start, end in groupings:
+            char_start = segment_positions[start][0] if segment_positions else 0
             group_segments = segments[start:end]
-            merged_text = " ".join(s.strip() for s in group_segments if s.strip())
+            fallback_text = " ".join(s.strip() for s in group_segments if s.strip())
+            char_end = segment_positions[end - 1][1] if segment_positions else len(fallback_text)
+            merged_text = source_text[char_start:char_end] if source_text is not None else fallback_text
 
-            if not merged_text:
+            if not merged_text.strip():
                 continue
 
-            char_start = segment_positions[start][0] if segment_positions else 0
-            char_end = segment_positions[end - 1][1] if segment_positions else len(merged_text)
-
-            total_tokens = sum(segment_lengths[start:end])
+            total_tokens = (
+                self._length_function(merged_text)
+                if source_text is not None
+                else sum(segment_lengths[start:end])
+            )
 
             results.append(ChunkResult(
                 text=merged_text,
                 start_index=char_start,
                 end_index=char_end,
                 token_count=total_tokens,
-                segment_indices=list(range(start, end))
+                segment_indices=list(range(start, end)),
+                verbatim=source_text is not None,
             ))
 
         return results
@@ -616,7 +649,8 @@ class ClusterSemanticChunker:
         self,
         segments: List[str],
         segment_positions: List[Tuple[int, int]],
-        segment_lengths: List[int]
+        segment_lengths: List[int],
+        source_text: str | None = None,
     ) -> List[ChunkResult]:
         """
         Simple fallback chunking when embedding fails.
@@ -629,7 +663,7 @@ class ClusterSemanticChunker:
         )
         groupings = self._greedy_fallback_chunking(segment_lengths)
         results = self._build_chunk_results(
-            segments, groupings, segment_positions, segment_lengths
+            segments, groupings, segment_positions, segment_lengths, source_text
         )
         for result in results:
             result.chunk_strategy = "cluster-semantic-greedy-token"
@@ -644,7 +678,8 @@ class ClusterSemanticChunker:
         segments: List[str],
         segment_positions: List[Tuple[int, int]],
         segment_lengths: List[int],
-        progress_callback: Optional[Callable[[int, int, str], None]] = None
+        progress_callback: Optional[Callable[[int, int, str], None]] = None,
+        source_text: str | None = None,
     ) -> List[ChunkResult]:
         """
         Greedy semantic chunking for large documents (OOM prevention).
@@ -666,12 +701,13 @@ class ClusterSemanticChunker:
 
         if n == 1:
             return [ChunkResult(
-                text=segments[0],
+                text=source_text[segment_positions[0][0]:segment_positions[0][1]] if source_text is not None else segments[0],
                 start_index=segment_positions[0][0] if segment_positions else 0,
                 end_index=segment_positions[0][1] if segment_positions else len(segments[0]),
                 token_count=segment_lengths[0],
                 segment_indices=[0],
-                chunk_strategy="cluster-semantic-greedy-semantic"
+                chunk_strategy="cluster-semantic-greedy-semantic",
+                verbatim=source_text is not None,
             )]
 
         if progress_callback:
@@ -679,7 +715,7 @@ class ClusterSemanticChunker:
 
         embeddings, embed_time = self._generate_embeddings_for_segments(segments, logger)
         if embeddings is None:
-            return self._fallback_chunking(segments, segment_positions, segment_lengths)
+            return self._fallback_chunking(segments, segment_positions, segment_lengths, source_text)
 
         logger.info(
             f"[ClusterSemantic] Greedy mode embeddings complete: "
@@ -718,7 +754,7 @@ class ClusterSemanticChunker:
             progress_callback(5, 5, f"Optimization complete ({len(groupings)} chunks)")
 
         results = self._build_chunk_results(
-            segments, groupings, segment_positions, segment_lengths
+            segments, groupings, segment_positions, segment_lengths, source_text
         )
         for result in results:
             result.chunk_strategy = "cluster-semantic-greedy-semantic"

@@ -1,9 +1,10 @@
 """Search pipeline orchestration."""
 from dataclasses import dataclass, replace
 import asyncio
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from importlib import import_module
 from importlib.metadata import version
+from inspect import isawaitable
 import logging
 import time
 
@@ -12,6 +13,7 @@ from .clients.chunker_client import ChunkerUnavailable
 from .clients.reranker_client import RerankerUnavailable
 from .clients.searxng_client import DiscoveryUnavailable
 from .content_dedup import content_dedup
+from .evidence_metadata import extract_document_metadata
 from .interfaces import (
     ContentExtractor,
     MarkdownCleaner,
@@ -35,8 +37,11 @@ from .models import (
     UrlDiagnostic,
 )
 from .observability import query_hash
-from .types import DiscoveryResult, Page, ScoredChunk
-from .url_safety import filter_safe_discovery_results, is_safe_crawl_url
+from .types import DiscoveryResult, DocumentMetadata, Page, ScoredChunk
+from .url_safety import (
+    filter_safe_discovery_results_async,
+    is_safe_crawl_url_async,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -64,7 +69,7 @@ class PipelineDeps:
     max_subqueries: int
     profile_defaults: dict[str, dict[str, int]]
     blocklist: set[str]
-    url_safety: Callable[[list[DiscoveryResult]], list[DiscoveryResult]]
+    url_safety: Callable[[list[DiscoveryResult]], list[DiscoveryResult] | Awaitable[list[DiscoveryResult]]]
     relevance_score_floor: float | None
     domain_allowlist: set[str] | None
     allowlist_only: bool
@@ -168,6 +173,16 @@ def _selection_filters(req: SearchRequest, deps: PipelineDeps) -> tuple[set[str]
     return blocklist, allowlist
 
 
+async def _safe_candidates(deps: PipelineDeps, candidates: list[DiscoveryResult]) -> list[DiscoveryResult]:
+    try:
+        filtered = deps.url_safety(candidates)
+        if isawaitable(filtered):
+            filtered = await filtered
+    except Exception:
+        return []
+    return filtered if isinstance(filtered, list) else []
+
+
 def _select_results(
     req: SearchRequest,
     deps: PipelineDeps,
@@ -223,7 +238,58 @@ def _clean_pages(deps: PipelineDeps, pages: list[Page], stats: SearchStats) -> l
     stats.markdown_chars_after = sum(item.chars_after for item in cleaned_pages)
     stats.markdown_blocks_dropped = sum(item.blocks_dropped for item in cleaned_pages)
     stats.markdown_cleaner_version = cleaned_pages[0].cleaner_version
-    return [item.page for item in cleaned_pages]
+    return [
+        replace(item.page, evidence_metadata=extract_document_metadata(item.page))
+        for item in cleaned_pages
+    ]
+
+
+def _attach_discovery_metadata(
+    pages: list[Page],
+    selected: list[DiscoveryResult],
+) -> list[Page]:
+    published_by_url = {
+        result.url: result.published_at
+        for result in selected
+        if result.published_at is not None
+    }
+    return [
+        replace(
+            page,
+            discovery_published_at=published_by_url.get(page.requested_url or page.url),
+        )
+        for page in pages
+    ]
+
+
+def _wire_metadata(metadata: DocumentMetadata | None) -> dict | None:
+    if metadata is None:
+        return None
+    selected = {candidate.field: candidate for candidate in metadata.selected}
+    return {
+        **{
+            field: {
+                "value": candidate.value,
+                "source": candidate.source,
+                "confidence": candidate.confidence,
+            }
+            for field, candidate in selected.items()
+        },
+        "conflicts": [
+            {
+                "field": conflict.field,
+                "candidates": [
+                    {
+                        "value": candidate.value,
+                        "source": candidate.source,
+                        "confidence": candidate.confidence,
+                    }
+                    for candidate in conflict.candidates
+                ],
+            }
+            for conflict in metadata.conflicts
+        ],
+    }
 
 
 def _dedupe_pages(pages: list[Page], stats: SearchStats) -> list[Page]:
@@ -311,6 +377,8 @@ def _build_raw_markdown(req: SearchRequest, pages: list[Page], assembled_citatio
             citation_id=citation.id,
             markdown=by_source_id[citation.source_id].original_markdown
             or by_source_id[citation.source_id].markdown,
+            cleaned_markdown=by_source_id[citation.source_id].markdown,
+            document_id=citation.document_id,
         )
         for citation in assembled_citations
         if citation.source_id in by_source_id
@@ -333,14 +401,17 @@ async def run_search(req: SearchRequest, deps: PipelineDeps) -> SearchResponse:
         )
         return _empty_response(req.query, stats, reason)
 
-    safe_candidates = deps.url_safety(merged)
+    safe_candidates = await _safe_candidates(deps, merged)
     selected = _select_results(req, deps, safe_candidates, max_urls, stats)
     stats.urls_selected = len(selected)
     if not selected:
         stats.elapsed_ms = _elapsed_ms(started)
         return _empty_response(req.query, stats, "no_urls_after_selection")
 
-    pages = await deps.extractor.extract([result.url for result in selected])
+    pages = _attach_discovery_metadata(
+        await deps.extractor.extract([result.url for result in selected]),
+        selected,
+    )
     stats.urls_crawled_ok = len(pages)
     stats.urls_crawled_failed = max(0, stats.urls_selected - stats.urls_crawled_ok)
     if not pages:
@@ -381,11 +452,45 @@ async def run_search(req: SearchRequest, deps: PipelineDeps) -> SearchResponse:
             score=passage.score,
             token_count=passage.token_count,
             citation_id=passage.citation_id,
+            start_index=passage.start_index,
+            end_index=passage.end_index,
+            verbatim=passage.verbatim,
+            document_id=passage.document_id,
+            evidence_id=passage.evidence_id,
+            section_heading=passage.section_heading,
         )
         for passage in assembled_passages
     ]
     citations = [
-        Citation(id=citation.id, url=citation.url, title=citation.title)
+        Citation(
+            id=citation.id,
+            url=citation.url,
+            title=citation.title,
+            published=(
+                citation.evidence_metadata.get("published_at").value
+                if citation.evidence_metadata is not None
+                and citation.evidence_metadata.get("published_at") is not None
+                else None
+            ),
+            modified_at=(
+                citation.evidence_metadata.get("modified_at").value
+                if citation.evidence_metadata is not None
+                and citation.evidence_metadata.get("modified_at") is not None
+                else None
+            ),
+            document_id=citation.document_id,
+            evidence_spans=[
+                {
+                    "start_index": span.start_index,
+                    "end_index": span.end_index,
+                    "verbatim": span.verbatim,
+                    "evidence_id": span.evidence_id,
+                    "section_heading": span.section_heading,
+                }
+                for span in citation.evidence_spans
+            ],
+            metadata=_wire_metadata(citation.evidence_metadata),
+        )
         for citation in assembled_citations
     ]
     stats.tokens_returned = sum(p.token_count for p in passages)
@@ -425,8 +530,15 @@ def build_deps_from_settings(settings) -> PipelineDeps:
         if settings.llm_endpoint and settings.llm_model
         else IdentityPlanner()
     )
-    url_safety = lambda results: filter_safe_discovery_results(results, settings.url_safety_policy)
-    crawl_url_safety = lambda url: is_safe_crawl_url(url, settings.url_safety_policy)
+    async def url_safety(results: list[DiscoveryResult]) -> list[DiscoveryResult]:
+        return await filter_safe_discovery_results_async(
+            results,
+            settings.url_safety_policy,
+            settings.crawl_concurrency,
+        )
+
+    async def crawl_url_safety(url: str) -> bool:
+        return await is_safe_crawl_url_async(url, settings.url_safety_policy)
 
     return PipelineDeps(
         planner=planner,
@@ -438,8 +550,7 @@ def build_deps_from_settings(settings) -> PipelineDeps:
             settings.crawl_timeout_s,
             respect_robots_txt=settings.crawl_respect_robots_txt,
             per_host_concurrency=settings.crawl_per_host_concurrency,
-            validate_redirects=settings.crawl_validate_redirects,
-            max_preflight_redirects=settings.crawl_max_preflight_redirects,
+            crawler_user_agent=settings.crawler_user_agent,
             url_safety=crawl_url_safety,
             api_key=settings.crawl4ai_api_key,
         ),

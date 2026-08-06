@@ -75,6 +75,12 @@ The production slice joins Tengwar's external network through
 config directory via `THORONDOR_SEARXNG_CONFIG_DIR`; do not mount the Thorondor
 source tree on the production host.
 
+Crawl4AI is internal-only and reaches target sites through
+`thorondor-egress-proxy`; it must not be attached to `thorondor-egress`.
+SearXNG retains provider-plane egress for search engines, while configured model
+providers use the operator-owned application network. The release guard renders
+all three first-party Compose variants and verifies these roles.
+
 For the Tengwar development integration, the Tengwar repository owns the wrapper
 recipe. Run `just thorondor-deploy` from the Tengwar checkout. It forces
 `THORONDOR_APP_NETWORK=tengwar-shared`, points the orchestrator and chunker at
@@ -115,6 +121,8 @@ Copy-Item .env.example .env
 **SEARXNG_SECRET** — this key must be non-blank when SearXNG starts. The deploy scripts generate a random 32-byte base64 secret when the field is blank. Do not commit a real secret value. Rotate by blanking the key in `.env` and re-running `deploy.ps1`.
 
 **CRAWL4AI_API_KEY** — Crawl4AI 0.9.2 requires a credential before it binds to the Compose network. The deploy scripts and configurator generate a random value when this field is blank and preserve existing non-blank values.
+
+**Crawler identity** — `CRAWLER_USER_AGENT` is the stable outbound identity sent through Crawl4AI and must contain a contact URL. `CRAWLER_ROBOTS_USER_AGENT` is the matching token reserved for the independent robots implementation. Do not rotate or impersonate browser identities.
 
 ### `.env.llamacpp`
 
@@ -287,6 +295,14 @@ A passing run exits with code 0 and prints each request/response JSON pair. A fa
 
 ## 7. Upgrading
 
+Before upgrading an existing installation, synchronize its secret-bearing `.env`
+with the tracked environment template. Add the required `CRAWLER_USER_AGENT` and
+`CRAWLER_ROBOTS_USER_AGENT` values, and remove the retired
+`CRAWL_VALIDATE_REDIRECTS` and `CRAWL_MAX_PREFLIGHT_REDIRECTS` keys. Promote the
+orchestrator and semantic chunker images together because exact evidence uses the
+`ORCHESTRATOR_MARKDOWN` chunking contract. A mismatched older chunker now causes an
+explicit dependency failure instead of an empty successful search response.
+
 **Publish first-party production images:**
 
 Create and push a release tag such as `v0.1.0`, or run the `publish-images`
@@ -353,7 +369,7 @@ Known considerations:
 - [ ] **Access control** — restrict the orchestrator port to authorized clients. No authentication is built into the REST or MCP endpoints.
 - [ ] **Rotate SEARXNG_SECRET** — ensure `SEARXNG_SECRET` is a strong random value (the deploy script generates one; verify it is set in `.env` before first production start).
 - [ ] **Enable ALLOWLIST_ONLY** — set `ALLOWLIST_ONLY=true` and populate `DOMAIN_ALLOWLIST` for deployments where crawling should be restricted to known domains.
-- [ ] **SSRF proxy** — the egress proxy is enabled by default in Compose. Verify `PROXY_BLOCKED_IP_CATEGORIES` and `PROXY_BLOCKED_SPECIAL_IPS` match your network topology. Add any additional internal subnets to `DOMAIN_BLOCKLIST` or to blocked categories.
+- [ ] **SSRF proxy** — verify Crawl4AI has only the internal network, its proxy variables target the egress proxy, and `PROXY_BLOCKED_IP_CATEGORIES` plus `PROXY_BLOCKED_SPECIAL_IPS` match your topology.
 - [ ] **API keys on internal seams** — verify the generated `CRAWL4AI_API_KEY`; set `SEARXNG_API_KEY`, `CHUNKER_API_KEY`, `RERANKER_API_KEY`, and `EMBEDDING_API_KEY` if the corresponding services are accessible beyond the internal Docker network.
 - [ ] **Log shipping** — the orchestrator emits JSON logs to stdout. Configure a log driver or sidecar to ship to your log aggregation system.
 - [ ] **Container resource limits** — set memory limits for all containers, especially `CHUNKER_MEM_LIMIT` (default `768m`) for large documents with many segments. The DP chunker allocates O(N²) during similarity matrix computation.

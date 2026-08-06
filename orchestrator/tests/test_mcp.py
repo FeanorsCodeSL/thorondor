@@ -1,10 +1,14 @@
 import anyio
+import json
+from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 import httpx2
-from mcp import Client, ClientSession
+from mcp import Client, ClientSession, StdioServerParameters
+from mcp.client.stdio import stdio_client
 from mcp.client.streamable_http import streamable_http_client
 from pydantic import ValidationError
+import sys
 
 import orchestrator.app as appmod
 import orchestrator.mcp_server as mcpmod
@@ -21,6 +25,40 @@ def test_web_search_returns_documented_shape():
     assert out["schema_version"] == "thorondor.search.v1"
     assert out["passages"]
     assert out["citations"]
+    assert out["passages"][0]["verbatim"] is True
+    assert out["passages"][0]["evidence_id"]
+    assert out["citations"][0]["evidence_spans"]
+
+
+def test_stdio_mcp_serializes_exact_evidence_spans():
+    server_code = (
+        "from orchestrator import fakes; "
+        "from orchestrator import mcp_server; "
+        "mcp_server.set_deps(fakes.deps()); "
+        "mcp_server.main()"
+    )
+
+    async def exercise():
+        server = StdioServerParameters(
+            command=sys.executable,
+            args=["-B", "-c", server_code],
+            cwd=Path(__file__).parents[2],
+        )
+        async with stdio_client(server) as (read_stream, write_stream):
+            async with ClientSession(read_stream, write_stream) as session:
+                await session.initialize()
+                result = await session.call_tool("web_search", {"query": "x"})
+                if result.structured_content is not None:
+                    return result.structured_content
+                return json.loads(result.content[0].text)
+
+    output = anyio.run(exercise)
+
+    passage = output["passages"][0]
+    citation = output["citations"][0]
+    assert passage["verbatim"] is True
+    assert passage["document_id"] == citation["document_id"]
+    assert passage["evidence_id"] == citation["evidence_spans"][0]["evidence_id"]
 
 
 def test_web_search_rejects_invalid_bounds_before_fanout():

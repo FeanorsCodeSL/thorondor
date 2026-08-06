@@ -1,0 +1,343 @@
+{
+  "contract_revision": "thorondor.search.v1-compatibility-v1",
+  "request_baseline": {
+    "query": "compatibility baseline"
+  },
+  "request_examples": [
+    {
+      "name": "omitted-fields-defaults",
+      "input": {
+        "query": "compatibility baseline"
+      },
+      "normalized": {
+        "query": "compatibility baseline",
+        "search_profile": null,
+        "token_budget": null,
+        "max_urls": null,
+        "max_passages": null,
+        "decompose": true,
+        "freshness": null,
+        "domains": null,
+        "exclude_domains": null,
+        "include_raw_markdown": false
+      }
+    },
+    {
+      "name": "explicit-nullable-fields",
+      "input": {
+        "query": "nullable compatibility request",
+        "search_profile": null,
+        "token_budget": null,
+        "max_urls": null,
+        "max_passages": null,
+        "freshness": null,
+        "domains": null,
+        "exclude_domains": null
+      },
+      "normalized": {
+        "query": "nullable compatibility request",
+        "search_profile": null,
+        "token_budget": null,
+        "max_urls": null,
+        "max_passages": null,
+        "decompose": true,
+        "freshness": null,
+        "domains": null,
+        "exclude_domains": null,
+        "include_raw_markdown": false
+      }
+    },
+    {
+      "name": "full-bounded-request",
+      "input": {
+        "query": "bounded compatibility request",
+        "search_profile": "research",
+        "token_budget": 320,
+        "max_urls": 2,
+        "max_passages": 2,
+        "decompose": false,
+        "freshness": "week",
+        "domains": [
+          "docs.fixture.test"
+        ],
+        "exclude_domains": [
+          "ads.fixture.test"
+        ],
+        "include_raw_markdown": true
+      },
+      "normalized": {
+        "query": "bounded compatibility request",
+        "search_profile": "research",
+        "token_budget": 320,
+        "max_urls": 2,
+        "max_passages": 2,
+        "decompose": false,
+        "freshness": "week",
+        "domains": [
+          "docs.fixture.test"
+        ],
+        "exclude_domains": [
+          "ads.fixture.test"
+        ],
+        "include_raw_markdown": true
+      }
+    }
+  ],
+  "request_enum_values": {
+    "search_profile": [
+      "quick",
+      "research",
+      "deep"
+    ],
+    "freshness": [
+      "day",
+      "week",
+      "month",
+      "year"
+    ]
+  },
+  "response_required_fields": {
+    "SearchResponse": {
+      "query": "string",
+      "passages": "array",
+      "citations": "array",
+      "stats": "object"
+    },
+    "Passage": {
+      "text": "string",
+      "score": "number",
+      "token_count": "integer",
+      "citation_id": "integer"
+    },
+    "Citation": {
+      "id": "integer",
+      "url": "string",
+      "title": "string"
+    },
+    "UrlDiagnostic": {
+      "url": "string",
+      "title": "string",
+      "engine": "string",
+      "discovery_score": "number",
+      "selected": "boolean"
+    },
+    "RawMarkdown": {
+      "citation_id": "integer",
+      "markdown": "string"
+    },
+    "UnresponsiveEngine": {
+      "engine": "string",
+      "reason": "string"
+    }
+  },
+  "wire_compatibility_response_sample": {
+    "query": "compatibility response",
+    "passages": [
+      {
+        "text": "Fixture evidence remains external and untrusted.",
+        "score": 0.9,
+        "token_count": 7,
+        "citation_id": 7,
+        "provenance": "external_web",
+        "trust": "untrusted"
+      }
+    ],
+    "citations": [
+      {
+        "id": 7,
+        "url": "https://fixtures.thorondor.test/compatibility",
+        "title": "Compatibility fixture",
+        "published": "2026-08-04T10:15:00Z"
+      }
+    ],
+    "stats": {
+      "sub_queries": [
+        "compatibility response"
+      ],
+      "discovery_status": "degraded",
+      "unresponsive_engines": [
+        {
+          "engine": "fixture-engine",
+          "reason": "fixture degradation"
+        }
+      ],
+      "urls_discovered": 1,
+      "urls_selected": 1,
+      "url_diagnostics": [
+        {
+          "url": "https://fixtures.thorondor.test/compatibility",
+          "title": "Compatibility fixture",
+          "engine": "fixture-engine",
+          "discovery_score": 0.9,
+          "selected": true,
+          "selection_reason": "fixture selection",
+          "filtered_reason": null
+        }
+      ],
+      "urls_crawled_ok": 1,
+      "urls_crawled_failed": 0,
+      "pages_after_dedup": 1,
+      "pages_deduped": 0,
+      "pages_cleaned": 1,
+      "markdown_chars_before": 45,
+      "markdown_chars_after": 44,
+      "markdown_blocks_dropped": 1,
+      "markdown_cleaner_version": "fixture-cleaner-v1",
+      "chunks_produced": 1,
+      "chunks_prefiltered": 0,
+      "chunks_sent_to_reranker": 1,
+      "prefilter_strategy": "fixture",
+      "reranker_batches": 1,
+      "reranker_batches_failed": 0,
+      "reranker_floor_filled": false,
+      "chunks_reranked": 1,
+      "passages_dropped_below_threshold": 0,
+      "relevance_threshold_policy": "fixture",
+      "chunk_strategy": "fixture",
+      "embedding_degraded": false,
+      "reranked": true,
+      "tokens_returned": 7,
+      "elapsed_ms": 7,
+      "reason": null
+    },
+    "raw_markdown": [
+      {
+        "citation_id": 7,
+        "markdown": "# Compatibility fixture\n\nExternal fixture content."
+      }
+    ],
+    "schema_version": "thorondor.search.v1"
+  },
+  "v1_response_default_example": {
+    "name": "omitted-optional-response-fields",
+    "input": {
+      "query": "response defaults",
+      "passages": [
+        {
+          "text": "Defaulted provenance and trust remain legacy-compatible.",
+          "score": 0.75,
+          "token_count": 6,
+          "citation_id": 8
+        }
+      ],
+      "citations": [
+        {
+          "id": 8,
+          "url": "https://fixtures.thorondor.test/response-defaults",
+          "title": "Response defaults fixture"
+        }
+      ],
+      "stats": {
+        "url_diagnostics": [
+          {
+            "url": "https://fixtures.thorondor.test/response-defaults",
+            "title": "Response defaults fixture",
+            "engine": "fixture-engine",
+            "discovery_score": 0.75,
+            "selected": true
+          }
+        ]
+      }
+    },
+    "normalized_legacy_output": {
+      "query": "response defaults",
+      "passages": [
+        {
+          "text": "Defaulted provenance and trust remain legacy-compatible.",
+          "score": 0.75,
+          "token_count": 6,
+          "citation_id": 8,
+          "provenance": "external_web",
+          "trust": "untrusted"
+        }
+      ],
+      "citations": [
+        {
+          "id": 8,
+          "url": "https://fixtures.thorondor.test/response-defaults",
+          "title": "Response defaults fixture",
+          "published": null
+        }
+      ],
+      "stats": {
+        "sub_queries": [],
+        "discovery_status": "ok",
+        "unresponsive_engines": [],
+        "urls_discovered": 0,
+        "urls_selected": 0,
+        "url_diagnostics": [
+          {
+            "url": "https://fixtures.thorondor.test/response-defaults",
+            "title": "Response defaults fixture",
+            "engine": "fixture-engine",
+            "discovery_score": 0.75,
+            "selected": true,
+            "selection_reason": null,
+            "filtered_reason": null
+          }
+        ],
+        "urls_crawled_ok": 0,
+        "urls_crawled_failed": 0,
+        "pages_after_dedup": 0,
+        "pages_deduped": 0,
+        "pages_cleaned": 0,
+        "markdown_chars_before": 0,
+        "markdown_chars_after": 0,
+        "markdown_blocks_dropped": 0,
+        "markdown_cleaner_version": null,
+        "chunks_produced": 0,
+        "chunks_prefiltered": 0,
+        "chunks_sent_to_reranker": 0,
+        "prefilter_strategy": null,
+        "reranker_batches": 0,
+        "reranker_batches_failed": 0,
+        "reranker_floor_filled": false,
+        "chunks_reranked": 0,
+        "passages_dropped_below_threshold": 0,
+        "relevance_threshold_policy": null,
+        "chunk_strategy": null,
+        "embedding_degraded": false,
+        "reranked": false,
+        "tokens_returned": 0,
+        "elapsed_ms": 0,
+        "reason": null
+      },
+      "raw_markdown": null,
+      "schema_version": "thorondor.search.v1"
+    }
+  },
+  "reason_value_validation_template": {
+    "query": "terminal compatibility response",
+    "passages": [],
+    "citations": [],
+    "stats": {
+      "reason": "no_results_from_discovery"
+    },
+    "raw_markdown": null,
+    "schema_version": "thorondor.search.v1"
+  },
+  "response_enum_values": {
+    "passages.0.provenance": [
+      "external_web"
+    ],
+    "passages.0.trust": [
+      "untrusted"
+    ],
+    "stats.discovery_status": [
+      "ok",
+      "degraded",
+      "unavailable"
+    ],
+    "stats.reason": [
+      "search_provider_unavailable",
+      "no_results_from_discovery",
+      "no_urls_after_selection",
+      "all_crawls_failed",
+      "no_chunks_after_dedup",
+      "no_chunks_after_rerank"
+    ],
+    "schema_version": [
+      "thorondor.search.v1"
+    ]
+  }
+}

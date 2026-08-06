@@ -39,6 +39,11 @@ def _parse_results(payload: dict) -> list[DiscoveryResult]:
                 snippet=item.get("content", ""),
                 engine=item.get("engine", ""),
                 score=score,
+                published_at=(
+                    item.get("publishedDate")
+                    if isinstance(item.get("publishedDate"), str)
+                    else None
+                ),
             )
         )
     return [result for result in results if result.url]

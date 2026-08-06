@@ -6,7 +6,7 @@ Thorondor operates at the boundary between an agent's query and the open web. Th
 
 | Threat | Description | Mitigation |
 |---|---|---|
-| **SSRF via crawl** | An attacker or a compromised upstream search engine returns URLs pointing to internal network resources, cloud metadata endpoints, or localhost. Crawl4AI fetches them, leaking data or enabling internal service access. | Pre-crawl URL safety filter (orchestrator) + SSRF egress proxy (Crawl4AI traffic) + redirect validation. |
+| **SSRF via crawl** | An attacker or a compromised upstream search engine returns URLs pointing to internal network resources, cloud metadata endpoints, or localhost. Crawl4AI fetches them, leaking data or enabling internal service access. | Pre-crawl URL safety filter + proxy-only Crawl4AI target-site egress + final-URL revalidation. |
 | **Credential leakage in logs** | API keys, query text, raw page content, or URL query strings appear in structured logs and are shipped to a log aggregation system. | `redact_url()` strips userinfo and query strings; `query_hash()` hashes queries before logging; markdown and secrets are never logged. |
 | **Prompt injection via crawled content** | Crawled page text contains adversarial instructions that reach an agent's context and alter its behavior. | All passage text is tagged `trust: "untrusted"` and `provenance: "external_web"` in the response envelope; agents must treat it accordingly. Thorondor does not interpret or execute crawled content. |
 | **Query injection to SearXNG** | The user query is forwarded to SearXNG as a URL parameter. SearXNG handles escaping; Thorondor does not construct raw SQL or shell commands from the query. | SearXNG handles search-query sanitization. Thorondor passes the query as a URL parameter value only. |
@@ -22,14 +22,14 @@ Before any URL is sent to Crawl4AI, the orchestrator resolves it and validates t
 
 1. The URL scheme must be `http` or `https`.
 2. If the hostname is an IP literal (including legacy octal/hex IPv4 forms), it is parsed directly.
-3. Otherwise the hostname is resolved via `socket.getaddrinfo` (all address families).
+3. Otherwise the hostname is resolved via `socket.getaddrinfo` (all address families) in a worker thread so DNS cannot block the event loop.
 4. **Every** resolved IP is checked against the `UrlSafetyPolicy`:
    - Blocked IP categories: `loopback`, `link_local`, `private`, `reserved`, `multicast`, `unspecified` (configurable via `URL_SAFETY_BLOCKED_IP_CATEGORIES`).
    - Blocked special IPs: `169.254.169.254` (AWS EC2 metadata), `fd00:ec2::254` (IPv6 EC2 metadata) — configurable via `URL_SAFETY_BLOCKED_SPECIAL_IPS`.
 5. IPv6 addresses are expanded to their embedded IPv4 equivalents for NAT64 (`64:ff9b::/96`), 6-to-4 (`2002::/16`), and IPv4-compatible (`::/96`) networks. Each candidate is re-checked.
 6. If the host resolves to any unsafe IP, the URL is silently dropped from the candidate set.
 
-The filter also applies during redirect validation: when `CRAWL_VALIDATE_REDIRECTS=true`, the orchestrator follows redirect chains up to `CRAWL_MAX_PREFLIGHT_REDIRECTS` hops using HEAD requests, re-validating the target URL at each hop.
+The orchestrator does not issue a duplicate target-site preflight request. Crawl4AI follows redirects through the egress proxy, and the orchestrator applies the same policy to every differing final URL before the page crosses the internal fetch boundary.
 
 ### Layer 2 — SSRF Egress Proxy (`ssrf-proxy/proxy.py`)
 
@@ -44,7 +44,7 @@ On every CONNECT request (and plain HTTP forwarding):
 5. If any resolved IP is unsafe, the proxy returns `403 Forbidden` and logs the blocked target.
 6. If the host is safe, the proxy opens a TCP connection to the resolved IP and establishes a bidirectional relay.
 
-The proxy lives on the internal Docker network (`internal`) and has a second attachment to the `egress` network. Crawl4AI communicates with it over the internal network; the proxy reaches the internet over the egress network.
+The proxy lives on the internal Docker network (`internal`) and has a second attachment to the `egress` network. Crawl4AI is attached only to the internal network, so it has no direct target-site route and communicates with the proxy over that network. SearXNG and configured model providers retain separate provider-plane egress because their upstream calls are not target-site fetches.
 
 ## 3. URL Safety Policy
 
@@ -126,4 +126,4 @@ Thorondor provides SSRF protection, log sanitization, and network isolation. The
 - **No rate limiting** — the service does not enforce per-client rate limits. A high-volume client can exhaust SearXNG or Crawl4AI capacity.
 - **Crawled content is untrusted but not sandboxed** — page text is tagged `trust: "untrusted"` in the response, but it is not executed, sandboxed at the OS level, or scanned for malicious patterns. Prompt injection via crawled content is a risk that agents consuming the passages must mitigate.
 - **SearXNG has no per-request auth by default** — `SEARXNG_API_KEY` is optional. Without it, the SearXNG `/search` endpoint is accessible to any service on the internal Docker network.
-- **Single-layer redirect validation** — the orchestrator pre-validates redirects via HEAD requests, but Crawl4AI may follow additional redirects internally after the preflight. The SSRF proxy provides the second line of defence for these cases.
+- **Proxy enforcement depends on Compose topology** — custom deployments must preserve Crawl4AI's internal-only network attachment and proxy variables. The release guard checks the first-party local, CLI, and production Compose configurations.

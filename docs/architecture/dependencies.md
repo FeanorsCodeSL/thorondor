@@ -54,6 +54,7 @@ publishes multi-arch manifests and records digest refs in the release artifact
 | FastAPI | 0.141.1 | MIT | REST API framework |
 | Uvicorn[standard] | 0.52.1 | BSD-3-Clause | ASGI server |
 | httpx | 0.28.1 | BSD-3-Clause | Async HTTP client for all downstream seams |
+| idna | 3.18 | BSD-3-Clause | Non-transitional IDNA encoding for conservative URL identity |
 | Pydantic | 2.13.4 | MIT | Request/response wire models, settings validation |
 | MCP Python SDK | 2.0.0 | MIT | MCP `web_search` tool surface |
 | Trafilatura | 2.2.0 | Apache-2.0 | HTML-to-Markdown content extraction |
@@ -99,7 +100,7 @@ When using the `bundled-models` (TEI) profile, model weights are downloaded from
 | Destination | When called | Optional | Data sent |
 |---|---|---|---|
 | SearXNG (`SEARXNG_URL`) | Every search, for each sub-query | No (hard dependency) | Sub-query text, optional time_range, X-Request-ID, X-Real-IP header |
-| Crawl4AI (`CRAWL4AI_URL`) | Every search, for each selected URL | Degrades (no pages if unavailable) | URL, crawler config (robots.txt flag), X-Request-ID |
+| Crawl4AI (`CRAWL4AI_URL`) | Every search, for each selected URL | Degrades (no pages if unavailable) | URL, crawler/browser config (robots.txt flag and stable User-Agent), X-Request-ID |
 | Chunking service (`CHUNKER_URL`) | Every search, for each crawled page | No (hard dependency) | Page markdown, source URL, title, source_id |
 | Embedding server (`EMBEDDING_ENDPOINT`) | Every chunk request with ≥1 segment | Degrades (token-based fallback) | Segment texts, model name |
 | Reranker (`RERANKER_ENDPOINT`) | Every search after chunking | Degrades (position ordering if unavailable) | Query text, chunk texts (in batches), model name |

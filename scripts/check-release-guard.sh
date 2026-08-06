@@ -122,7 +122,21 @@ fi
 docker compose \
   --env-file thorondor_cli/templates/env.example \
   -f thorondor_cli/assets/docker-compose.yml \
-  config >/dev/null
+  config --format json \
+  | "$PYTHON_BIN" scripts/check_compose_egress.py \
+      --crawl-service crawl4ai \
+      --proxy-service egress-proxy \
+      --provider-service searxng
+
+docker compose \
+  --env-file .env.example \
+  --env-file .env.production.example \
+  -f docker-compose.production.yml \
+  config --format json \
+  | "$PYTHON_BIN" scripts/check_compose_egress.py \
+      --crawl-service crawl4ai \
+      --proxy-service thorondor-egress-proxy \
+      --provider-service searxng
 
 if ! grep -q 'uv tool install --force git+https://github.com/FeanorsCodeSL/thorondor' scripts/install.sh; then
   echo "scripts/install.sh must install the canonical Thorondor repository with uv tool install." >&2
@@ -153,6 +167,10 @@ from thorondor_cli.state import write_host_endpoints_overlay
 
 write_host_endpoints_overlay(sys.argv[1], host_rewritten=True)
 PY
-docker compose --env-file .env.example -f docker-compose.yml -f "$overlay" config >/dev/null
+docker compose --env-file .env.example -f docker-compose.yml -f "$overlay" config --format json \
+  | "$PYTHON_BIN" scripts/check_compose_egress.py \
+      --crawl-service crawl4ai \
+      --proxy-service egress-proxy \
+      --provider-service searxng
 
 echo "Release guard passed."

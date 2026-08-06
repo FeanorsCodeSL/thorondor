@@ -292,7 +292,7 @@ curl -s -X POST http://localhost:8080/v1/search \
 | `freshness` | `"day"` \| `"week"` \| `"month"` \| `"year"` | `null` | Discovery time-range hint passed to SearXNG. |
 | `domains` | `list[str]` | `null` | Per-call domain allowlist. Combined with `ALLOWLIST_ONLY` if set. |
 | `exclude_domains` | `list[str]` | `null` | Per-call domain blocklist merged with `DOMAIN_BLOCKLIST`. |
-| `include_raw_markdown` | bool | `false` | Attach raw crawled markdown for cited pages in `raw_markdown[]`. |
+| `include_raw_markdown` | bool | `false` | Attach original and exact cleaned Markdown plus document identity for cited pages in `raw_markdown[]`. |
 
 ### Response envelope (`SearchResponse`)
 
@@ -306,12 +306,42 @@ curl -s -X POST http://localhost:8080/v1/search \
       "score": 0.87,
       "token_count": 134,
       "citation_id": 1,
+      "start_index": 412,
+      "end_index": 1187,
+      "verbatim": true,
+      "document_id": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+      "evidence_id": "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789",
+      "section_heading": "Implementation timeline",
       "provenance": "external_web",
       "trust": "untrusted"
     }
   ],
   "citations": [
-    { "id": 1, "url": "https://...", "title": "..." }
+    {
+      "id": 1,
+      "url": "https://...",
+      "title": "...",
+      "published": "2026-08-04T10:15:00Z",
+      "modified_at": null,
+      "document_id": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+      "evidence_spans": [
+        {
+          "start_index": 412,
+          "end_index": 1187,
+          "verbatim": true,
+          "evidence_id": "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789",
+          "section_heading": "Implementation timeline"
+        }
+      ],
+      "metadata": {
+        "published_at": {
+          "value": "2026-08-04T10:15:00Z",
+          "source": "json_ld",
+          "confidence": "high"
+        },
+        "conflicts": []
+      }
+    }
   ],
   "stats": {
     "sub_queries": ["..."],
@@ -346,6 +376,8 @@ Key `stats` fields:
 | `url_diagnostics` | Per-URL selection decisions (populated when `include_raw_markdown` is true or the investigation smoke test is used). |
 
 An empty-passage response with `stats.reason` set is a normal 200, not an error. The caller should read `reason` rather than interpreting `passages.length == 0` alone. `search_provider_unavailable` means SearXNG reported at least one failed engine and returned no usable discovery results; a healthy empty search remains `no_results_from_discovery`.
+
+For `verbatim=true`, `start_index` and `end_index` are Unicode code-point offsets into the exact cleaned Markdown and the end is exclusive. `evidence_id` is emitted only when `passage.text == cleaned_markdown[start_index:end_index]` has been verified. `document_id` remains stable across ranking and chunk ordering when the final URL and exact cleaned document bytes are unchanged. Citation metadata keeps publication and modification separate, identifies the selected field source/confidence, and retains bounded conflicts instead of silently discarding them.
 
 `POST /search` is a backwards-compatible alias for `POST /v1/search`.
 
@@ -493,8 +525,8 @@ All keys must be present in `.env` (leave optional keys blank rather than deleti
 | `CRAWL_PER_HOST_CONCURRENCY` | `1` | Concurrent requests per hostname. |
 | `CRAWL_TIMEOUT_S` | `15` | Per-URL crawl timeout in seconds. |
 | `CRAWL_RESPECT_ROBOTS_TXT` | `true` | Whether Crawl4AI observes robots.txt. |
-| `CRAWL_VALIDATE_REDIRECTS` | `true` | Preflight-check redirect chains for SSRF targets before sending to Crawl4AI. |
-| `CRAWL_MAX_PREFLIGHT_REDIRECTS` | `5` | Max redirect hops to follow during preflight validation. |
+| `CRAWLER_USER_AGENT` | `ThorondorBot/1.0 (+https://github.com/FeanorsCodeSL/thorondor)` | Honest outbound crawler identity with a contact URL. |
+| `CRAWLER_ROBOTS_USER_AGENT` | `ThorondorBot` | Token reserved for robots policy matching and required to appear in the outbound identity. |
 
 ### Markdown Extraction
 

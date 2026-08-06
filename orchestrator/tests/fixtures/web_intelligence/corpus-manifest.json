@@ -1,0 +1,91 @@
+{
+  "fixture_revision": "web-intelligence-phase0-v2",
+  "identity": "thorondor-local-first-party-web-intelligence",
+  "files": [
+    {
+      "path": "static-page.html",
+      "sha256": "a054c936296f9c20704a6a912ae009190287d7ade0ca7ab32369f160f8ad1686",
+      "coverage": ["static_html"]
+    },
+    {
+      "path": "javascript-shell.html",
+      "sha256": "dbec7042a2d16b374f3d0f04af4965881201bd66fd0f0c9e40581f19011a14ff",
+      "coverage": ["javascript_shell"]
+    },
+    {
+      "path": "redirect-metadata.json",
+      "sha256": "872ec890370f57684f6cd199d7fabe2c9d169c0e1981d7ef6fd31c39fa2db51d",
+      "coverage": ["redirect_metadata"]
+    },
+    {
+      "path": "challenge-shell.html",
+      "sha256": "fea216e6c97d4fdffa787a0a1bb32498fea64be5d649fcdafd1333ca6423b58d",
+      "coverage": ["challenge_shell"]
+    },
+    {
+      "path": "robots-groups-and-states.json",
+      "sha256": "8f2aade1fd69fc890847b99bbf8b3b7f7ceafad0fc2cdd54c676a1d53539dd2f",
+      "coverage": ["robots_groups", "robots_4xx_5xx_state_descriptors"]
+    },
+    {
+      "path": "sitemap-index.xml",
+      "sha256": "faa667a6be88c9f6e19b73be98e7311a7721378ae73c4c5ec070562f1e8fcd3e",
+      "coverage": ["sitemap_index"]
+    },
+    {
+      "path": "duplicate-preamble-a.md",
+      "sha256": "fd44890450a2ce70530aebd1f43f2f45e3efe078ade78bf81f221848dc1806ff",
+      "coverage": ["shared_long_preamble_distinct_bodies"]
+    },
+    {
+      "path": "duplicate-preamble-b.md",
+      "sha256": "32dee46960c9acd75e55c36df9443b597099f08e08f105b36616af1e238af961",
+      "coverage": ["shared_long_preamble_distinct_bodies"]
+    },
+    {
+      "path": "duplicate-preamble-urls.json",
+      "sha256": "aa6dd4c9056638c61a0cd2a2904c92c2a1f1807e17acbc00ad2870648fdac99c",
+      "coverage": ["shared_long_preamble_distinct_urls"]
+    },
+    {
+      "path": "canonical-conflicts.html",
+      "sha256": "9dba286e224857870874ec031d7b49d3048c34824a4828bb2b5c841f617eb795",
+      "coverage": ["canonical_conflicts"]
+    },
+    {
+      "path": "query-variants.json",
+      "sha256": "d16d178e826b13daed22c183394983830e1e45c4468715c778757ed71c385501",
+      "coverage": ["query_variants_repeated_keys"]
+    },
+    {
+      "path": "unicode-crlf-markdown.json",
+      "sha256": "00f061972d929919337fb22332c829dc40954ecb9a647f0a6441339ad370c7d6",
+      "coverage": ["unicode_crlf_markdown"]
+    },
+    {
+      "path": "document-metadata.json",
+      "sha256": "cd199dac14339f7237f3055fab3b3b6f8da5244b8b5cc58d8959ec463cd52137",
+      "coverage": ["minimal_pdf_document_metadata"]
+    },
+    {
+      "path": "status-validator-transitions.json",
+      "sha256": "bed933ce58a892231efed0c0b8bab4cb1d823cb7dd4e53f2dc28f1f63295ef38",
+      "coverage": ["status_etag_last_modified_transitions"]
+    },
+    {
+      "path": "searxng-plural-result.json",
+      "sha256": "7d806acb718b4abad17eeaa28e0fb5ca2fc8882ce3d0c902379c5be436c92b94",
+      "coverage": ["searxng_plural_engines_positions_published_date"]
+    },
+    {
+      "path": "crawl4ai-metadata-result.json",
+      "sha256": "e79da0342fac89dde8bad62b912fe983fc4d1e3ad741206f94a3d21c1d42b070",
+      "coverage": ["crawl4ai_final_status_headers_links_metadata"]
+    },
+    {
+      "path": "malformed-upstream-payloads.json",
+      "sha256": "00becef54484b4fc7a58dc1ae8a7ac39c0e12ce4afdf36876ecc56bd53763779",
+      "coverage": ["malformed_upstream_payloads"]
+    }
+  ]
+}

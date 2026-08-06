@@ -1,7 +1,7 @@
 """Pydantic wire models for the Thorondor orchestrator."""
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 MAX_QUERY_CHARS = 500
 MAX_TOKEN_BUDGET = 16_000
@@ -18,6 +18,27 @@ ReasonCode = Literal[
     "no_chunks_after_rerank",
 ]
 DiscoveryStatus = Literal["ok", "degraded", "unavailable"]
+MetadataField = Literal[
+    "title",
+    "description",
+    "published_at",
+    "modified_at",
+    "author",
+    "language",
+    "declared_canonical_url",
+]
+MetadataSource = Literal[
+    "html_title",
+    "html_canonical",
+    "html_lang",
+    "json_ld",
+    "html_meta",
+    "page_metadata",
+    "discovery",
+    "sitemap",
+    "fetch_title",
+]
+MetadataConfidence = Literal["high", "medium", "low"]
 
 
 class Passage(BaseModel):
@@ -25,8 +46,74 @@ class Passage(BaseModel):
     score: float
     token_count: int
     citation_id: int
+    start_index: int | None = Field(default=None, ge=0)
+    end_index: int | None = Field(default=None, gt=0)
+    verbatim: bool = False
+    document_id: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+    evidence_id: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+    section_heading: str | None = None
     provenance: Literal["external_web"] = "external_web"
     trust: Literal["untrusted"] = "untrusted"
+
+    @model_validator(mode="after")
+    def validate_evidence(self) -> "Passage":
+        if self.verbatim and (
+            self.start_index is None
+            or self.end_index is None
+            or self.end_index <= self.start_index
+        ):
+            raise ValueError("verbatim passages require a valid end-exclusive span")
+        if self.evidence_id is not None and (
+            not self.verbatim or self.document_id is None
+        ):
+            raise ValueError("evidence_id requires verbatim text and document_id")
+        if self.verbatim and (self.document_id is None or self.evidence_id is None):
+            raise ValueError("verbatim passages require document_id and evidence_id")
+        return self
+
+
+class EvidenceSpan(BaseModel):
+    start_index: int | None = Field(default=None, ge=0)
+    end_index: int | None = Field(default=None, gt=0)
+    verbatim: bool = False
+    evidence_id: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+    section_heading: str | None = None
+
+    @model_validator(mode="after")
+    def validate_evidence(self) -> "EvidenceSpan":
+        if self.verbatim and (
+            self.start_index is None
+            or self.end_index is None
+            or self.end_index <= self.start_index
+        ):
+            raise ValueError("verbatim evidence requires a valid end-exclusive span")
+        if self.evidence_id is not None and not self.verbatim:
+            raise ValueError("evidence_id requires verbatim evidence")
+        if self.verbatim and self.evidence_id is None:
+            raise ValueError("verbatim evidence requires evidence_id")
+        return self
+
+
+class MetadataValue(BaseModel):
+    value: str = Field(max_length=8192)
+    source: MetadataSource
+    confidence: MetadataConfidence
+
+
+class MetadataConflict(BaseModel):
+    field: MetadataField
+    candidates: list[MetadataValue] = Field(max_length=8)
+
+
+class CitationMetadata(BaseModel):
+    title: MetadataValue | None = None
+    description: MetadataValue | None = None
+    published_at: MetadataValue | None = None
+    modified_at: MetadataValue | None = None
+    author: MetadataValue | None = None
+    language: MetadataValue | None = None
+    declared_canonical_url: MetadataValue | None = None
+    conflicts: list[MetadataConflict] = Field(default_factory=list, max_length=7)
 
 
 class Citation(BaseModel):
@@ -34,6 +121,16 @@ class Citation(BaseModel):
     url: str
     title: str
     published: str | None = None
+    modified_at: str | None = None
+    document_id: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+    evidence_spans: list[EvidenceSpan] = Field(default_factory=list)
+    metadata: CitationMetadata | None = None
+
+    @model_validator(mode="after")
+    def validate_evidence(self) -> "Citation":
+        if any(span.verbatim for span in self.evidence_spans) and self.document_id is None:
+            raise ValueError("verbatim citation spans require document_id")
+        return self
 
 
 class UrlDiagnostic(BaseModel):
@@ -49,6 +146,8 @@ class UrlDiagnostic(BaseModel):
 class RawMarkdown(BaseModel):
     citation_id: int
     markdown: str
+    cleaned_markdown: str | None = None
+    document_id: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
 
 
 class UnresponsiveEngine(BaseModel):

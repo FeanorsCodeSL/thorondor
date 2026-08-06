@@ -1,0 +1,12 @@
+{
+  "fixtures": [
+    {
+      "path": "duplicate-preamble-a.md",
+      "url": "https://fixtures.thorondor.test/dedup/shared-preamble-a"
+    },
+    {
+      "path": "duplicate-preamble-b.md",
+      "url": "https://fixtures.thorondor.test/dedup/shared-preamble-b"
+    }
+  ]
+}

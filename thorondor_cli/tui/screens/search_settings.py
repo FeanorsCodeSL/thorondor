@@ -27,6 +27,8 @@ class SearchSettingsScreen(ArrowNavigationMixin, Screen[None]):
         "CRAWL_PER_HOST_CONCURRENCY",
         "CRAWL_TIMEOUT_S",
         "CRAWL_RESPECT_ROBOTS_TXT",
+        "CRAWLER_USER_AGENT",
+        "CRAWLER_ROBOTS_USER_AGENT",
         "DOMAIN_ALLOWLIST",
         "DOMAIN_BLOCKLIST",
         "ALLOWLIST_ONLY",

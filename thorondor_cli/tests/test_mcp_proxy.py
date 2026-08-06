@@ -47,3 +47,16 @@ def test_web_search_signature_matches_orchestrator():
     from orchestrator import mcp_server
 
     assert inspect.signature(mcp_proxy.web_search) == inspect.signature(mcp_server.web_search)
+
+
+def test_web_search_description_includes_the_additive_evidence_contract():
+    description = inspect.getdoc(mcp_proxy.web_search)
+
+    for field in (
+        "start_index",
+        "document_id",
+        "evidence_id",
+        "discovery_status",
+        "unresponsive_engines",
+    ):
+        assert field in description

@@ -10,6 +10,7 @@ MAX_CHUNK_TEXT_CHARS = 200_000
 class SourceType(str, Enum):
     DOCUMENT = "DOCUMENT"
     WEB_MARKDOWN = "WEB_MARKDOWN"
+    ORCHESTRATOR_MARKDOWN = "ORCHESTRATOR_MARKDOWN"
 
 
 class ChunkParams(BaseModel):
@@ -32,6 +33,7 @@ class ChunkOut(BaseModel):
     position: int
     start_index: int
     end_index: int
+    verbatim: bool = False
     metadata: Dict[str, Any] = Field(default_factory=dict)
 
 

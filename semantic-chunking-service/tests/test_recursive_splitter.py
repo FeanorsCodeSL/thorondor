@@ -24,3 +24,13 @@ def test_word_with_no_separators_is_char_split():
     s = RecursiveCharacterTextSplitter(chunk_size=2)
     out = s.split_text("x" * 50)   # no separators present
     assert out and "".join(out) == "x" * 50
+
+
+def test_span_splitter_uses_contiguous_source_offsets_for_repeated_unicode_crlf_text():
+    text = "Repeat e\u0301.\r\n\r\nRepeat e\u0301.\r\n\r\nFinal 東京."
+    spans = RecursiveCharacterTextSplitter(chunk_size=2).split_text_with_spans(text)
+
+    assert spans
+    assert "".join(segment for segment, _, _ in spans) == text
+    for segment, start, end in spans:
+        assert segment == text[start:end]
