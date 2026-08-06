@@ -14,13 +14,11 @@ graph LR
     Orchestrator -->|POST RERANKER_PATH| Reranker
     Orchestrator -->|POST /v1/chat/completions\noptional| LLMPlanner[LLM Planner]
 
-    Crawl4AI -->|HTTP CONNECT via| EgressProxy[SSRF Egress Proxy]
-    EgressProxy -->|filtered egress| Internet([Internet])
+    Crawl4AI -->|built-in DNS-pinned egress| Internet([Internet])
     SearXNG -->|engine queries| Internet
 
     Chunker -->|POST /v1/embeddings| Embedding
 
-    style EgressProxy fill:#f9a,stroke:#c66
     style LLMPlanner fill:#eee,stroke:#999,stroke-dasharray:5
 ```
 
@@ -32,9 +30,9 @@ Dashed border = optional component (not started unless `LLM_ENDPOINT` is configu
 |---|---|---|---|---|
 | `ghcr.io/feanorscodesl/thorondor-orchestrator` | release tag or digest | amd64, arm64 | MIT | First-party REST/MCP orchestration service |
 | `ghcr.io/feanorscodesl/thorondor-chunker` | release tag or digest | amd64, arm64 | MIT | First-party semantic chunking service |
-| `ghcr.io/feanorscodesl/thorondor-egress-proxy` | release tag or digest | amd64, arm64 | MIT | First-party SSRF-filtering egress proxy |
+| `ghcr.io/feanorscodesl/thorondor-egress-proxy` | release tag or digest | amd64, arm64 | MIT | Retained first-party SSRF proxy; Crawl4AI 0.9.2 does not route through it |
 | `searxng/searxng` | `2026.8.4-c63835bd2`, `@sha256:f4c8e59de166ed71f6380c0847c312ca51f0d41996e31d0559163b6b09ecde52` | amd64, arm64, arm/v7 | AGPL-3.0 | Multi-engine URL discovery |
-| `unclecode/crawl4ai` | `0.9.2`, `@sha256:bd36741e7bdd35ddc1a05d9183e1d6d8cefb61dd640d944a25d026b76e917690` | amd64, arm64 | Apache-2.0 | JavaScript-capable page crawling |
+| `unclecode/crawl4ai` | `0.9.2`, `@sha256:bd36741e7bdd35ddc1a05d9183e1d6d8cefb61dd640d944a25d026b76e917690` | amd64, arm64 | Apache-2.0 | JavaScript-capable page crawling with connect-time DNS pinning |
 | `ghcr.io/huggingface/text-embeddings-inference` | revision `4150561`, `@sha256:af92a3852c965393cbdd111865c3a72445d2b430c7daf84269ffdb5cf178f4eb` | amd64 only | Apache-2.0 | Embedding + reranking (`bundled-models` profile) |
 | `ghcr.io/ggml-org/llama.cpp:server` | build `b10276`, `@sha256:bde659bfc300ee7d4d2e558e8a97e06211bc2bf079e31d22b61497f4f2cd85b1` | amd64, arm64, s390x | MIT | Embedding + reranking via GGUF (`llamacpp-models` profile) |
 | `python:3.13-slim` | `@sha256:bf503bb2243c5aad0aa951544dd60d165f992646441d35dea90893703fc26251` | amd64, arm64 | PSF License | Base for first-party Python services |
@@ -106,7 +104,7 @@ When using the `bundled-models` (TEI) profile, model weights are downloaded from
 | Reranker (`RERANKER_ENDPOINT`) | Every search after chunking | Degrades (position ordering if unavailable) | Query text, chunk texts (in batches), model name |
 | LLM planner (`LLM_ENDPOINT`) | Every search if configured and `decompose=true` | Yes (IdentityPlanner fallback) | Original query, system prompt |
 | SearXNG upstream search engines | Via SearXNG, not directly by Thorondor | Depends on SearXNG config | User query (after SearXNG's routing logic) |
-| Crawl target sites | Via Crawl4AI and the SSRF egress proxy | N/A | HTTP GET to discovered URLs |
+| Crawl target sites | Via Crawl4AI's dedicated egress network and built-in DNS-pinning proxy | N/A | HTTP GET to discovered URLs |
 
 ## 6. Dev / CI Tooling
 

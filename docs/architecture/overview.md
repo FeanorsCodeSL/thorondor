@@ -30,15 +30,15 @@ An unmodified upstream SearXNG Docker image, configured through `searxng/setting
 
 ### Crawl4AI
 
-The public upstream Crawl4AI 0.9.2 self-hosted Docker API (`unclecode/crawl4ai@sha256:bd36741e...`), consumed over the internal Compose network. The orchestrator submits `POST /crawl` requests to extract page content. Crawl4AI handles JavaScript rendering, robots.txt checking, and returns both raw HTML and Markdown forms of the page content. Thorondor never vendors or patches Crawl4AI source.
+The public upstream Crawl4AI 0.9.2 self-hosted Docker API (`unclecode/crawl4ai@sha256:bd36741e...`), consumed over a dedicated internal control network. The orchestrator submits authenticated `POST /crawl` requests to extract page content. Crawl4AI handles JavaScript rendering, robots.txt checking, and returns both raw HTML and Markdown forms of the page content. Thorondor never vendors or patches Crawl4AI source.
 
-Crawl4AI's outbound HTTP traffic routes through the embedded SSRF egress proxy to block requests to RFC-1918 and embedded-IPv4 IPv6 addresses.
+Crawl4AI has a separate outbound-only network for its built-in localhost pinning proxy. That proxy resolves each target once, rejects non-global destinations, and connects to the pinned address so Chromium cannot perform a second DNS resolution.
 
-### SSRF Egress Proxy (`ssrf-proxy/`)
+### Retained SSRF Egress Proxy (`ssrf-proxy/`)
 
-A minimal async HTTP CONNECT proxy built in Python's `asyncio`. It sits between Crawl4AI and the public internet. On every CONNECT or plain HTTP request it resolves the target hostname, expands IPv6 addresses (including NAT64, 6-to-4, and IPv4-compatible forms) to their embedded IPv4 equivalents, and rejects connections to loopback, link-local, private, reserved, multicast, unspecified, and operator-specified special IP addresses. This prevents Crawl4AI from being used to reach internal network resources.
+A minimal async HTTP CONNECT proxy built in Python's `asyncio`. It remains packaged for deployment compatibility, but Crawl4AI 0.9.2 does not route through it because the hardened upstream server replaces external browser proxy configuration with its own DNS-pinning proxy. Removing this retained service and image pipeline is a separate cleanup after deployment consumers are audited.
 
-The orchestrator also performs pre-crawl URL safety validation independently of the proxy (before sending URLs to Crawl4AI), providing defence-in-depth.
+The orchestrator performs pre-crawl and changed-final-URL safety validation independently of Crawl4AI's pinning proxy, providing defence-in-depth.
 
 ### Embedding Server
 
@@ -66,7 +66,7 @@ A single search request proceeds as follows:
 
 5. **URL selection** — the `SelectionPolicyImpl` scores candidates by a combination of the SearXNG discovery score and a lexical overlap with the original query. It enforces per-domain limits (max 3 URLs per domain unless the allowed domain set has ≤ 1 entry), engine diversity, and domain diversity passes before filling by score. `stats.urls_selected` is set.
 
-6. **Content extraction** — the orchestrator submits the original selected URL and configured crawler identity to Crawl4AI with `POST /crawl`, up to `CRAWL_CONCURRENCY` in parallel with `CRAWL_PER_HOST_CONCURRENCY` per hostname. Crawl4AI has no direct egress network and reaches target sites only through the SSRF proxy. The orchestrator captures bounded final URL, status, content type, validators, links, and metadata, then revalidates every changed final URL before accepting the page. Pages that return no markdown content are dropped. `stats.urls_crawled_ok` and `stats.urls_crawled_failed` are updated.
+6. **Content extraction** — the orchestrator submits the original selected URL and configured crawler identity to Crawl4AI with authenticated `POST /crawl`, up to `CRAWL_CONCURRENCY` in parallel with `CRAWL_PER_HOST_CONCURRENCY` per hostname. Crawl4AI reaches target sites through its dedicated egress network and built-in DNS-pinning proxy. The orchestrator captures bounded final URL, status, content type, validators, links, and metadata, then revalidates every changed final URL before accepting the page. Pages that return no markdown content are dropped. `stats.urls_crawled_ok` and `stats.urls_crawled_failed` are updated.
 
 7. **Markdown cleaning** — each page's HTML is passed through trafilatura to produce clean markdown. Boilerplate, navigation, footers, and comment sections (if disabled) are removed. `stats.markdown_chars_before` and `stats.markdown_chars_after` reflect the reduction.
 
@@ -122,5 +122,5 @@ The llama.cpp build `b10276` image is pinned to a specific SHA (`bde659bf...`) t
 - **Implemented cache** — there is no result cache. The architecture has a cache seam defined in the interface layer but it is not instantiated in the current deployment.
 - **Authentication on the orchestrator** — the REST and MCP endpoints have no built-in auth. Operators should place a reverse proxy with TLS and access control in front of the orchestrator port.
 - **Rate limiting** — not implemented in the service itself; add a reverse proxy if needed.
-- **Crawled content sandboxing** — beyond Crawl4AI's own isolation and the SSRF proxy, crawled content is not sandboxed at the OS level. The orchestrator treats all crawled text as untrusted.
+- **Crawled content sandboxing** — beyond Crawl4AI's non-root, read-only container posture and built-in egress controls, crawled content is not sandboxed at the OS level. The orchestrator treats all crawled text as untrusted.
 - **Mandatory hosted vendor** — Thorondor never makes outbound calls to commercial search APIs unless the operator configures SearXNG to use them (an explicit operator choice in `searxng/settings.yml`).

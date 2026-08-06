@@ -125,7 +125,7 @@ docker compose \
   config --format json \
   | "$PYTHON_BIN" scripts/check_compose_egress.py \
       --crawl-service crawl4ai \
-      --proxy-service egress-proxy \
+      --control-peer-service orchestrator \
       --provider-service searxng
 
 docker compose \
@@ -135,7 +135,7 @@ docker compose \
   config --format json \
   | "$PYTHON_BIN" scripts/check_compose_egress.py \
       --crawl-service crawl4ai \
-      --proxy-service thorondor-egress-proxy \
+      --control-peer-service thorondor \
       --provider-service searxng
 
 if ! grep -q 'uv tool install --force git+https://github.com/FeanorsCodeSL/thorondor' scripts/install.sh; then
@@ -170,7 +170,7 @@ PY
 docker compose --env-file .env.example -f docker-compose.yml -f "$overlay" config --format json \
   | "$PYTHON_BIN" scripts/check_compose_egress.py \
       --crawl-service crawl4ai \
-      --proxy-service egress-proxy \
+      --control-peer-service orchestrator \
       --provider-service searxng
 
 echo "Release guard passed."

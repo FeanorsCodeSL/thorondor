@@ -4,7 +4,7 @@
 
 Improve Thorondor's evidence integrity, fetch visibility, site mapping, bounded crawling, optional caching, and long-running job support using independently designed lessons from the local Wigolo and Firecrawl clones.
 
-Preserve Thorondor's SearXNG and Crawl4AI service boundaries, internal-only deployment posture, layered SSRF protection, robots policy, external-web provenance, untrusted-content labels, and backward-compatible `thorondor.search.v1` response. Default search must remain live and non-persistent.
+Preserve Thorondor's SearXNG and Crawl4AI service boundaries, private service APIs, layered SSRF protection, robots policy, external-web provenance, untrusted-content labels, and backward-compatible `thorondor.search.v1` response. Default search must remain live and non-persistent.
 
 Wigolo and Firecrawl are AGPL-3.0 reference material only. Do not copy or adapt their source, tests, assets, schemas, text, or implementation files into Thorondor. Re-derive behavior from Thorondor's requirements and write first-party Python implementations and tests.
 
@@ -226,6 +226,52 @@ Do not adopt:
 ### Acceptance — 2026-08-06
 
 - Accepted by the user after the external Opus review, independent claim verification, remediation, and final green verification.
+
+### Live deployment verification — 2026-08-06
+
+- Tengwar's canonical `just thorondor-deploy` workflow rebuilt the current first-party images, recreated Thorondor in place without removing volumes or the shared network, and reported all readiness dependencies healthy on `tengwar-shared`.
+- The first live `curl` exposed a deployment blocker outside Phase 1A: the recently selected Crawl4AI 0.9.2 image installs an in-container DNS-pinning proxy that cannot operate on Thorondor's proxy-only internal network. All selected public targets failed before extraction.
+- The managed Crawl4AI image was restored to the previously pinned 0.8.9 digest. `CRAWL4AI_ALLOW_INTERNAL_URLS=true` now disables only Crawl4AI's duplicate DNS precheck; the orchestrator URL gate, final-URL validation, internal-only network, and first-party egress proxy remain the enforced target-site boundary. The Compose release guard tests this invariant.
+- After a clean canonical redeploy with no temporary override, `/healthz` reported SearXNG, Crawl4AI, chunker, embedding, and reranker healthy. A live `curl` search returned HTTP 200 in 6.77 seconds with 20 URLs discovered, 4 selected, 2 crawled successfully, 2 failed, 5 chunks embedded and reranked, and 4 passages from 2 citations. Every returned passage was verbatim and carried a document ID, evidence ID, exact start/end span, and section heading.
+- Focused Compose-egress verification passed 4 tests, the full service/orchestrator suite passed 390 tests, and the Python 3.13 CLI suite passed 75 tests. `bash scripts/check-release-guard.sh` and `git diff --check` passed. The compatibility correction remains uncommitted pending review and user acceptance.
+
+## Phase 1A.1 — Crawl4AI 0.9.2 egress migration
+**Status:** completed
+**Kind:** logic
+
+### Tasks
+
+- [x] Restore the latest verified Crawl4AI 0.9.2 digest and retain authenticated internal API access through `CRAWL4AI_API_TOKEN`.
+- [x] Give Crawl4AI outbound internet routing while isolating its API on a dedicated internal control network shared only with the orchestrator. Do not publish the Crawl4AI API port.
+- [x] Remove Crawl4AI's obsolete external proxy variables and set `CRAWL4AI_ALLOW_INTERNAL_URLS=false` so the upstream DNS-pinning proxy remains authoritative for every browser target connection.
+- [x] Replace the Redis implementation-detail health probe with the public unauthenticated `/health` contract and mirror the upstream non-root, read-only, capability-drop, no-new-privileges, PID-limit, and writable-tmpfs container posture.
+- [x] Rewrite the Compose release guard around the new ownership boundary: one isolated internal control network, exactly one dedicated default-gateway egress network, no proxy override variables, internal destinations disallowed, no published Crawl4AI ports, and a digest-pinned upstream image.
+- [x] Keep the first-party egress proxy temporarily available for existing deployment compatibility, but remove Crawl4AI's dependency on it. Remove the proxy service and image pipeline only in a separately reviewed cleanup after all deployment consumers are confirmed absent.
+- [x] Update local, production, and CLI Compose assets, environment templates, dependency inventory, architecture, security, deployment, and operator documentation together.
+
+### Implementation report
+
+- Updated all three managed Compose variants and all four environment templates to the 0.9.2 contract. Crawl4AI now has one isolated control network and one project-managed outbound network, with no published port or external proxy variables.
+- Mirrored the upstream container hardening and public `/health` probe, restored the verified multi-architecture image digest, and kept `CRAWL4AI_ALLOW_INTERNAL_URLS=false`.
+- Replaced the former proxy-pass-through release guard with topology, explicit default-gateway, authentication-configuration, image-pinning, health-contract, and hardening checks. Added focused positive and negative tests for each invariant.
+- Reconciled operator, deployment, dependency, workflow, URL-safety, and security documentation. The historical 0.8.9 deployment record above is retained as evidence of why this migration is required.
+- Implementation and verification are complete.
+
+### Verification
+
+- [x] Add focused tests for the accepted topology and for failures caused by missing direct egress, shared control networks, `CRAWL4AI_ALLOW_INTERNAL_URLS=true`, proxy environment variables, published API ports, missing hardening, and unauthenticated Redis health checks.
+- [x] Render local, production, CLI, and host-endpoint-overlay Compose configurations and pass the release guard.
+- [x] Run the full service/orchestrator and CLI suites plus `git diff --check`.
+- [x] In a non-production compatibility deployment, prove authenticated `/crawl` succeeds for representative public static and JavaScript pages, unsafe internal/link-local targets are rejected, `/healthz` is ready, and a complete Thorondor `curl` search still uses embedding and reranking.
+
+### Verification report — 2026-08-06
+
+- Separate review found that merely attaching both networks left default-route selection implicit. A new failing test reproduced the gap; all Compose variants now select the dedicated crawl egress with `gw_priority: 1`, and the release guard enforces it.
+- Focused topology verification passed 18 tests. The final full service/orchestrator suite passed 404 tests, the CLI suite passed 75 tests, the release guard passed all rendered variants, and `git diff --check` passed.
+- Tengwar's canonical deploy wrapper stopped exporting obsolete Crawl4AI proxy variables, rebuilt the current first-party images, recreated only the Thorondor Compose project, and reported all dependencies healthy without removing Tengwar's shared network or model services.
+- Runtime inspection confirmed the 0.9.2 digest, `appuser`, read-only root filesystem, dropped capabilities, no-new-privileges, PID limit, isolated control network, and outbound network with gateway priority 1. Crawl4AI logged its localhost egress pinning proxy at startup.
+- Unauthenticated `GET /health` returned 200. Authenticated `/crawl` returned 200 with extracted markdown for `https://example.com` and the JavaScript-rendered `https://quotes.toscrape.com/js/`; a link-local metadata URL returned 400.
+- The final end-to-end `curl` search discovered 35 URLs, selected and crawled 4, produced and reranked 28 chunks using Tengwar's existing embedding and reranking services, and returned 4 passages across 3 citations with no embedding degradation. An earlier release-note query selected anti-bot or empty-content pages and correctly returned no passages; the direct probes and successful documentation query isolated that outcome to the selected targets rather than egress failure.
 
 ## Phase 1B — Honest diagnostics and evidence quality
 **Status:** pending

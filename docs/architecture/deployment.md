@@ -14,7 +14,7 @@ Defines six services:
 | `chunker` | (always) | Semantic chunking service |
 | `searxng` | (always) | URL discovery engine |
 | `crawl4ai` | (always) | Page content extractor |
-| `egress-proxy` | (always) | SSRF egress proxy for Crawl4AI outbound traffic |
+| `egress-proxy` | (always) | Retained first-party SSRF proxy; not used by Crawl4AI 0.9.2 |
 | `embedding` | `bundled-models` | HuggingFace TEI embedding server |
 | `reranker` | `bundled-models` | HuggingFace TEI reranker server |
 
@@ -75,11 +75,14 @@ The production slice joins Tengwar's external network through
 config directory via `THORONDOR_SEARXNG_CONFIG_DIR`; do not mount the Thorondor
 source tree on the production host.
 
-Crawl4AI is internal-only and reaches target sites through
-`thorondor-egress-proxy`; it must not be attached to `thorondor-egress`.
-SearXNG retains provider-plane egress for search engines, while configured model
-providers use the operator-owned application network. The release guard renders
-all three first-party Compose variants and verifies these roles.
+Crawl4AI's API uses `thorondor-crawl-control`, an internal network shared only
+with the orchestrator. Its built-in DNS-pinning proxy reaches target sites
+through the dedicated `thorondor-crawl-egress` network, whose gateway priority
+makes it the deterministic default route. This requires Docker Engine 28+ and
+Docker Compose 2.33.1+. SearXNG retains separate provider-plane egress for
+search engines, while configured model providers use the operator-owned
+application network. The release guard renders all three first-party Compose
+variants and verifies these roles.
 
 For the Tengwar development integration, the Tengwar repository owns the wrapper
 recipe. Run `just thorondor-deploy` from the Tengwar checkout. It forces
@@ -120,7 +123,9 @@ Copy-Item .env.example .env
 
 **SEARXNG_SECRET** — this key must be non-blank when SearXNG starts. The deploy scripts generate a random 32-byte base64 secret when the field is blank. Do not commit a real secret value. Rotate by blanking the key in `.env` and re-running `deploy.ps1`.
 
-**CRAWL4AI_API_KEY** — Crawl4AI 0.9.2 requires a credential before it binds to the Compose network. The deploy scripts and configurator generate a random value when this field is blank and preserve existing non-blank values.
+**CRAWL4AI_API_KEY** — the deploy scripts and configurator generate a random managed-service credential when this field is blank and preserve existing non-blank values.
+
+**CRAWL4AI_ALLOW_INTERNAL_URLS** — must remain `false` for the managed Crawl4AI 0.9.2 container. This keeps its connect-time DNS-pinning proxy restricted to globally routable targets. Do not use the upstream escape hatch to reach private or link-local destinations.
 
 **Crawler identity** — `CRAWLER_USER_AGENT` is the stable outbound identity sent through Crawl4AI and must contain a contact URL. `CRAWLER_ROBOTS_USER_AGENT` is the matching token reserved for the independent robots implementation. Do not rotate or impersonate browser identities.
 
@@ -140,7 +145,7 @@ Production image overlay for `docker-compose.production.yml`. Copy from
 `.env.production.example`, then replace the first-party image tag refs with the
 digest refs emitted by the GitHub release workflow. This file also changes
 production service URLs so the orchestrator uses `thorondor-chunker` and
-Crawl4AI uses `thorondor-egress-proxy`.
+the dedicated `thorondor-crawl-control` network to reach Crawl4AI.
 
 ### Strict key-presence validation
 
@@ -207,7 +212,7 @@ non-interactive and CI entrypoints.
 
 ## 4. Service Startup Order and Health Dependencies
 
-Compose `depends_on` relationships (no `condition: service_healthy` by default, except Crawl4AI):
+Compose `depends_on` relationships use no `condition: service_healthy` by default:
 
 ```
 orchestrator
@@ -215,8 +220,7 @@ orchestrator
   └── healthcheck: GET /livez (interval 30s, 3 retries)
 
 crawl4ai
-  └── depends_on: egress-proxy
-  └── healthcheck: redis-cli ping + curl /health (interval 30s, 3 retries, 5s start_period)
+  └── healthcheck: curl /health (interval 30s, 3 retries, 40s start_period)
 ```
 
 All other services (`searxng`, `chunker`, `egress-proxy`, `embedding`, `reranker`) start without explicit health-gate dependencies and are polled by the deploy script via `GET /healthz` on the orchestrator. This readiness endpoint checks SearXNG through its local `/healthz` route and does not submit a search.
@@ -359,7 +363,7 @@ No ARM64-specific code changes are needed. Run the same `deploy-llamacpp.ps1` co
 
 Known considerations:
 - CPU inference is the default. CUDA or Metal acceleration in llama.cpp requires rebuilding the image with GPU support — beyond the scope of this deployment guide.
-- The SearXNG image (`sha256:f4c8e59d...`) and Crawl4AI image (`sha256:bd36741e...`) are pulled from Docker Hub; both pinned manifests include AMD64 and ARM64.
+- The SearXNG image (`sha256:f4c8e59d...`) and Crawl4AI image (`sha256:bd36741e...`) are pulled from Docker Hub; both pinned indexes include AMD64 and ARM64 manifests.
 - The bundled TEI profile cannot run natively on ARM64 with the pinned image.
 
 ## 8. Production Hardening Checklist
@@ -369,7 +373,7 @@ Known considerations:
 - [ ] **Access control** — restrict the orchestrator port to authorized clients. No authentication is built into the REST or MCP endpoints.
 - [ ] **Rotate SEARXNG_SECRET** — ensure `SEARXNG_SECRET` is a strong random value (the deploy script generates one; verify it is set in `.env` before first production start).
 - [ ] **Enable ALLOWLIST_ONLY** — set `ALLOWLIST_ONLY=true` and populate `DOMAIN_ALLOWLIST` for deployments where crawling should be restricted to known domains.
-- [ ] **SSRF proxy** — verify Crawl4AI has only the internal network, its proxy variables target the egress proxy, and `PROXY_BLOCKED_IP_CATEGORIES` plus `PROXY_BLOCKED_SPECIAL_IPS` match your topology.
+- [ ] **Crawl egress** — verify Crawl4AI has only its isolated control and dedicated default-gateway egress networks, `CRAWL4AI_ALLOW_INTERNAL_URLS=false`, no external proxy variables, no published port, and the upstream read-only/non-root hardening.
 - [ ] **API keys on internal seams** — verify the generated `CRAWL4AI_API_KEY`; set `SEARXNG_API_KEY`, `CHUNKER_API_KEY`, `RERANKER_API_KEY`, and `EMBEDDING_API_KEY` if the corresponding services are accessible beyond the internal Docker network.
 - [ ] **Log shipping** — the orchestrator emits JSON logs to stdout. Configure a log driver or sidecar to ship to your log aggregation system.
 - [ ] **Container resource limits** — set memory limits for all containers, especially `CHUNKER_MEM_LIMIT` (default `768m`) for large documents with many segments. The DP chunker allocates O(N²) during similarity matrix computation.

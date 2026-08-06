@@ -26,7 +26,7 @@ query
   -> SearchResponse (REST or MCP)
 ```
 
-All inter-service traffic travels over an internal Compose network. Crawl4AI's outbound HTTP exits through the embedded SSRF egress proxy.
+All inter-service traffic travels over internal Compose networks. Crawl4AI's outbound HTTP exits through its built-in DNS-pinning proxy on a dedicated egress network.
 
 ## Repository Layout
 
@@ -39,7 +39,7 @@ All inter-service traffic travels over an internal Compose network. Crawl4AI's o
 | `searxng/` | config | SearXNG `settings.yml` mounted read-only by Compose |
 | `models/` | artifact | Local GGUF model files consumed by the llama.cpp profile (not committed) |
 | `scripts/` | scripts | `install.*`, `deploy.ps1`, `deploy-llamacpp.ps1`, `smoke.ps1`, `check-release-guard.ps1` (PowerShell) + Bash equivalents |
-| `docker-compose.yml` | config | Core stack: orchestrator, chunker, SearXNG, Crawl4AI, egress-proxy; `bundled-models` profile adds TEI embedding + reranker |
+| `docker-compose.yml` | config | Core stack: orchestrator, chunker, SearXNG, Crawl4AI, and the retained first-party egress-proxy service; `bundled-models` profile adds TEI embedding + reranker |
 | `docker-compose.llamacpp.yml` | config | Override: swaps embedding and reranker to local llama.cpp containers using GGUF files under `models/` |
 | `docker-compose.production.yml` | config | Image-only production slice for Tengwar-style deployments; no `build:` blocks or model containers |
 | `.env.example` | config | Template for `.env` — every key the Python settings loader requires |
@@ -53,7 +53,7 @@ All inter-service traffic travels over an internal Compose network. Crawl4AI's o
 
 ## Prerequisites
 
-- **Docker Desktop** — installed, running, and configured for Linux containers.
+- **Docker Engine 28+ with Docker Compose 2.33.1+**, or a Docker Desktop release containing them — installed, running, and configured for Linux containers. Thorondor uses Compose gateway priority to select Crawl4AI's isolated outbound network deterministically.
 - **GGUF model files** (llama.cpp profile only) — `bge-m3.gguf` and `bge-reranker-v2-m3.gguf` placed under `models/`. Verify model license terms before downloading weights.
 - **Hardware** — tested on Windows 10/11 with Docker Desktop (WSL2 backend) and on ARM64 (NVIDIA DGX Spark). The llama.cpp image is pinned to a SHA known to work on both architectures and supports CPU inference. The bundled TEI image requires an AMD64 NVIDIA CUDA host.
 - **PowerShell 7+** for the deploy and smoke scripts. Bash equivalents exist under `scripts/`.
@@ -222,8 +222,7 @@ The recipe builds the three first-party `:local` images from the sibling
 Thorondor checkout when selected, attaches the Thorondor orchestrator and
 chunker to `tengwar-shared`, points them at Tengwar's `embedding` and `reranker`
 services, and waits for Thorondor `/healthz`. It also generates and preserves
-`CRAWL4AI_API_KEY`, which Crawl4AI 0.9.2 requires before accepting network
-traffic. The recipe recreates only the Thorondor Compose project; do not use
+the managed `CRAWL4AI_API_KEY`. The recipe recreates only the Thorondor Compose project; do not use
 `down -v` or remove the shared network when switching versions.
 
 Use `/livez` for recurring process liveness and `/healthz` for dependency
@@ -620,14 +619,13 @@ All keys must be present in `.env` (leave optional keys blank rather than deleti
 | `PROXY_SIX_TO_FOUR_NETWORKS` | `2002::/16` | 6-to-4 networks for the proxy's IP expansion. |
 | `PROXY_IPV4_COMPAT_NETWORKS` | `::/96` | IPv4-compat networks for the proxy's IP expansion. |
 
-### Crawl4AI Proxy Pass-Through
+### Crawl4AI Egress Safety
 
 | Variable | Default | Description |
 |---|---|---|
-| `CRAWL4AI_HTTP_PROXY` | `http://egress-proxy:8888` | HTTP proxy for Crawl4AI outbound connections. |
-| `CRAWL4AI_HTTPS_PROXY` | `http://egress-proxy:8888` | HTTPS proxy for Crawl4AI outbound connections. |
-| `CRAWL4AI_ALL_PROXY` | `http://egress-proxy:8888` | All-protocol proxy fallback. |
-| `CRAWL4AI_NO_PROXY` | _(blank)_ | Comma-separated hosts to bypass the proxy. |
+| `CRAWL4AI_ALLOW_INTERNAL_URLS` | `false` | Keeps Crawl4AI 0.9.2's DNS-pinning proxy restricted to globally routable targets. Do not enable it in managed deployments. |
+
+Crawl4AI 0.9.2 owns its browser's connect-time DNS pinning and therefore has a dedicated outbound network selected explicitly as its default gateway. Its API remains unpublished on a separate internal control network shared only with the orchestrator. External proxy variables are intentionally absent because the hardened server replaces caller proxy configuration with its loopback pinning proxy.
 
 ### API Keys
 
@@ -712,10 +710,10 @@ Compose binds the orchestrator to `127.0.0.1` by default. To expose it to anothe
 Run `.\scripts\deploy.ps1` (or `deploy-llamacpp.ps1`) rather than `docker compose up` directly — the deploy script generates the secret when the field is blank.
 
 **Crawl4AI returns 401 or is unreachable**
-Run the deploy script so `CRAWL4AI_API_KEY` is generated and passed to both services. Crawl4AI 0.9.2 binds only to loopback and creates an ephemeral unknown token when the configured token is blank.
+Run the deploy script so `CRAWL4AI_API_KEY` is generated and passed to both services. Keep `CRAWL4AI_ALLOW_INTERNAL_URLS=false`; the API is reachable only through the dedicated internal control network.
 
 **All crawls failing (`urls_crawled_ok=0`)**
-Check Crawl4AI logs: `docker compose logs crawl4ai`. Common causes: slow network, robots.txt refusals (`CRAWL_RESPECT_ROBOTS_TXT=true`), or proxy misconfiguration. Increase `CRAWL_TIMEOUT_S` for slow sites.
+Check Crawl4AI logs: `docker compose logs crawl4ai`. Common causes are missing `crawl-egress` routing, DNS failures, robots.txt refusals (`CRAWL_RESPECT_ROBOTS_TXT=true`), or slow sites. Increase `CRAWL_TIMEOUT_S` only after confirming outbound routing and DNS.
 
 **No results from SearXNG**
 SearXNG may be rate-limited or blocking engines may be unavailable. Check `docker compose logs searxng`. The SearXNG web UI is not published by the default Compose stack; inspect it from inside the Compose network or add a temporary local-only port mapping during debugging.

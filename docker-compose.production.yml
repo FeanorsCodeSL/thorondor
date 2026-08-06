@@ -32,6 +32,7 @@ services:
       - "8080"
     networks:
       - thorondor-internal
+      - thorondor-crawl-control
       - app-network
     environment:
       LOG_LEVEL: "${LOG_LEVEL}"
@@ -128,33 +129,39 @@ services:
     <<: *thorondor-internal
     image: "${THORONDOR_CRAWL4AI_IMAGE}"
     networks:
-      - thorondor-internal
+      thorondor-crawl-control:
+      thorondor-crawl-egress:
+        gw_priority: 1
     environment:
       CRAWL4AI_API_TOKEN: "${CRAWL4AI_API_KEY?}"
-      HTTP_PROXY: "${CRAWL4AI_HTTP_PROXY}"
-      HTTPS_PROXY: "${CRAWL4AI_HTTPS_PROXY}"
-      ALL_PROXY: "${CRAWL4AI_ALL_PROXY}"
-      http_proxy: "${CRAWL4AI_HTTP_PROXY}"
-      https_proxy: "${CRAWL4AI_HTTPS_PROXY}"
-      all_proxy: "${CRAWL4AI_ALL_PROXY}"
-      NO_PROXY: "${CRAWL4AI_NO_PROXY?}"
-      no_proxy: "${CRAWL4AI_NO_PROXY?}"
+      CRAWL4AI_ALLOW_INTERNAL_URLS: "${CRAWL4AI_ALLOW_INTERNAL_URLS}"
+    user: "appuser"
+    read_only: true
+    tmpfs:
+      - /tmp
+      - /var/lib/redis:uid=999,gid=999,mode=0700
+      - /var/lib/crawl4ai/outputs:uid=999,gid=999,mode=0700
+      - /home/appuser/.crawl4ai:uid=999,gid=999,mode=0700
+      - /home/appuser/.cache/url_seeder:uid=999,gid=999,mode=0700
+      - /home/appuser/.gunicorn:uid=999,gid=999,mode=0700
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    pids_limit: 512
     shm_size: "1g"
     healthcheck:
-      test:
-        - "CMD-SHELL"
-        - "redis-cli ping > /dev/null && NO_PROXY=localhost,127.0.0.1,::1 no_proxy=localhost,127.0.0.1,::1 curl -f http://localhost:11235/health"
+      test: ["CMD", "curl", "-f", "http://localhost:11235/health"]
       interval: 30s
       timeout: 10s
       retries: 3
-      start_period: 5s
-    depends_on:
-      - thorondor-egress-proxy
+      start_period: 40s
 
 networks:
   thorondor-internal:
     internal: true
   thorondor-egress: {}
+  thorondor-crawl-control:
+    internal: true
+  thorondor-crawl-egress: {}
   app-network:
     name: "${THORONDOR_APP_NETWORK}"
     external: true

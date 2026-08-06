@@ -11,7 +11,6 @@ sequenceDiagram
     participant LLMPlanner as LLM Planner (optional)
     participant SearXNG
     participant Crawl4AI
-    participant EgressProxy as SSRF Egress Proxy
     participant Chunker as Chunking Service
     participant Embedding as Embedding Server
     participant Reranker as Reranker Server
@@ -33,9 +32,8 @@ sequenceDiagram
 
     loop for each selected URL (concurrent, bounded)
         Orchestrator->>Crawl4AI: POST /crawl {urls, crawler_config}
-        Crawl4AI->>EgressProxy: CONNECT target-host:443
-        EgressProxy->>EgressProxy: resolve + IP safety check
-        EgressProxy-->>Crawl4AI: 200 Connection Established (or 403 Forbidden)
+        Crawl4AI->>Crawl4AI: resolve once + reject non-global IPs
+        Crawl4AI->>Crawl4AI: connect to pinned target IP
         Crawl4AI-->>Orchestrator: {markdown, html, title, ...}
     end
 

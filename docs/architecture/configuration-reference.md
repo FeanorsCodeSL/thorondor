@@ -151,14 +151,13 @@ All environment variables must be present in `.env` (and `.env.llamacpp` or `.en
 | `PROXY_SIX_TO_FOUR_NETWORKS` | Required / `2002::/16` | comma-separated IPv6 CIDRs | 6-to-4 networks for proxy IP expansion. | — |
 | `PROXY_IPV4_COMPAT_NETWORKS` | Required / `::/96` | comma-separated IPv6 CIDRs | IPv4-compat networks for proxy IP expansion. | — |
 
-### Crawl4AI Proxy Pass-Through
+### Crawl4AI Egress Safety
 
 | Variable | Required / Default | Type | Description | Related |
 |---|---|---|---|---|
-| `CRAWL4AI_HTTP_PROXY` | Required / `http://egress-proxy:8888` | URL | HTTP proxy for Crawl4AI outbound connections. Routes traffic through the SSRF proxy. | `CRAWL4AI_HTTPS_PROXY` |
-| `CRAWL4AI_HTTPS_PROXY` | Required / `http://egress-proxy:8888` | URL | HTTPS proxy for Crawl4AI outbound connections. | `CRAWL4AI_HTTP_PROXY` |
-| `CRAWL4AI_ALL_PROXY` | Required / `http://egress-proxy:8888` | URL | All-protocol proxy fallback for Crawl4AI. | `CRAWL4AI_HTTP_PROXY` |
-| `CRAWL4AI_NO_PROXY` | Optional (blank) | comma-separated hostnames | Hosts Crawl4AI bypasses the proxy for. | `CRAWL4AI_ALL_PROXY` |
+| `CRAWL4AI_ALLOW_INTERNAL_URLS` | Required / `false` | bool | Keeps Crawl4AI 0.9.2's connect-time DNS-pinning proxy restricted to globally routable targets. Managed deployments must not enable the internal-target escape hatch. | `URL_SAFETY_BLOCKED_IP_CATEGORIES` |
+
+The `PROXY_*` settings above configure the retained first-party proxy service. Crawl4AI 0.9.2 does not consume them and must not receive standard HTTP proxy environment variables.
 
 ### API Keys and Secrets
 
