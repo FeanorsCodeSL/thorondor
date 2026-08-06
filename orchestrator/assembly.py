@@ -7,15 +7,7 @@ from .types import AssembledCitation, AssembledPassage, EvidenceSpan, ScoredChun
 from .url_identity import evidence_id_for
 
 
-def _truncate_to_budget(item: ScoredChunk, token_budget: int) -> ScoredChunk | None:
-    if item.chunk.token_count <= token_budget:
-        return item
-    if token_budget < 1:
-        return None
-    matches = list(re.finditer(r"\S+", item.chunk.text))
-    if len(matches) != item.chunk.token_count or len(matches) < token_budget:
-        return None
-    relative_end = matches[token_budget - 1].end()
+def _truncate(item: ScoredChunk, relative_end: int, token_count: int) -> ScoredChunk:
     preserves_identity = (
         item.chunk.verbatim
         and item.chunk.document_id is not None
@@ -41,13 +33,36 @@ def _truncate_to_budget(item: ScoredChunk, token_budget: int) -> ScoredChunk | N
     chunk = replace(
         item.chunk,
         text=item.chunk.text[:relative_end],
-        token_count=token_budget,
+        token_count=token_count,
         start_index=item.chunk.start_index if preserves_identity else None,
         end_index=end_index,
         verbatim=preserves_identity,
         evidence_id=evidence_id,
     )
-    return ScoredChunk(chunk=chunk, score=item.score)
+    return replace(item, chunk=chunk)
+
+
+def truncate_to_char_count(item: ScoredChunk, char_count: int) -> ScoredChunk | None:
+    if len(item.chunk.text) <= char_count:
+        return item
+    if char_count < 1:
+        return None
+    text = item.chunk.text[:char_count].rstrip()
+    token_count = len(re.findall(r"\S+", text))
+    if not text or token_count < 1:
+        return None
+    return _truncate(item, len(text), token_count)
+
+
+def _truncate_to_budget(item: ScoredChunk, token_budget: int) -> ScoredChunk | None:
+    if item.chunk.token_count <= token_budget:
+        return item
+    if token_budget < 1:
+        return None
+    matches = list(re.finditer(r"\S+", item.chunk.text))
+    if len(matches) != item.chunk.token_count or len(matches) < token_budget:
+        return None
+    return _truncate(item, matches[token_budget - 1].end(), token_budget)
 
 
 class ResultAssemblerImpl:
@@ -117,6 +132,7 @@ class ResultAssemblerImpl:
                     document_id=item.chunk.document_id,
                     evidence_id=item.chunk.evidence_id,
                     section_heading=item.chunk.section_heading,
+                    score_components=item.score_components,
                 )
             )
             total_tokens += item.chunk.token_count

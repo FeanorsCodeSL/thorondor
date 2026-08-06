@@ -58,7 +58,7 @@ Citation metadata is deterministic and bounded. Selected values retain `source` 
 
 Publication and modification timestamps are normalized to UTC only when parsing succeeds with an explicit timezone or a date-only value. JSON-LD `datePublished`, page publication metadata, and SearXNG `publishedDate` may populate `published`; modification metadata remains in `modified_at`. Sitemap `lastmod` is modification-only, HTTP validators are not silently treated as page dates, and body prose is never date-mined.
 
-Current `orchestrator/content_dedup.py` still destructively drops pages solely when their normalized first 2,000 characters have the same fingerprint. That fingerprint is not a source-document identity; Phase 1B must replace the destructive drop rule with full-document identity for exact duplicates.
+`orchestrator/content_dedup.py` hashes the full whitespace-normalized Markdown for destructive exact-duplicate removal. It does not use declared canonical metadata, and it does not delete documents merely because they share a long prefix. This operational dedup fingerprint remains separate from the exact-byte, final-URL-bound `document_id` used for evidence identity.
 
 ## Closed outcome codes
 

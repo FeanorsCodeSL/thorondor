@@ -1,43 +1,67 @@
 """Search pipeline orchestration."""
-from dataclasses import dataclass, replace
 import asyncio
+import logging
+import time
 from collections.abc import Awaitable, Callable
+from dataclasses import dataclass, replace
 from importlib import import_module
 from importlib.metadata import version
 from inspect import isawaitable
-import logging
-import time
 
-from .assembly import ResultAssemblerImpl
+from .assembly import ResultAssemblerImpl, truncate_to_char_count
 from .clients.chunker_client import ChunkerUnavailable
 from .clients.reranker_client import RerankerUnavailable
 from .clients.searxng_client import DiscoveryUnavailable
 from .content_dedup import content_dedup
 from .evidence_metadata import extract_document_metadata
+from .evidence_quality import filter_evidence_quality
 from .interfaces import (
+    CandidatePrefilter,
     ContentExtractor,
     MarkdownCleaner,
-    CandidatePrefilter,
     QueryPlanner,
-    ResultAssembler,
     Reranker,
+    ResultAssembler,
     SearchDiscovery,
     SelectionPolicy,
     SemanticChunker,
 )
 from .merge import merge_dedup
 from .models import (
+    MAX_EVIDENCE_BYTES,
+    MAX_EVIDENCE_ITEM_BYTES,
+    MAX_PASSAGES,
+    MAX_QUERY_CHARS,
+    MAX_RAW_MARKDOWN_BYTES,
+    MAX_RAW_MARKDOWN_ITEM_BYTES,
+    MAX_RAW_MARKDOWN_ITEMS,
+    MAX_URL_DIAGNOSTICS,
+    MAX_URL_DIAGNOSTICS_BYTES,
     Citation,
+    DiagnosticOmission,
+    EngineContribution,
+    EvidenceQualityDrop,
     Passage,
     RawMarkdown,
     SearchRequest,
     SearchResponse,
     SearchStats,
+    SubqueryDiagnostic,
     UnresponsiveEngine,
     UrlDiagnostic,
 )
 from .observability import query_hash
-from .types import DiscoveryResult, DocumentMetadata, Page, ScoredChunk
+from .selection import SelectionDecision
+from .types import (
+    DiscoveryOutcome,
+    DiscoveryResult,
+    DocumentMetadata,
+    Page,
+    RerankerTelemetry,
+    RerankOutcome,
+    ScoreComponent,
+    ScoredChunk,
+)
 from .url_safety import (
     filter_safe_discovery_results_async,
     is_safe_crawl_url_async,
@@ -51,6 +75,14 @@ class SearchDependencyUnavailable(Exception):
         super().__init__(reason)
         self.dependency = dependency
         self.reason = reason
+
+
+@dataclass(frozen=True)
+class _DiscoveryAttempt:
+    query: str
+    outcome: DiscoveryOutcome | None
+    error: str | None
+    elapsed_ms: int
 
 
 @dataclass
@@ -71,6 +103,7 @@ class PipelineDeps:
     blocklist: set[str]
     url_safety: Callable[[list[DiscoveryResult]], list[DiscoveryResult] | Awaitable[list[DiscoveryResult]]]
     relevance_score_floor: float | None
+    evidence_quality_enabled: bool
     domain_allowlist: set[str] | None
     allowlist_only: bool
 
@@ -95,11 +128,17 @@ def _log_search_summary(query: str, stats: SearchStats, reason: str | None = Non
             "event": "search_completed",
             "query_hash": query_hash(query),
             "sub_query_count": len(stats.sub_queries),
+            "sub_queries_failed": sum(
+                item.status == "failed" for item in stats.subquery_diagnostics
+            ),
             "urls_discovered": stats.urls_discovered,
             "urls_selected": stats.urls_selected,
             "urls_crawled_ok": stats.urls_crawled_ok,
             "urls_crawled_failed": stats.urls_crawled_failed,
             "reranked": stats.reranked,
+            "evidence_quality_chunks_dropped": stats.evidence_quality_chunks_dropped,
+            "evidence_items_omitted": stats.evidence_items_omitted,
+            "raw_markdown_omitted": stats.raw_markdown_omitted,
             "reason": reason if reason is not None else stats.reason,
             "elapsed_ms": stats.elapsed_ms,
         },
@@ -108,6 +147,13 @@ def _log_search_summary(query: str, stats: SearchStats, reason: str | None = Non
 
 def _elapsed_ms(started: float) -> int:
     return int((time.perf_counter() - started) * 1000)
+
+
+def _truncate_utf8(value: str, max_bytes: int) -> str:
+    encoded = value.encode("utf-8")
+    if len(encoded) <= max_bytes:
+        return value
+    return encoded[:max_bytes].decode("utf-8", errors="ignore")
 
 
 def _request_limits(req: SearchRequest, deps: PipelineDeps) -> tuple[int, int, int | None]:
@@ -120,7 +166,10 @@ def _request_limits(req: SearchRequest, deps: PipelineDeps) -> tuple[int, int, i
 
 async def _planned_subqueries(req: SearchRequest, deps: PipelineDeps, stats: SearchStats) -> list[str]:
     planned = await deps.planner.plan(req.query) if req.decompose else [req.query]
-    subqueries = (planned or [req.query])[:deps.max_subqueries]
+    subqueries = [
+        str(query)[:MAX_QUERY_CHARS]
+        for query in (planned or [req.query])[:deps.max_subqueries]
+    ]
     stats.sub_queries = subqueries
     return subqueries
 
@@ -132,14 +181,49 @@ async def _discover_results(
     subqueries: list[str],
     started: float,
 ) -> list[DiscoveryResult]:
-    try:
-        outcomes = await asyncio.gather(
-            *(deps.discovery.search(query, req.freshness) for query in subqueries)
+    async def attempt(query: str) -> _DiscoveryAttempt:
+        attempt_started = time.perf_counter()
+        try:
+            outcome = await deps.discovery.search(query, req.freshness)
+            return _DiscoveryAttempt(query, outcome, None, _elapsed_ms(attempt_started))
+        except DiscoveryUnavailable as exc:
+            failure_reason = (
+                exc.reason
+                if exc.reason
+                in {
+                    "timeout",
+                    "transport_error",
+                    "upstream_status_error",
+                    "malformed_response",
+                }
+                else "unavailable"
+            )
+            return _DiscoveryAttempt(
+                query,
+                None,
+                failure_reason,
+                _elapsed_ms(attempt_started),
+            )
+
+    attempts = await asyncio.gather(*(attempt(query) for query in subqueries))
+    stats.subquery_diagnostics = [
+        SubqueryDiagnostic(
+            query=item.query,
+            status="ok" if item.outcome is not None else "failed",
+            elapsed_ms=item.elapsed_ms,
+            result_count=len(item.outcome.results) if item.outcome is not None else 0,
+            failure_reason=item.error,
         )
-    except DiscoveryUnavailable as exc:
+        for item in attempts
+    ]
+    successful_attempts = [item for item in attempts if item.outcome is not None]
+    if not successful_attempts:
         stats.elapsed_ms = _elapsed_ms(started)
         _log_search_summary(req.query, stats, "searxng_unavailable")
-        raise SearchDependencyUnavailable("searxng", "searxng_unavailable") from exc
+        raise SearchDependencyUnavailable("searxng", "searxng_unavailable")
+
+    outcomes = [item.outcome for item in successful_attempts if item.outcome is not None]
+    failed_attempts = len(attempts) - len(successful_attempts)
 
     failures = sorted(
         {
@@ -149,14 +233,44 @@ async def _discover_results(
         }
     )
     stats.unresponsive_engines = [
-        UnresponsiveEngine(engine=engine, reason=reason)
-        for engine, reason in failures
+        UnresponsiveEngine(
+            engine=_truncate_utf8(engine, 128),
+            reason=_truncate_utf8(reason, 256),
+        )
+        for engine, reason in failures[:32]
     ]
-    if failures:
+    if failures or failed_attempts:
         stats.discovery_status = "degraded"
 
-    merged = merge_dedup([outcome.results for outcome in outcomes])
-    if not merged and failures:
+    engine_counts: dict[str, int] = {}
+    for outcome in outcomes:
+        for result in outcome.results:
+            engines = [item.engine for item in result.contributions if item.engine]
+            if not engines and result.engine:
+                engines = [result.engine]
+            for engine in engines:
+                engine_counts[engine] = engine_counts.get(engine, 0) + 1
+    stats.engine_contributions = [
+        EngineContribution(
+            engine=_truncate_utf8(engine, 128),
+            contribution_count=count,
+        )
+        for engine, count in sorted(
+            engine_counts.items(),
+            key=lambda item: (-item[1], item[0]),
+        )[:32]
+    ]
+
+    result_sets = [
+        item.outcome.results
+        for item in successful_attempts
+        if item.outcome is not None
+    ]
+    merged = merge_dedup(
+        result_sets,
+        [item.query for item in successful_attempts],
+    )
+    if not merged and (failures or failed_attempts):
         stats.discovery_status = "unavailable"
     stats.urls_discovered = len(merged)
     return merged
@@ -194,17 +308,15 @@ def _select_results(
     select_with_diagnostics = getattr(deps.selector, "select_with_diagnostics", None)
     if select_with_diagnostics is None:
         selected = deps.selector.select(candidates, max_urls, blocklist, allowlist, req.query)
-        stats.url_diagnostics = [
-            UrlDiagnostic(
-                url=result.url,
-                title=result.title,
-                engine=result.engine,
-                discovery_score=result.score,
+        decisions = [
+            SelectionDecision(
+                result,
                 selected=True,
                 selection_reason="selector",
             )
             for result in selected
         ]
+        _set_bounded_url_diagnostics(stats, decisions)
         return selected
 
     selected, selection_diagnostics = select_with_diagnostics(
@@ -214,19 +326,81 @@ def _select_results(
         allowlist,
         req.query,
     )
-    stats.url_diagnostics = [
-        UrlDiagnostic(
-            url=decision.result.url,
-            title=decision.result.title,
-            engine=decision.result.engine,
-            discovery_score=decision.result.score,
-            selected=decision.selected,
-            selection_reason=decision.selection_reason,
-            filtered_reason=decision.filtered_reason,
-        )
-        for decision in selection_diagnostics
-    ]
+    _set_bounded_url_diagnostics(stats, selection_diagnostics)
     return selected
+
+
+def _ordered_unique(values) -> list:
+    return list(dict.fromkeys(values))
+
+
+def _wire_url_diagnostic(
+    result: DiscoveryResult,
+    selected: bool,
+    selection_reason: str | None,
+    filtered_reason: str | None,
+    lexical_score: float,
+) -> UrlDiagnostic:
+    contributions = result.contributions
+    engines = _ordered_unique(item.engine for item in contributions if item.engine)
+    if result.engine and result.engine not in engines:
+        engines.insert(0, result.engine)
+    positions = _ordered_unique(
+        item.position for item in contributions if item.position is not None
+    )
+    subqueries = _ordered_unique(
+        item.subquery
+        for item in contributions
+        if item.subquery and not item.subquery.startswith("result_set:")
+    )
+    return UrlDiagnostic(
+        url=_truncate_utf8(result.url, 2048),
+        title=_truncate_utf8(result.title, 512),
+        engine=_truncate_utf8(result.engine, 128),
+        engines=[_truncate_utf8(item, 128) for item in engines[:16]],
+        positions=positions[:16],
+        contributing_subqueries=[_truncate_utf8(item, 500) for item in subqueries[:8]],
+        contribution_count=max(1, len(contributions)),
+        independent_subquery_count=len(subqueries),
+        best_upstream_score=result.score,
+        discovery_score=result.score,
+        lexical_selection_score=lexical_score,
+        selected=selected,
+        selection_reason=selection_reason,
+        filtered_reason=filtered_reason,
+    )
+
+
+def _set_bounded_url_diagnostics(stats: SearchStats, decisions: list) -> None:
+    ordered = [item for item in decisions if item.selected]
+    ordered.extend(item for item in decisions if not item.selected)
+    kept: list[UrlDiagnostic] = []
+    omitted: dict[str, int] = {}
+    used_bytes = 2
+    for decision in ordered:
+        diagnostic = _wire_url_diagnostic(
+            decision.result,
+            decision.selected,
+            decision.selection_reason,
+            decision.filtered_reason,
+            decision.lexical_score,
+        )
+        item_bytes = len(diagnostic.model_dump_json().encode("utf-8"))
+        additional_bytes = item_bytes + (1 if kept else 0)
+        if (
+            len(kept) < MAX_URL_DIAGNOSTICS
+            and used_bytes + additional_bytes <= MAX_URL_DIAGNOSTICS_BYTES
+        ):
+            kept.append(diagnostic)
+            used_bytes += additional_bytes
+            continue
+        reason = decision.filtered_reason or "selected_over_budget"
+        omitted[reason] = omitted.get(reason, 0) + 1
+    stats.url_diagnostics = kept
+    stats.url_diagnostics_omitted = [
+        DiagnosticOmission(reason=reason, count=count)
+        for reason, count in sorted(omitted.items())[:16]
+    ]
 
 
 def _clean_pages(deps: PipelineDeps, pages: list[Page], stats: SearchStats) -> list[Page]:
@@ -333,20 +507,56 @@ def _prefilter_chunks(req: SearchRequest, deps: PipelineDeps, chunks: list, stat
 
 async def _rerank_chunks(req: SearchRequest, deps: PipelineDeps, chunks: list, stats: SearchStats) -> list[ScoredChunk]:
     try:
-        scored = await deps.reranker.rerank(req.query, chunks)
+        result = await deps.reranker.rerank(req.query, chunks)
+        if isinstance(result, RerankOutcome):
+            outcome = result
+        else:
+            scored_result = list(result)
+            outcome = RerankOutcome(
+                scored_result,
+                RerankerTelemetry(
+                    batches=1 if chunks else 0,
+                    scored_count=len(scored_result),
+                ),
+                "reranker@1",
+            )
+        scored = [
+            item
+            if item.score_components
+            else replace(
+                item,
+                score_components=(
+                    ScoreComponent("reranker", item.score, outcome.strategy),
+                ),
+            )
+            for item in outcome.scored
+        ]
         stats.reranked = True
-        stats.reranker_batches = getattr(deps.reranker, "last_batches", 1 if chunks else 0)
-        stats.reranker_batches_failed = getattr(deps.reranker, "last_batches_failed", 0)
-        stats.reranker_floor_filled = bool(getattr(deps.reranker, "last_floor_filled", False))
-        stats.chunks_reranked = getattr(deps.reranker, "last_scored_count", len(scored))
+        stats.reranker_batches = outcome.telemetry.batches
+        stats.reranker_batches_failed = outcome.telemetry.batches_failed
+        stats.reranker_floor_filled = outcome.telemetry.floor_filled
+        stats.chunks_reranked = outcome.telemetry.scored_count
         return scored
-    except RerankerUnavailable:
+    except RerankerUnavailable as exc:
         stats.reranked = False
-        stats.reranker_batches = getattr(deps.reranker, "last_batches", 0)
-        stats.reranker_batches_failed = getattr(deps.reranker, "last_batches_failed", 0)
+        stats.reranker_batches = exc.telemetry.batches
+        stats.reranker_batches_failed = exc.telemetry.batches_failed
         stats.reranker_floor_filled = False
         stats.chunks_reranked = 0
-        return [ScoredChunk(chunk, 1.0 / (index + 1)) for index, chunk in enumerate(chunks)]
+        return [
+            ScoredChunk(
+                chunk,
+                1.0 / (index + 1),
+                (
+                    ScoreComponent(
+                        "position_fallback",
+                        1.0 / (index + 1),
+                        "position-fallback@1",
+                    ),
+                ),
+            )
+            for index, chunk in enumerate(chunks)
+        ]
 
 
 def _apply_relevance_floor(
@@ -364,7 +574,87 @@ def _apply_relevance_floor(
     )
 
 
-def _build_raw_markdown(req: SearchRequest, pages: list[Page], assembled_citations: list) -> list[RawMarkdown] | None:
+def _wire_scored_passage(item: ScoredChunk) -> Passage:
+    return Passage(
+        text=item.chunk.text,
+        score=item.score,
+        token_count=item.chunk.token_count,
+        citation_id=MAX_PASSAGES,
+        start_index=item.chunk.start_index,
+        end_index=item.chunk.end_index,
+        verbatim=item.chunk.verbatim,
+        document_id=item.chunk.document_id,
+        evidence_id=item.chunk.evidence_id,
+        section_heading=item.chunk.section_heading,
+        score_components=[
+            {
+                "name": component.name,
+                "score": component.score,
+                "strategy": component.strategy,
+            }
+            for component in item.score_components
+        ],
+    )
+
+
+def _fit_evidence_item(item: ScoredChunk) -> tuple[ScoredChunk | None, int]:
+    original_bytes = len(_wire_scored_passage(item).model_dump_json().encode("utf-8"))
+    if original_bytes <= MAX_EVIDENCE_ITEM_BYTES:
+        return item, original_bytes
+    lower = 1
+    upper = len(item.chunk.text) - 1
+    best_item = None
+    best_bytes = 0
+    while lower <= upper:
+        midpoint = (lower + upper) // 2
+        candidate = truncate_to_char_count(item, midpoint)
+        if candidate is None:
+            lower = midpoint + 1
+            continue
+        candidate_bytes = len(
+            _wire_scored_passage(candidate).model_dump_json().encode("utf-8")
+        )
+        if candidate_bytes <= MAX_EVIDENCE_ITEM_BYTES:
+            best_item = candidate
+            best_bytes = candidate_bytes
+            lower = midpoint + 1
+        else:
+            upper = midpoint - 1
+    return best_item, best_bytes or original_bytes
+
+
+def _bound_evidence(scored: list[ScoredChunk], stats: SearchStats) -> list[ScoredChunk]:
+    bounded = []
+    used_bytes = 2
+    for item in sorted(
+        scored,
+        key=lambda value: (
+            -value.score,
+            value.chunk.source_url,
+            value.chunk.position,
+        ),
+    ):
+        fitted, item_bytes = _fit_evidence_item(item)
+        additional_bytes = item_bytes + (1 if bounded else 0)
+        if (
+            fitted is None
+            or len(bounded) >= MAX_PASSAGES
+            or used_bytes + additional_bytes > MAX_EVIDENCE_BYTES
+        ):
+            stats.evidence_items_omitted += 1
+            stats.evidence_bytes_omitted += item_bytes
+            continue
+        bounded.append(fitted)
+        used_bytes += additional_bytes
+    return bounded
+
+
+def _build_raw_markdown(
+    req: SearchRequest,
+    pages: list[Page],
+    assembled_citations: list,
+    stats: SearchStats,
+) -> list[RawMarkdown] | None:
     if not req.include_raw_markdown:
         return None
     by_source_id: dict[int, Page] = {
@@ -372,17 +662,30 @@ def _build_raw_markdown(req: SearchRequest, pages: list[Page], assembled_citatio
         for page in pages
         if page.source_id is not None
     }
-    return [
-        RawMarkdown(
+    raw_markdown = []
+    used_bytes = 2
+    for citation in assembled_citations:
+        if citation.source_id not in by_source_id:
+            continue
+        page = by_source_id[citation.source_id]
+        item = RawMarkdown(
             citation_id=citation.id,
-            markdown=by_source_id[citation.source_id].original_markdown
-            or by_source_id[citation.source_id].markdown,
-            cleaned_markdown=by_source_id[citation.source_id].markdown,
+            markdown=page.original_markdown or page.markdown,
+            cleaned_markdown=page.markdown,
             document_id=citation.document_id,
         )
-        for citation in assembled_citations
-        if citation.source_id in by_source_id
-    ]
+        item_bytes = len(item.model_dump_json().encode("utf-8"))
+        additional_bytes = item_bytes + (1 if raw_markdown else 0)
+        if (
+            len(raw_markdown) >= MAX_RAW_MARKDOWN_ITEMS
+            or item_bytes > MAX_RAW_MARKDOWN_ITEM_BYTES
+            or used_bytes + additional_bytes > MAX_RAW_MARKDOWN_BYTES
+        ):
+            stats.raw_markdown_omitted += 1
+            continue
+        raw_markdown.append(item)
+        used_bytes += additional_bytes
+    return raw_markdown
 
 
 async def run_search(req: SearchRequest, deps: PipelineDeps) -> SearchResponse:
@@ -445,7 +748,31 @@ async def run_search(req: SearchRequest, deps: PipelineDeps) -> SearchResponse:
         stats.elapsed_ms = _elapsed_ms(started)
         return _empty_response(req.query, stats, "no_chunks_after_rerank")
 
-    assembled_passages, assembled_citations = deps.assembler.assemble(scored, token_budget, max_passages)
+    if deps.evidence_quality_enabled:
+        quality_outcome = filter_evidence_quality(scored)
+        stats.evidence_quality_strategy = quality_outcome.strategy
+        stats.evidence_quality_chunks_dropped = sum(
+            quality_outcome.dropped_by_rule.values()
+        )
+        stats.evidence_quality_drops = [
+            EvidenceQualityDrop(reason=reason, count=count)
+            for reason, count in sorted(quality_outcome.dropped_by_rule.items())
+        ]
+        scored = quality_outcome.scored
+        if not scored:
+            stats.elapsed_ms = _elapsed_ms(started)
+            return _empty_response(req.query, stats, "no_evidence_after_quality_gate")
+
+    scored = _bound_evidence(scored, stats)
+    if not scored:
+        stats.elapsed_ms = _elapsed_ms(started)
+        return _empty_response(req.query, stats, "no_evidence_after_output_budget")
+
+    assembled_passages, assembled_citations = deps.assembler.assemble(
+        scored,
+        token_budget,
+        max_passages,
+    )
     passages = [
         Passage(
             text=passage.text,
@@ -458,6 +785,14 @@ async def run_search(req: SearchRequest, deps: PipelineDeps) -> SearchResponse:
             document_id=passage.document_id,
             evidence_id=passage.evidence_id,
             section_heading=passage.section_heading,
+            score_components=[
+                {
+                    "name": component.name,
+                    "score": component.score,
+                    "strategy": component.strategy,
+                }
+                for component in passage.score_components
+            ],
         )
         for passage in assembled_passages
     ]
@@ -501,7 +836,7 @@ async def run_search(req: SearchRequest, deps: PipelineDeps) -> SearchResponse:
         passages=passages,
         citations=citations,
         stats=stats,
-        raw_markdown=_build_raw_markdown(req, pages, assembled_citations),
+        raw_markdown=_build_raw_markdown(req, pages, assembled_citations, stats),
     )
     _log_search_summary(req.query, stats)
     return response
@@ -512,9 +847,9 @@ def build_deps_from_settings(settings) -> PipelineDeps:
     from .clients.crawl4ai_client import Crawl4aiExtractor
     from .clients.planner import IdentityPlanner, LlmPlanner
     from .clients.reranker_client import RerankerClient
+    from .clients.searxng_client import SearxngDiscovery
     from .markdown_cleaner import MarkdownCleanerImpl
     from .prefilter import CandidatePrefilterImpl
-    from .clients.searxng_client import SearxngDiscovery
     from .selection import SelectionPolicyImpl
 
     if settings.markdown_extractor.lower() != "trafilatura":
@@ -587,6 +922,7 @@ def build_deps_from_settings(settings) -> PipelineDeps:
         },
         blocklist=settings.domain_blocklist,
         relevance_score_floor=settings.relevance_score_floor,
+        evidence_quality_enabled=settings.evidence_quality_enabled,
         domain_allowlist=settings.domain_allowlist,
         allowlist_only=settings.allowlist_only,
         url_safety=url_safety,

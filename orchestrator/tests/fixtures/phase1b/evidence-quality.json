@@ -1,0 +1,59 @@
+{
+  "revision": "thorondor-evidence-quality-v2",
+  "items": [
+    {
+      "id": "navigation",
+      "text": "Home\nMenu\nSearch\nLogin\nSign up",
+      "expected_drop_rule": "navigation_boilerplate",
+      "agent_useful": false
+    },
+    {
+      "id": "footer",
+      "text": "Copyright 2026\nPrivacy Policy\nTerms of Service\nAll rights reserved",
+      "expected_drop_rule": "footer_boilerplate",
+      "agent_useful": false
+    },
+    {
+      "id": "link-farm",
+      "text": "[One](https://a.test) [Two](https://b.test) [Three](https://c.test) [Four](https://d.test) [Five](https://e.test) [Six](https://f.test)",
+      "expected_drop_rule": "link_dominated",
+      "agent_useful": false
+    },
+    {
+      "id": "concise-fact",
+      "text": "The regulation applies from 2 August 2026.",
+      "expected_drop_rule": null,
+      "agent_useful": true
+    },
+    {
+      "id": "code",
+      "text": "```python\nprint('useful')\n```",
+      "expected_drop_rule": null,
+      "agent_useful": true
+    },
+    {
+      "id": "list",
+      "text": "- first fact\n- second fact",
+      "expected_drop_rule": null,
+      "agent_useful": true
+    },
+    {
+      "id": "table",
+      "text": "| Year | Value |\n|---|---|\n| 2026 | 42 |",
+      "expected_drop_rule": null,
+      "agent_useful": true
+    },
+    {
+      "id": "policy-answer",
+      "text": "Under the GDPR, our Privacy Policy and Cookie Policy must disclose all third-party processors within 30 days.",
+      "expected_drop_rule": null,
+      "agent_useful": true
+    },
+    {
+      "id": "curated-links",
+      "text": "- [asyncio](https://docs.test/asyncio)\n- [threading](https://docs.test/threading)\n- [multiprocessing](https://docs.test/multiprocessing)\n- [concurrent.futures](https://docs.test/futures)\n- [subprocess](https://docs.test/subprocess)\n- [queue](https://docs.test/queue)",
+      "expected_drop_rule": null,
+      "agent_useful": true
+    }
+  ]
+}

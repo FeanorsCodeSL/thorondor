@@ -107,6 +107,10 @@ def test_v1_search_alias_matches_legacy_path(monkeypatch):
     legacy = client.post("/search", json={"query": "x"}).json()
     versioned = client.post("/v1/search", json={"query": "x"}).json()
 
+    for response in (legacy, versioned):
+        response["stats"]["elapsed_ms"] = 0
+        for attempt in response["stats"]["subquery_diagnostics"]:
+            attempt["elapsed_ms"] = 0
     assert versioned == legacy
 
 

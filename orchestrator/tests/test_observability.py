@@ -27,6 +27,10 @@ def test_json_formatter_emits_structured_payload():
     )
     record.event = "search_completed"
     record.query_hash = "abc"
+    record.sub_queries_failed = 1
+    record.evidence_quality_chunks_dropped = 2
+    record.evidence_items_omitted = 3
+    record.raw_markdown_omitted = 4
 
     token = set_request_id("req-log")
     try:
@@ -36,6 +40,10 @@ def test_json_formatter_emits_structured_payload():
 
     assert '"event":"search_completed"' in out
     assert '"query_hash":"abc"' in out
+    assert '"sub_queries_failed":1' in out
+    assert '"evidence_quality_chunks_dropped":2' in out
+    assert '"evidence_items_omitted":3' in out
+    assert '"raw_markdown_omitted":4' in out
     assert '"request_id":"req-log"' in out
 
 

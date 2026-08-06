@@ -165,10 +165,11 @@ def test_batches_requests_and_maps_local_indexes_to_global_chunks():
 
     assert seen_document_batches == [["a", "b"], ["c"]]
     assert [item.chunk.text for item in out[:2]] == ["b", "c"]
-    assert reranker.last_batches == 2
-    assert reranker.last_batches_failed == 0
-    assert reranker.last_floor_filled is True
-    assert reranker.last_scored_count == 2
+    assert out.telemetry.batches == 2
+    assert out.telemetry.batches_failed == 0
+    assert out.telemetry.floor_filled is True
+    assert out.telemetry.scored_count == 2
+    assert not hasattr(reranker, "last_batches")
 
 
 def test_partial_batch_failure_keeps_successful_scores_and_floor_fills_failed_batch():
@@ -188,10 +189,10 @@ def test_partial_batch_failure_keeps_successful_scores_and_floor_fills_failed_ba
     out = anyio.run(reranker.rerank, "q", chunks)
 
     assert len(out) == 4
-    assert reranker.last_batches == 2
-    assert reranker.last_batches_failed == 1
-    assert reranker.last_floor_filled is True
-    assert reranker.last_scored_count == 2
+    assert out.telemetry.batches == 2
+    assert out.telemetry.batches_failed == 1
+    assert out.telemetry.floor_filled is True
+    assert out.telemetry.scored_count == 2
     assert [item.chunk.text for item in out[:2]] == ["a", "b"]
     assert out[2].score == out[3].score
     assert out[2].score < out[1].score
@@ -201,8 +202,50 @@ def test_all_batch_failures_raise_unavailable():
     client = httpx.AsyncClient(transport=httpx.MockTransport(lambda req: httpx.Response(500, json={})))
     reranker = _reranker(client=client, batch_size=2)
 
-    with pytest.raises(RerankerUnavailable):
+    with pytest.raises(RerankerUnavailable) as exc:
         anyio.run(reranker.rerank, "q", _chunks())
 
-    assert reranker.last_batches == 2
-    assert reranker.last_batches_failed == 2
+    assert exc.value.telemetry.batches == 2
+    assert exc.value.telemetry.batches_failed == 2
+
+
+def test_concurrent_calls_keep_request_owned_telemetry_isolated():
+    first_started = anyio.Event()
+    release_first = anyio.Event()
+
+    async def handler(req):
+        import json
+
+        payload = json.loads(req.content)
+        if payload["query"] == "first" and payload["documents"][0] == "a":
+            first_started.set()
+            await release_first.wait()
+        if payload["query"] == "second":
+            release_first.set()
+            return httpx.Response(500, json={})
+        return httpx.Response(200, json={"results": [{"index": 0, "score": 0.9}]})
+
+    reranker = _reranker(
+        client=httpx.AsyncClient(transport=httpx.MockTransport(handler)),
+        batch_size=1,
+    )
+    outcomes = {}
+
+    async def run(name, chunks):
+        try:
+            outcomes[name] = await reranker.rerank(name, chunks)
+        except RerankerUnavailable as exc:
+            outcomes[name] = exc
+
+    async def exercise():
+        async with anyio.create_task_group() as group:
+            group.start_soon(run, "first", _chunks()[:2])
+            await first_started.wait()
+            group.start_soon(run, "second", _chunks()[:1])
+
+    anyio.run(exercise)
+
+    assert outcomes["first"].telemetry.batches == 2
+    assert outcomes["first"].telemetry.batches_failed == 0
+    assert outcomes["second"].telemetry.batches == 1
+    assert outcomes["second"].telemetry.batches_failed == 1

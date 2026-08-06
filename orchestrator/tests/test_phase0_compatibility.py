@@ -5,7 +5,7 @@ from pathlib import Path
 from urllib.parse import parse_qsl, urlsplit
 from xml.etree import ElementTree
 
-from orchestrator.models import SearchRequest, SearchResponse
+from orchestrator.models import SearchRequest, SearchResponse, SearchStats, UnresponsiveEngine, UrlDiagnostic
 
 
 TEST_ROOT = Path(__file__).parent
@@ -199,6 +199,31 @@ def test_v1_required_response_fields_remain_required_with_baseline_types():
         for field, expected_type in fields.items():
             assert field in required
             assert _property_type(schema, fragment["properties"][field]) == expected_type
+
+
+def test_v1_preexisting_response_fields_are_not_narrowed_by_output_envelopes():
+    diagnostics = [
+        UrlDiagnostic(
+            url="https://example.test/" + ("x" * 3000),
+            title="t" * 700,
+            engine="e" * 200,
+            discovery_score=1.0,
+            selected=False,
+            selection_reason="s" * 100,
+            filtered_reason="f" * 100,
+        )
+        for _ in range(51)
+    ]
+
+    stats = SearchStats(
+        sub_queries=["q"] * 9,
+        unresponsive_engines=[UnresponsiveEngine(engine="e" * 200, reason="r" * 300)] * 33,
+        url_diagnostics=diagnostics,
+    )
+
+    assert len(stats.sub_queries) == 9
+    assert len(stats.unresponsive_engines) == 33
+    assert len(stats.url_diagnostics) == 51
 
 
 def test_v1_wire_compatibility_response_sample_and_non_terminal_enum_values_remain_accepted():

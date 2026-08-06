@@ -1,3 +1,5 @@
+from pathlib import Path
+
 import pytest
 
 from orchestrator.settings import load_settings
@@ -15,6 +17,7 @@ REQUIRED = [
     "RERANKER_BATCH_SIZE",
     "RERANKER_TIMEOUT_S",
     "RELEVANCE_SCORE_FLOOR",
+    "EVIDENCE_QUALITY_ENABLED",
     "LLM_ENDPOINT",
     "LLM_MODEL",
     "MAX_URLS",
@@ -72,6 +75,7 @@ def set_required_env(monkeypatch):
         "RERANKER_BATCH_SIZE": "32",
         "RERANKER_TIMEOUT_S": "30",
         "RELEVANCE_SCORE_FLOOR": "0.0",
+        "EVIDENCE_QUALITY_ENABLED": "false",
         "LLM_ENDPOINT": "",
         "LLM_MODEL": "",
         "MAX_URLS": "6",
@@ -158,6 +162,7 @@ def test_domain_blocklist_parses_explicit_configuration(monkeypatch):
     assert settings.reranker_batch_size == 7
     assert settings.reranker_timeout_s == 45
     assert settings.relevance_score_floor == 0.25
+    assert settings.evidence_quality_enabled is False
     assert settings.log_level == "INFO"
     assert settings.healthcheck_timeout_s == 2.0
     assert settings.healthcheck_max_connections == 8
@@ -207,6 +212,28 @@ def test_invalid_crawl_concurrency_rejected(monkeypatch):
 
     with pytest.raises(RuntimeError):
         load_settings()
+
+
+def test_max_subqueries_above_wire_limit_is_rejected(monkeypatch):
+    set_required_env(monkeypatch)
+    monkeypatch.setenv("MAX_SUBQUERIES", "9")
+
+    with pytest.raises(RuntimeError, match="MAX_SUBQUERIES must be between 1 and 8"):
+        load_settings()
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "docker-compose.yml",
+        "docker-compose.production.yml",
+        "thorondor_cli/assets/docker-compose.yml",
+    ],
+)
+def test_compose_manifests_forward_evidence_quality_setting(path):
+    manifest = Path(path).read_text(encoding="utf-8")
+
+    assert 'EVIDENCE_QUALITY_ENABLED: "${EVIDENCE_QUALITY_ENABLED}"' in manifest
 
 
 @pytest.mark.parametrize(

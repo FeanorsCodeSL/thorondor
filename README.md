@@ -312,7 +312,14 @@ curl -s -X POST http://localhost:8080/v1/search \
       "evidence_id": "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789",
       "section_heading": "Implementation timeline",
       "provenance": "external_web",
-      "trust": "untrusted"
+      "trust": "untrusted",
+      "score_components": [
+        {
+          "name": "reranker",
+          "score": 0.87,
+          "strategy": "external-reranker@1"
+        }
+      ]
     }
   ],
   "citations": [
@@ -344,12 +351,23 @@ curl -s -X POST http://localhost:8080/v1/search \
   ],
   "stats": {
     "sub_queries": ["..."],
+    "subquery_diagnostics": [
+      {
+        "query": "...",
+        "status": "ok",
+        "elapsed_ms": 124,
+        "result_count": 10,
+        "failure_reason": null
+      }
+    ],
     "discovery_status": "degraded",
     "unresponsive_engines": [
       { "engine": "mojeek", "reason": "access denied" }
     ],
     "urls_discovered": 18,
     "urls_selected": 6,
+    "evidence_quality_strategy": null,
+    "evidence_quality_chunks_dropped": 0,
     "urls_crawled_ok": 5,
     "urls_crawled_failed": 1,
     "chunks_produced": 43,
@@ -369,14 +387,20 @@ Key `stats` fields:
 |---|---|
 | `discovery_status` | `ok` when SearXNG reports no engine failures, `degraded` when results remain usable despite failed engines, or `unavailable` when engine failures leave no usable discovery results. |
 | `unresponsive_engines` | SearXNG engine names and reported failure or suspension reasons. |
+| `subquery_diagnostics` | Bounded status, elapsed time, and result count for each SearXNG sub-query attempt. A failed attempt does not discard successful sibling attempts. |
+| `engine_contributions` | Result contributions before URL merging, counted per sub-query and plural SearXNG engine. One URL found in three sub-queries contributes three times. SearXNG does not expose true per-engine latency, so Thorondor does not invent it. |
 | `reranked` | `false` when the reranker was unreachable; passages are still returned sorted by position. |
-| `reason` | Non-null closed enum when the search ended before normal assembly: `search_provider_unavailable`, `no_results_from_discovery`, `no_urls_after_selection`, `all_crawls_failed`, `no_chunks_after_dedup`, `no_chunks_after_rerank`. |
+| `reason` | Non-null closed enum when the search ended before normal assembly: `search_provider_unavailable`, `no_results_from_discovery`, `no_urls_after_selection`, `all_crawls_failed`, `no_chunks_after_dedup`, `no_chunks_after_rerank`, `no_evidence_after_quality_gate`, or `no_evidence_after_output_budget`. |
 | `embedding_degraded` | `true` when the chunker fell back to token-based splitting because embeddings failed. |
-| `url_diagnostics` | Per-URL selection decisions (populated when `include_raw_markdown` is true or the investigation smoke test is used). |
+| `url_diagnostics` | Selected-first URL decisions with contributing sub-queries, plural engines, positions, best upstream score, lexical score, and selection/filter reason. The list is bounded to 50 items and 64 KiB. |
+| `url_diagnostics_omitted` | Counts of decisions omitted from the URL diagnostic item/byte budget, grouped by reason. |
+| `evidence_quality_drops` | Bounded counts for deterministic navigation, footer, and generic-link evidence rejection when `EVIDENCE_QUALITY_ENABLED=true`. The gate is disabled by default pending broader quality measurement. |
+| `evidence_items_omitted` / `evidence_bytes_omitted` | Evidence rejected by the independent 50-item, 64-KiB-serialized-item, and 256-KiB-serialized-list response envelope. A top-ranked oversized item is shortened safely before omission is considered. |
+| `raw_markdown_omitted` | Cited raw-Markdown entries omitted by the independent 20-item, 256-KiB-per-item, and 512-KiB-total envelope. |
 
 An empty-passage response with `stats.reason` set is a normal 200, not an error. The caller should read `reason` rather than interpreting `passages.length == 0` alone. `search_provider_unavailable` means SearXNG reported at least one failed engine and returned no usable discovery results; a healthy empty search remains `no_results_from_discovery`.
 
-For `verbatim=true`, `start_index` and `end_index` are Unicode code-point offsets into the exact cleaned Markdown and the end is exclusive. `evidence_id` is emitted only when `passage.text == cleaned_markdown[start_index:end_index]` has been verified. `document_id` remains stable across ranking and chunk ordering when the final URL and exact cleaned document bytes are unchanged. Citation metadata keeps publication and modification separate, identifies the selected field source/confidence, and retains bounded conflicts instead of silently discarding them.
+For `verbatim=true`, `start_index` and `end_index` are Unicode code-point offsets into the exact cleaned Markdown and the end is exclusive. `evidence_id` is emitted only when `passage.text == cleaned_markdown[start_index:end_index]` has been verified. `document_id` remains stable across ranking and chunk ordering when the final URL and exact cleaned document bytes are unchanged. Citation metadata keeps publication and modification separate, identifies the selected field source/confidence, and retains bounded conflicts instead of silently discarding them. `passage.score` remains the final ordering score; `score_components` identifies only the reranker, partial-batch floor, or position fallback actually used to produce it.
 
 `POST /search` is a backwards-compatible alias for `POST /v1/search`.
 
@@ -503,7 +527,7 @@ All keys must be present in `.env` (leave optional keys blank rather than deleti
 
 | Variable | Default | Description |
 |---|---|---|
-| `MAX_SUBQUERIES` | `3` | Maximum sub-queries the planner may produce. |
+| `MAX_SUBQUERIES` | `3` | Maximum sub-queries the planner may produce (1–8). |
 | `DEFAULT_TOKEN_BUDGET` | `4000` | Token budget used when no profile and no explicit `token_budget` is given. |
 | `SEARCH_PROFILE_QUICK_TOKEN_BUDGET` | `2000` | Token budget for the `quick` profile. |
 | `SEARCH_PROFILE_QUICK_MAX_URLS` | `5` | Max URLs for `quick`. |
@@ -570,6 +594,7 @@ All keys must be present in `.env` (leave optional keys blank rather than deleti
 | `RERANKER_BATCH_SIZE` | `32` | Chunks per reranker API call. |
 | `RERANKER_TIMEOUT_S` | `30` | Reranker request timeout in seconds. |
 | `RELEVANCE_SCORE_FLOOR` | `0.0` | Passages with reranker score ≤ this value are dropped after reranking (0.0 disables the filter). |
+| `EVIDENCE_QUALITY_ENABLED` | `false` | Enable the measured `evidence-quality@1` structural filter. Disabled by default until a broader independent corpus supports activation. |
 
 ### Optional LLM Planner
 

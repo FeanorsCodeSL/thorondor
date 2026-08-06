@@ -1,0 +1,21 @@
+{
+  "revision": "thorondor-ranking-comparison-v1",
+  "queries": [
+    {
+      "id": "independent-agreement-helps",
+      "relevant": "z-answer",
+      "rankings": [
+        ["a-noise", "z-answer"],
+        ["z-answer", "b-other"]
+      ]
+    },
+    {
+      "id": "correlated-noise-hurts",
+      "relevant": "a-answer",
+      "rankings": [
+        ["a-answer", "z-noise"],
+        ["z-noise", "b-other"]
+      ]
+    }
+  ]
+}

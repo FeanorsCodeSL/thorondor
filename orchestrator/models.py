@@ -7,6 +7,14 @@ MAX_QUERY_CHARS = 500
 MAX_TOKEN_BUDGET = 16_000
 MAX_SELECTED_URLS = 20
 MAX_PASSAGES = 50
+MAX_SUBQUERY_COUNT = 8
+MAX_URL_DIAGNOSTICS = 50
+MAX_URL_DIAGNOSTICS_BYTES = 65_536
+MAX_EVIDENCE_ITEM_BYTES = 65_536
+MAX_EVIDENCE_BYTES = 262_144
+MAX_RAW_MARKDOWN_ITEMS = 20
+MAX_RAW_MARKDOWN_ITEM_BYTES = 262_144
+MAX_RAW_MARKDOWN_BYTES = 524_288
 
 SearchProfile = Literal["quick", "research", "deep"]
 ReasonCode = Literal[
@@ -16,8 +24,17 @@ ReasonCode = Literal[
     "all_crawls_failed",
     "no_chunks_after_dedup",
     "no_chunks_after_rerank",
+    "no_evidence_after_quality_gate",
+    "no_evidence_after_output_budget",
 ]
 DiscoveryStatus = Literal["ok", "degraded", "unavailable"]
+DiscoveryFailureReason = Literal[
+    "timeout",
+    "transport_error",
+    "upstream_status_error",
+    "malformed_response",
+    "unavailable",
+]
 MetadataField = Literal[
     "title",
     "description",
@@ -54,6 +71,7 @@ class Passage(BaseModel):
     section_heading: str | None = None
     provenance: Literal["external_web"] = "external_web"
     trust: Literal["untrusted"] = "untrusted"
+    score_components: list["ScoreComponent"] = Field(default_factory=list, max_length=4)
 
     @model_validator(mode="after")
     def validate_evidence(self) -> "Passage":
@@ -133,11 +151,24 @@ class Citation(BaseModel):
         return self
 
 
+class ScoreComponent(BaseModel):
+    name: str = Field(max_length=64)
+    score: float
+    strategy: str = Field(max_length=128)
+
+
 class UrlDiagnostic(BaseModel):
     url: str
     title: str
     engine: str
+    engines: list[str] = Field(default_factory=list, max_length=16)
+    positions: list[int] = Field(default_factory=list, max_length=16)
+    contributing_subqueries: list[str] = Field(default_factory=list, max_length=8)
+    contribution_count: int = Field(default=1, ge=1)
+    independent_subquery_count: int = Field(default=0, ge=0)
+    best_upstream_score: float | None = None
     discovery_score: float
+    lexical_selection_score: float = 0.0
     selected: bool
     selection_reason: str | None = None
     filtered_reason: str | None = None
@@ -155,15 +186,44 @@ class UnresponsiveEngine(BaseModel):
     reason: str
 
 
+class SubqueryDiagnostic(BaseModel):
+    query: str = Field(max_length=MAX_QUERY_CHARS)
+    status: Literal["ok", "failed"]
+    elapsed_ms: int = Field(ge=0)
+    result_count: int = Field(ge=0)
+    failure_reason: DiscoveryFailureReason | None = None
+
+
+class EngineContribution(BaseModel):
+    engine: str = Field(max_length=128)
+    contribution_count: int = Field(ge=1)
+
+
+class DiagnosticOmission(BaseModel):
+    reason: str = Field(max_length=64)
+    count: int = Field(ge=1)
+
+
+class EvidenceQualityDrop(BaseModel):
+    reason: str = Field(max_length=64)
+    count: int = Field(ge=1)
+
+
 class SearchStats(BaseModel):
     model_config = ConfigDict(validate_assignment=True)
 
     sub_queries: list[str] = Field(default_factory=list)
+    subquery_diagnostics: list[SubqueryDiagnostic] = Field(
+        default_factory=list,
+        max_length=MAX_SUBQUERY_COUNT,
+    )
     discovery_status: DiscoveryStatus = "ok"
     unresponsive_engines: list[UnresponsiveEngine] = Field(default_factory=list)
+    engine_contributions: list[EngineContribution] = Field(default_factory=list, max_length=32)
     urls_discovered: int = 0
     urls_selected: int = 0
     url_diagnostics: list[UrlDiagnostic] = Field(default_factory=list)
+    url_diagnostics_omitted: list[DiagnosticOmission] = Field(default_factory=list, max_length=16)
     urls_crawled_ok: int = 0
     urls_crawled_failed: int = 0
     pages_after_dedup: int = 0
@@ -183,6 +243,12 @@ class SearchStats(BaseModel):
     chunks_reranked: int = 0
     passages_dropped_below_threshold: int = 0
     relevance_threshold_policy: str | None = None
+    evidence_quality_strategy: str | None = None
+    evidence_quality_chunks_dropped: int = 0
+    evidence_quality_drops: list[EvidenceQualityDrop] = Field(default_factory=list, max_length=8)
+    evidence_items_omitted: int = 0
+    evidence_bytes_omitted: int = 0
+    raw_markdown_omitted: int = 0
     chunk_strategy: str | None = None
     embedding_degraded: bool = False
     reranked: bool = False

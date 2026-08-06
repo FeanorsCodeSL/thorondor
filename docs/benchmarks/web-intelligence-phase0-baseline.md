@@ -43,7 +43,7 @@ The corpus contains these cases so later fetch-outcome work can break those aggr
 
 ## Duplicate baseline
 
-The following is code-inspection context for the current implementation, not an observation or proof produced by this local fixture suite. `duplicate-preamble-a.md` and `duplicate-preamble-b.md` have an identical preamble longer than 2,000 characters and intentionally different bodies. The current deduplicator lowercases, collapses whitespace, and fingerprints only the first 2,000 characters, so this preserves a regression input for its prefix-based behavior; the fixture is not a claim that the two documents should be discarded as exact duplicates. Exact duplicate rate is unavailable because this test-only baseline does not execute a corpus driver through the pipeline.
+At Phase 0 capture time, `duplicate-preamble-a.md` and `duplicate-preamble-b.md` preserved the then-current 2,000-character prefix-collision defect. Phase 1B now hashes the full whitespace-normalized document, and the pair is retained as a regression fixture proving that distinct bodies survive. Exact duplicate rate remains unavailable from this baseline because it does not execute a corpus driver through the pipeline.
 
 ## Terminal reasons
 
@@ -51,6 +51,6 @@ The current v1 response contract recognizes these aggregate terminal reasons: `s
 
 ## Timing and live performance
 
-Per-stage timing is unavailable in the current deterministic corpus. `SearchStats.elapsed_ms` is a response-level aggregate, and this baseline does not run the search pipeline or collect a timing sample. Live latency, live request count, live duplicate rate, source success/degradation totals, bytes, and output-quality metrics are all unavailable.
+Per-stage timing is unavailable in this Phase 0 corpus. Phase 1B adds per-sub-query SearXNG attempt latency to live responses, but this baseline does not run the pipeline or collect a timing sample. Live latency, live request count, live duplicate rate, source success/degradation totals, bytes, and output-quality metrics remain unavailable here.
 
 To collect them reproducibly later, run a first-party local fixture harness with the manifest revision and hashes fixed, record the checked-out revision and configuration, count every synthetic dependency dispatch, capture monotonic start/end timestamps for discovery, selection, fetch, cleaning, chunking, reranking, and assembly, then write raw per-item terminal outcomes alongside aggregate counters. Do this only after the relevant fetch and egress work is implemented and an operator authorizes the live or fixture-site procedure.

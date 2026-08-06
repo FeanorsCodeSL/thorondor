@@ -62,12 +62,17 @@ async def web_search(
     Returns:
         A versioned response envelope with `query`, `passages`, `citations`,
         `stats`, optional `raw_markdown`, and `schema_version`. Each passage has
-        `text`, `score`, `token_count`, `citation_id`, `start_index`, `end_index`,
-        `verbatim`, `document_id`, and `evidence_id`. Citations carry exact
+        `text`, `score`, `score_components`, `token_count`,
+        `citation_id`, `start_index`, `end_index`, `verbatim`,
+        `document_id`, and `evidence_id`. Citations carry exact
         evidence spans and source-attributed metadata. Discovery degradation is
-        exposed through `stats.discovery_status` and
-        `stats.unresponsive_engines`; `stats.reason` is a closed enum when the
-        call returns an empty/degraded 200 response.
+        exposed through `stats.subquery_diagnostics`,
+        `stats.engine_contributions`, `stats.discovery_status`, and
+        `stats.unresponsive_engines`. Bounded URL diagnostics expose
+        contributor and selection provenance with omission counts;
+        evidence-quality and output-envelope counters disclose dropped content.
+        `stats.reason` is a closed enum when the call returns an empty/degraded
+        200 response.
     """
     request_data = {
         "query": query,

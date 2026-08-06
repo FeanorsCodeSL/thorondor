@@ -1,12 +1,12 @@
 """Deterministic fakes for orchestrator tests."""
 import asyncio
 
+from .assembly import ResultAssemblerImpl
 from .clients.chunker_client import ChunkerUnavailable
 from .clients.reranker_client import RerankerUnavailable
 from .clients.searxng_client import DiscoveryUnavailable
-from .pipeline import PipelineDeps
-from .assembly import ResultAssemblerImpl
 from .markdown_cleaner import MarkdownCleanerImpl
+from .pipeline import PipelineDeps
 from .prefilter import CandidatePrefilterImpl
 from .selection import SelectionPolicyImpl
 from .types import (
@@ -18,10 +18,12 @@ from .types import (
     DiscoveryResult,
     Page,
     PrefilteredChunks,
+    RerankerTelemetry,
+    RerankOutcome,
+    ScoreComponent,
     ScoredChunk,
 )
 from .url_identity import build_document_identity, evidence_id_for
-
 
 FAKE_ARTICLE_URL = "https://a.test/article"
 
@@ -263,21 +265,48 @@ class DownCandidatePrefilter:
 
 
 class FakeReranker:
-    async def rerank(self, _query: str, chunks: list[Chunk]) -> list[ScoredChunk]:
+    async def rerank(self, _query: str, chunks: list[Chunk]) -> RerankOutcome:
         await _async_boundary()
-        return [ScoredChunk(chunk, 1.0 - (index * 0.1)) for index, chunk in enumerate(chunks)]
+        scored = [
+            ScoredChunk(
+                chunk,
+                1.0 - (index * 0.1),
+                (ScoreComponent("reranker", 1.0 - (index * 0.1), "fake-reranker@1"),),
+            )
+            for index, chunk in enumerate(chunks)
+        ]
+        return RerankOutcome(
+            scored,
+            RerankerTelemetry(
+                batches=1 if chunks else 0,
+                scored_count=len(scored),
+            ),
+            "fake-reranker@1",
+        )
 
 
 class EmptyReranker:
-    async def rerank(self, _query: str, _chunks: list[Chunk]) -> list[ScoredChunk]:
+    async def rerank(self, _query: str, _chunks: list[Chunk]) -> RerankOutcome:
         await _async_boundary()
-        return []
+        return RerankOutcome([], RerankerTelemetry(), "fake-reranker@1")
 
 
 class PartialReranker:
-    async def rerank(self, _query: str, chunks: list[Chunk]) -> list[ScoredChunk]:
+    async def rerank(self, _query: str, chunks: list[Chunk]) -> RerankOutcome:
         await _async_boundary()
-        return [ScoredChunk(chunk, 1.0 - (index * 0.1)) for index, chunk in enumerate(chunks[:1])]
+        scored = [
+            ScoredChunk(
+                chunk,
+                1.0,
+                (ScoreComponent("reranker", 1.0, "fake-reranker@1"),),
+            )
+            for chunk in chunks[:1]
+        ]
+        return RerankOutcome(
+            scored,
+            RerankerTelemetry(batches=1 if chunks else 0, scored_count=len(scored)),
+            "fake-reranker@1",
+        )
 
 
 class DownReranker:
@@ -317,6 +346,7 @@ class FakeAssembler:
                     score=item.score,
                     token_count=item.chunk.token_count,
                     citation_id=citation_id,
+                    score_components=item.score_components,
                 )
             )
             total_tokens += item.chunk.token_count
@@ -383,6 +413,7 @@ def deps(**overrides) -> PipelineDeps:
         },
         "blocklist": set(),
         "relevance_score_floor": 0.0,
+        "evidence_quality_enabled": False,
         "domain_allowlist": set(),
         "allowlist_only": False,
         "url_safety": list,

@@ -1,22 +1,39 @@
+import asyncio
+import json
+from types import SimpleNamespace
+
 import anyio
+import httpx
 import pytest
 
-from orchestrator import fakes
+from orchestrator import fakes, pipeline
 from orchestrator.clients.chunker_client import ChunkerUnavailable
 from orchestrator.clients.reranker_client import RerankerClient
-from orchestrator.clients.searxng_client import DiscoveryUnavailable
-from orchestrator.models import SearchRequest
-from orchestrator.prefilter import CandidatePrefilterImpl
+from orchestrator.clients.searxng_client import DiscoveryUnavailable, SearxngDiscovery
+from orchestrator.models import (
+    MAX_EVIDENCE_BYTES,
+    MAX_EVIDENCE_ITEM_BYTES,
+    MAX_RAW_MARKDOWN_ITEM_BYTES,
+    MAX_URL_DIAGNOSTICS_BYTES,
+    RawMarkdown,
+    SearchRequest,
+    SearchStats,
+)
 from orchestrator.pipeline import SearchDependencyUnavailable, run_search
+from orchestrator.prefilter import CandidatePrefilterImpl
 from orchestrator.types import (
     Chunk,
+    DiscoveryContribution,
     DiscoveryEngineFailure,
     DiscoveryOutcome,
     DiscoveryResult,
     Page,
+    RerankerTelemetry,
+    RerankOutcome,
     ScoredChunk,
 )
 from orchestrator.url_safety import UrlSafetyPolicy, filter_safe_discovery_results
+from orchestrator.url_identity import build_document_identity, evidence_id_for
 
 
 class _StaticDiscovery:
@@ -72,6 +89,11 @@ class _OutcomeDiscovery:
 class _ManyPlanner:
     async def plan(self, query: str) -> list[str]:
         return [f"q{index}" for index in range(50)]
+
+
+class _LongUnicodePlanner:
+    async def plan(self, query: str) -> list[str]:
+        return ["界" * 500]
 
 
 class _SinglePageExtractor:
@@ -219,6 +241,7 @@ def test_happy_path_returns_cited_budgeted_passages():
     assert all(p.citation_id in {c.id for c in resp.citations} for p in resp.passages)
     assert {p.provenance for p in resp.passages} == {"external_web"}
     assert {p.trust for p in resp.passages} == {"untrusted"}
+    assert all(p.score_components[-1].score == p.score for p in resp.passages)
 
 
 def test_search_profile_supplies_defaults_when_request_omits_explicit_caps():
@@ -240,7 +263,13 @@ def test_explicit_caps_override_search_profile_defaults():
 
     resp = anyio.run(
         run_search,
-        SearchRequest(query="x", search_profile="research", max_urls=3, max_passages=2, token_budget=10),
+        SearchRequest(
+            query="x",
+            search_profile="research",
+            max_urls=3,
+            max_passages=2,
+            token_budget=10,
+        ),
         fakes.deps(discovery=discovery),
     )
 
@@ -310,6 +339,59 @@ def test_partial_engine_failure_returns_results_as_degraded():
     assert [item.model_dump() for item in resp.stats.unresponsive_engines] == [
         {"engine": "mojeek", "reason": "access denied"}
     ]
+
+
+class _TwoQueryPlanner:
+    async def plan(self, query: str) -> list[str]:
+        return ["working query", "failed query"]
+
+
+class _PartiallyUnavailableDiscovery:
+    async def search(self, subquery: str, freshness: str | None = None):
+        if subquery == "failed query":
+            raise DiscoveryUnavailable("transport timeout")
+        return DiscoveryOutcome(
+            [
+                DiscoveryResult(
+                    "A",
+                    "https://a.test/article",
+                    "snip",
+                    "engine-a",
+                    0.9,
+                    contributions=(
+                        DiscoveryContribution(subquery, "engine-a", 1, 0.9),
+                        DiscoveryContribution(subquery, "engine-b", 3, 0.9),
+                    ),
+                )
+            ],
+            [],
+        )
+
+
+def test_partial_subquery_failure_keeps_results_and_reports_attempts_and_engines():
+    resp = anyio.run(
+        run_search,
+        SearchRequest(query="x"),
+        fakes.deps(planner=_TwoQueryPlanner(), discovery=_PartiallyUnavailableDiscovery()),
+    )
+
+    assert resp.passages
+    assert resp.stats.discovery_status == "degraded"
+    assert [(item.query, item.status, item.result_count) for item in resp.stats.subquery_diagnostics] == [
+        ("working query", "ok", 1),
+        ("failed query", "failed", 0),
+    ]
+    assert [(item.engine, item.contribution_count) for item in resp.stats.engine_contributions] == [
+        ("engine-a", 1),
+        ("engine-b", 1),
+    ]
+    diagnostic = next(item for item in resp.stats.url_diagnostics if item.selected)
+    assert diagnostic.engines == ["engine-a", "engine-b"]
+    assert diagnostic.positions == [1, 3]
+    assert diagnostic.contributing_subqueries == ["working query"]
+    assert diagnostic.contribution_count == 2
+    assert diagnostic.independent_subquery_count == 1
+    assert diagnostic.best_upstream_score == diagnostic.discovery_score == 0.9
 
 
 def test_engine_failure_without_results_is_provider_unavailable():
@@ -403,6 +485,19 @@ def test_planner_output_is_capped_before_discovery():
     assert resp.stats.sub_queries == ["q0", "q1", "q2"]
 
 
+def test_valid_non_ascii_subquery_is_not_truncated_by_utf8_bytes():
+    discovery = _CountingDiscovery()
+
+    resp = anyio.run(
+        run_search,
+        SearchRequest(query="x"),
+        fakes.deps(planner=_LongUnicodePlanner(), discovery=discovery),
+    )
+
+    assert discovery.queries == ["界" * 500]
+    assert resp.stats.sub_queries == ["界" * 500]
+
+
 def test_partial_crawl_and_dedup_counts_are_reported():
     resp = anyio.run(
         run_search,
@@ -437,6 +532,82 @@ def test_selected_url_diagnostics_are_reported():
     assert any(item.filtered_reason == "rank_cap" for item in resp.stats.url_diagnostics)
 
 
+def test_url_diagnostic_budget_prioritizes_selected_and_reports_omissions():
+    urls = [f"https://blocked.test/{index}" for index in range(60)] + ["https://answer.test/article"]
+    resp = anyio.run(
+        run_search,
+        SearchRequest(query="answer", max_urls=1),
+        fakes.deps(
+            discovery=_StaticDiscovery(urls),
+            blocklist={"blocked.test"},
+        ),
+    )
+
+    assert len(resp.stats.url_diagnostics) == 50
+    assert resp.stats.url_diagnostics[0].selected is True
+    assert resp.stats.url_diagnostics[0].url == "https://answer.test/article"
+    assert [(item.reason, item.count) for item in resp.stats.url_diagnostics_omitted] == [
+        ("blocked_domain", 11)
+    ]
+
+
+def test_url_diagnostic_byte_budget_is_independent_of_item_cap():
+    long_urls = [
+        f"https://blocked.test/{index}/" + ("x" * 1800)
+        for index in range(45)
+    ]
+    resp = anyio.run(
+        run_search,
+        SearchRequest(query="answer", max_urls=1),
+        fakes.deps(
+            discovery=_StaticDiscovery(long_urls + ["https://answer.test/article"]),
+            blocklist={"blocked.test"},
+        ),
+    )
+
+    diagnostics_bytes = len(
+        json.dumps(
+            [item.model_dump(mode="json") for item in resp.stats.url_diagnostics],
+            separators=(",", ":"),
+        ).encode("utf-8")
+    )
+    assert resp.stats.url_diagnostics[0].selected is True
+    assert len(resp.stats.url_diagnostics) < 46
+    assert diagnostics_bytes <= MAX_URL_DIAGNOSTICS_BYTES
+    assert sum(item.count for item in resp.stats.url_diagnostics_omitted) > 0
+
+
+def test_selector_without_diagnostics_uses_the_same_byte_envelope(monkeypatch):
+    monkeypatch.setattr(pipeline, "MAX_URL_DIAGNOSTICS_BYTES", 4096)
+    results = [
+        DiscoveryResult(
+            "t" * 700,
+            f"https://example{index}.test/" + ("x" * 3000),
+            "snippet",
+            "engine",
+            1.0 - (index * 0.01),
+        )
+        for index in range(20)
+    ]
+    resp = anyio.run(
+        run_search,
+        SearchRequest(query="answer", max_urls=20),
+        fakes.deps(
+            discovery=_OutcomeDiscovery(results, []),
+            selector=fakes.FakeSelector(),
+        ),
+    )
+
+    diagnostics_bytes = len(
+        json.dumps(
+            [item.model_dump(mode="json") for item in resp.stats.url_diagnostics],
+            separators=(",", ":"),
+        ).encode("utf-8")
+    )
+    assert diagnostics_bytes <= 4096
+    assert sum(item.count for item in resp.stats.url_diagnostics_omitted) > 0
+
+
 def test_candidate_prefilter_limits_chunks_sent_to_reranker_and_reports_stats():
     resp = anyio.run(
         run_search,
@@ -467,7 +638,15 @@ def test_partial_reranker_batch_failure_reports_stats_and_keeps_results():
             return httpx.Response(500, json={})
         import httpx
 
-        return httpx.Response(200, json={"results": [{"index": 0, "score": 0.9}, {"index": 1, "score": 0.8}]})
+        return httpx.Response(
+            200,
+            json={
+                "results": [
+                    {"index": 0, "score": 0.9},
+                    {"index": 1, "score": 0.8},
+                ]
+            },
+        )
 
     import httpx
 
@@ -550,6 +729,11 @@ def test_relevance_floor_is_not_applied_to_reranker_degraded_fallback():
     assert resp.stats.reranked is False
     assert resp.stats.passages_dropped_below_threshold == 0
     assert resp.stats.relevance_threshold_policy is None
+    assert all(
+        passage.score_components[-1].strategy == "position-fallback@1"
+        for passage in resp.passages
+    )
+    assert all(passage.score_components[-1].score == passage.score for passage in resp.passages)
 
 
 def test_page_dedup_count_is_reported():
@@ -635,9 +819,301 @@ def test_chunking_receives_cleaned_markdown_but_raw_markdown_returns_original():
     )
 
     assert chunker.texts == ["# Article\nThis is the article body about the query."]
-    assert resp.raw_markdown[0].markdown == "Navigation Menu\nSearch\n# Article\nThis is the article body about the query."
+    assert resp.raw_markdown[0].markdown == (
+        "Navigation Menu\nSearch\n# Article\n"
+        "This is the article body about the query."
+    )
     assert resp.stats.pages_cleaned == 1
-    assert resp.stats.markdown_blocks_dropped == 0
+    assert resp.stats.markdown_blocks_dropped == 2
+
+
+class _QualityChunks:
+    async def chunk(self, pages: list[Page]) -> list[Chunk]:
+        page = pages[0]
+        return [
+            Chunk("Home\nMenu\nSearch\nLogin", 4, page.url, page.title, 0, page.source_id),
+            Chunk("The answer is 42.", 4, page.url, page.title, 1, page.source_id),
+        ]
+
+
+def test_pipeline_quality_gate_reports_rule_counts_and_keeps_concise_facts():
+    resp = anyio.run(
+        run_search,
+        SearchRequest(query="answer"),
+        fakes.deps(chunker=_QualityChunks(), evidence_quality_enabled=True),
+    )
+
+    assert [item.text for item in resp.passages] == ["The answer is 42."]
+    assert resp.stats.evidence_quality_strategy == "evidence-quality@1"
+    assert resp.stats.evidence_quality_chunks_dropped == 1
+    assert [(item.reason, item.count) for item in resp.stats.evidence_quality_drops] == [
+        ("navigation_boilerplate", 1)
+    ]
+
+
+class _OnlyNoiseChunks:
+    async def chunk(self, pages: list[Page]) -> list[Chunk]:
+        page = pages[0]
+        return [Chunk("Home\nMenu\nSearch\nLogin", 4, page.url, page.title, 0, page.source_id)]
+
+
+def test_quality_gate_has_a_stage_specific_empty_reason():
+    resp = anyio.run(
+        run_search,
+        SearchRequest(query="answer"),
+        fakes.deps(chunker=_OnlyNoiseChunks(), evidence_quality_enabled=True),
+    )
+
+    assert resp.passages == []
+    assert resp.stats.reason == "no_evidence_after_quality_gate"
+
+
+class _OversizedEvidenceChunker:
+    async def chunk(self, pages: list[Page]) -> list[Chunk]:
+        page = pages[0]
+        text = "x" * (MAX_EVIDENCE_ITEM_BYTES + 1)
+        return [Chunk(text, 1, page.url, page.title, 0, page.source_id)]
+
+
+def test_evidence_byte_budget_truncates_top_ranked_oversized_chunk():
+    resp = anyio.run(
+        run_search,
+        SearchRequest(query="x"),
+        fakes.deps(chunker=_OversizedEvidenceChunker()),
+    )
+
+    assert len(resp.passages) == 1
+    assert len(resp.passages[0].model_dump_json().encode("utf-8")) <= MAX_EVIDENCE_ITEM_BYTES
+    assert resp.stats.evidence_items_omitted == 0
+    response_bytes = len(
+        json.dumps(
+            [item.model_dump(mode="json") for item in resp.passages],
+            separators=(",", ":"),
+        ).encode("utf-8")
+    )
+    assert response_bytes <= MAX_EVIDENCE_BYTES
+
+
+def test_evidence_byte_truncation_preserves_exact_identity():
+    document = "evidence " * 10_000
+    identity = build_document_identity("https://example.test/article", document)
+    original_evidence_id = evidence_id_for(
+        identity.final_url,
+        identity.cleaned_markdown_sha256,
+        0,
+        len(document),
+    )
+    chunk = Chunk(
+        document,
+        10_000,
+        identity.final_url,
+        "Example",
+        0,
+        start_index=0,
+        end_index=len(document),
+        verbatim=True,
+        document_id=identity.document_id,
+        evidence_id=original_evidence_id,
+        final_url=identity.final_url,
+        cleaned_markdown_sha256=identity.cleaned_markdown_sha256,
+    )
+
+    bounded = pipeline._bound_evidence([ScoredChunk(chunk, 1.0)], SearchStats())
+
+    assert len(bounded) == 1
+    fitted = bounded[0].chunk
+    assert fitted.text == document[fitted.start_index:fitted.end_index]
+    assert fitted.evidence_id != original_evidence_id
+    assert fitted.verbatim is True
+
+
+def test_aggregate_evidence_envelope_counts_serialized_list_bytes():
+    scored = [
+        ScoredChunk(
+            Chunk(
+                "x" * 40_000,
+                1,
+                f"https://example{index}.test/article",
+                "Example",
+                index,
+            ),
+            1.0 - (index * 0.01),
+        )
+        for index in range(10)
+    ]
+    stats = SearchStats()
+
+    bounded = pipeline._bound_evidence(scored, stats)
+    serialized_bytes = len(
+        json.dumps(
+            [
+                pipeline._wire_scored_passage(item).model_dump(mode="json")
+                for item in bounded
+            ],
+            separators=(",", ":"),
+        ).encode("utf-8")
+    )
+
+    assert serialized_bytes <= MAX_EVIDENCE_BYTES
+    assert stats.evidence_items_omitted > 0
+
+
+class _OversizedRawExtractor:
+    async def extract(self, urls: list[str]) -> list[Page]:
+        text = "raw" * (MAX_RAW_MARKDOWN_ITEM_BYTES // 3 + 1)
+        return [Page(urls[0], "oversized", text)]
+
+
+class _SmallChunker:
+    async def chunk(self, pages: list[Page]) -> list[Chunk]:
+        page = pages[0]
+        return [Chunk("useful", 1, page.url, page.title, 0, page.source_id)]
+
+
+def test_raw_markdown_has_an_independent_item_and_byte_budget():
+    resp = anyio.run(
+        run_search,
+        SearchRequest(query="x", max_urls=1, include_raw_markdown=True),
+        fakes.deps(extractor=_OversizedRawExtractor(), chunker=_SmallChunker()),
+    )
+
+    assert resp.passages
+    assert resp.raw_markdown == []
+    assert resp.stats.raw_markdown_omitted == 1
+
+
+def test_raw_markdown_array_framing_counts_at_exact_boundary(monkeypatch):
+    page = Page("https://a.test", "A", "raw", source_id=1)
+    citation = SimpleNamespace(id=1, source_id=1, document_id=None)
+    item = RawMarkdown(
+        citation_id=1,
+        markdown="raw",
+        cleaned_markdown="raw",
+        document_id=None,
+    )
+    actual_array_bytes = len(
+        json.dumps([item.model_dump(mode="json")], separators=(",", ":")).encode("utf-8")
+    )
+    monkeypatch.setattr(pipeline, "MAX_RAW_MARKDOWN_BYTES", actual_array_bytes - 1)
+    stats = SearchStats()
+
+    raw = pipeline._build_raw_markdown(
+        SearchRequest(query="x", include_raw_markdown=True),
+        [page],
+        [citation],
+        stats,
+    )
+
+    assert raw == []
+    assert stats.raw_markdown_omitted == 1
+
+
+class _InterleavingDiscovery:
+    async def search(self, subquery: str, freshness: str | None = None):
+        return DiscoveryOutcome(
+            [DiscoveryResult(subquery, f"https://{subquery}.test/article", "snip", "engine", 1.0)],
+            [],
+        )
+
+
+class _InterleavingExtractor:
+    def __init__(self):
+        self.entered = 0
+        self.both_entered = asyncio.Event()
+
+    async def extract(self, urls: list[str]) -> list[Page]:
+        self.entered += 1
+        if self.entered == 2:
+            self.both_entered.set()
+        await self.both_entered.wait()
+        return [Page(urls[0], urls[0], f"evidence from {urls[0]}")]
+
+
+class _InterleavingReranker:
+    def __init__(self):
+        self.entered = 0
+        self.both_entered = asyncio.Event()
+
+    async def rerank(self, query: str, chunks: list[Chunk]):
+        self.entered += 1
+        if self.entered == 2:
+            self.both_entered.set()
+        await self.both_entered.wait()
+        batches = 1 if query == "alpha" else 2
+        return RerankOutcome(
+            [ScoredChunk(chunk, 0.9) for chunk in chunks],
+            RerankerTelemetry(
+                batches=batches,
+                batches_failed=batches - 1,
+                floor_filled=query == "beta",
+                scored_count=len(chunks),
+            ),
+            "interleaved@1",
+        )
+
+
+def test_concurrent_searches_keep_fetch_and_reranker_stats_request_owned():
+    async def scenario():
+        deps = fakes.deps(
+            discovery=_InterleavingDiscovery(),
+            extractor=_InterleavingExtractor(),
+            reranker=_InterleavingReranker(),
+        )
+        return await asyncio.gather(
+            run_search(SearchRequest(query="alpha"), deps),
+            run_search(SearchRequest(query="beta"), deps),
+        )
+
+    alpha, beta = anyio.run(scenario)
+
+    assert alpha.passages[0].text.endswith("alpha.test/article")
+    assert beta.passages[0].text.endswith("beta.test/article")
+    assert (alpha.stats.reranker_batches, alpha.stats.reranker_batches_failed) == (1, 0)
+    assert (beta.stats.reranker_batches, beta.stats.reranker_batches_failed) == (2, 1)
+    assert alpha.stats.reranker_floor_filled is False
+    assert beta.stats.reranker_floor_filled is True
+
+
+def test_malformed_subquery_response_is_isolated_from_healthy_sibling():
+    async def scenario():
+        def handler(request):
+            if request.url.params["q"] == "failed query":
+                return httpx.Response(200, text="<html>rate limited</html>")
+            return httpx.Response(
+                200,
+                json={
+                    "results": [
+                        {
+                            "title": "A",
+                            "url": "https://a.test/article",
+                            "engine": "engine-a",
+                            "score": 1.0,
+                        }
+                    ]
+                },
+            )
+
+        client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+        discovery = SearxngDiscovery("http://searxng:8080", client=client)
+        try:
+            return await run_search(
+                SearchRequest(query="x"),
+                fakes.deps(planner=_TwoQueryPlanner(), discovery=discovery),
+            )
+        finally:
+            await client.aclose()
+
+    resp = anyio.run(scenario)
+
+    assert resp.passages
+    assert resp.stats.discovery_status == "degraded"
+    assert [
+        (item.query, item.status, item.failure_reason)
+        for item in resp.stats.subquery_diagnostics
+    ] == [
+        ("working query", "ok", None),
+        ("failed query", "failed", "malformed_response"),
+    ]
 
 
 @pytest.mark.parametrize(

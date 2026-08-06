@@ -274,28 +274,40 @@ Do not adopt:
 - The final end-to-end `curl` search discovered 35 URLs, selected and crawled 4, produced and reranked 28 chunks using Tengwar's existing embedding and reranking services, and returned 4 passages across 3 citations with no embedding degradation. An earlier release-note query selected anti-bot or empty-content pages and correctly returned no passages; the direct probes and successful documentation query isolated that outcome to the selected targets rather than egress failure.
 
 ## Phase 1B — Honest diagnostics and evidence quality
-**Status:** pending
+**Status:** completed
 **Kind:** logic
 
 ### Tasks
 
-- [ ] Preserve discovery contributors through URL merging: contributing subqueries, plural SearXNG engines, positions, best upstream score, contribution count, lexical selection score, and selection reason. Distinguish duplicate reports within one subquery from agreement across independent subqueries.
-- [ ] Add bounded score components with explicit strategy/version labels. Keep the existing scalar passage score as the final reranker or fallback score and never report a component the pipeline did not calculate. Evaluate reciprocal-rank fusion only behind the Phase 0 quality benchmark; do not replace ranking because a reference has RRF.
-- [ ] Add per-subquery SearXNG attempt latency and result count, per-engine contribution counts from returned plural engines, and SearXNG-reported failures. Document that true per-engine latency is unavailable through the current response.
-- [ ] Make URL-diagnostic truncation deterministic and selection-aware: retain selected decisions first, fill the remaining item/byte budget with filtered decisions, and report omitted counts by reason.
-- [ ] Move reranker and all other per-request telemetry out of mutable process-global client fields into request-owned result objects; concurrent requests must not overwrite one another's diagnostics.
-- [ ] Audit existing `SearchStats` for values the pipeline never computes. Populate or deprecate `markdown_blocks_dropped` in place; removing the v1 field is a breaking change.
-- [ ] Replace the 2,000-character prefix drop rule with full-document identity for exact duplicates. Any optional near-duplicate heuristic must be a separately measured candidate signal with collision diagnostics, not an unconditional deletion rule.
-- [ ] Add a deterministic evidence-quality gate before assembly for clear navigation/boilerplate and link-dominated fragments. Do not blanket-reject code, tables, lists, or short factual evidence; benchmark precision and recall, version the policy, and return bounded drop counts by rule.
-- [ ] Bound evidence, raw Markdown, per-URL outcomes, diagnostics, and telemetry independently by items and bytes so optional diagnostics cannot defeat the caller's output budget.
+- [x] Preserve discovery contributors through URL merging: contributing subqueries, plural SearXNG engines, positions, best upstream score, contribution count, lexical selection score, and selection reason. Distinguish duplicate reports within one subquery from agreement across independent subqueries.
+- [x] Add bounded score components with explicit strategy/version labels. Keep the existing scalar passage score as the final reranker or fallback score and never report a component the pipeline did not calculate. Evaluate reciprocal-rank fusion only behind the Phase 0 quality benchmark; do not replace ranking because a reference has RRF.
+- [x] Add per-subquery SearXNG attempt latency and result count, per-engine contribution counts from returned plural engines, and SearXNG-reported failures. Document that true per-engine latency is unavailable through the current response.
+- [x] Make URL-diagnostic truncation deterministic and selection-aware: retain selected decisions first, fill the remaining item/byte budget with filtered decisions, and report omitted counts by reason.
+- [x] Move reranker and all other per-request telemetry out of mutable process-global client fields into request-owned result objects; concurrent requests must not overwrite one another's diagnostics.
+- [x] Audit existing `SearchStats` for values the pipeline never computes. Populate or deprecate `markdown_blocks_dropped` in place; removing the v1 field is a breaking change.
+- [x] Replace the 2,000-character prefix drop rule with full-document identity for exact duplicates. Any optional near-duplicate heuristic must be a separately measured candidate signal with collision diagnostics, not an unconditional deletion rule.
+- [x] Add a deterministic evidence-quality gate before assembly for clear navigation/boilerplate and link-dominated fragments. Do not blanket-reject code, tables, lists, or short factual evidence; benchmark precision and recall, version the policy, and return bounded drop counts by rule.
+- [x] Bound evidence, raw Markdown, per-URL outcomes, diagnostics, and telemetry independently by items and bytes so optional diagnostics cannot defeat the caller's output budget.
 
 ### Verification
 
-- [ ] Add tests for duplicate contributors within/across subqueries, plural engines/positions, partial subquery failure, fallback scoring, optional RRF comparison, component/scalar agreement, and deterministic ordering.
-- [ ] Add concurrent-search tests with interleaved reranker and fetch awaits proving each response reports only its own counters and no limiter/telemetry state leaks.
-- [ ] Add tests where more than 50 filtered URLs precede selected URLs and prove selected diagnostics remain visible while omission counts are accurate.
-- [ ] Add dedup fixtures for exact duplicates, long shared preambles with different bodies, canonical disagreements, and normalized whitespace.
-- [ ] Add quality-gate fixtures for navigation, footer/link farms, concise factual sentences, code, lists, and tables, then publish precision/recall and answer-quality deltas before enabling the gate by default.
+- [x] Add tests for duplicate contributors within/across subqueries, plural engines/positions, partial subquery failure, fallback scoring, optional RRF comparison, component/scalar agreement, and deterministic ordering.
+- [x] Add concurrent-search tests with interleaved reranker and fetch awaits proving each response reports only its own counters and no limiter/telemetry state leaks.
+- [x] Add tests where more than 50 filtered URLs precede selected URLs and prove selected diagnostics remain visible while omission counts are accurate.
+- [x] Add dedup fixtures for exact duplicates, long shared preambles with different bodies, canonical disagreements, and normalized whitespace.
+- [x] Add quality-gate fixtures for navigation, footer/link farms, concise factual sentences, code, lists, and tables, then publish precision/recall and answer-quality deltas before enabling the gate by default.
+
+### Implementation report — verified
+
+- Discovery merging now retains distinct sub-query/engine/position contributions, preserves the best upstream score without a corroboration boost, and exposes selected-first bounded diagnostics with omission counts.
+- SearXNG attempts now fail independently and report bounded per-sub-query latency/result counts, plural-engine contribution totals, and reported engine failures. Malformed 200 responses map to a closed failure reason, valid sibling attempts survive, internal transport URLs are not exposed, invalid plural positions remain aligned as unknown, and true per-engine latency remains explicitly unavailable.
+- Reranker scores and batch counters now travel in one request-owned result. Passage score components identify the external reranker, calculated partial floor, or position fallback without changing the scalar score contract.
+- Exact page deduplication now hashes the full whitespace-normalized document. The Markdown cleaner populates `markdown_blocks_dropped` with an exact-line multiset difference rather than a clamped cross-renderer line-count delta.
+- `evidence-quality@1` uses narrow structural rules, preserves short policy answers and curated link lists, and is operator-controlled with a disabled default until broader independent measurement. Evidence, URL diagnostics, and optional raw Markdown have independent serialized item/list byte envelopes and omission counters; oversized top-ranked evidence is identity-safely shortened instead of discarded.
+- `docs/benchmarks/web-intelligence-phase1b-quality.md` records fixture revision/configuration, elapsed time, zero network requests, degradation reasons, 1.00 precision/recall, and zero useful-evidence/answer-coverage loss. Its synthetic 0.75/0.75 RRF comparison is explicitly not authorization to change production ranking, so RRF remains disabled.
+- A read-only Claude Opus review was checked claim-by-claim. Verified corrections also preserve 500-character non-ASCII subqueries, validate the explicit 1–8 sub-query limit, retain the v1 response field acceptance floor, synchronize MCP descriptions and aggregate logs, and route diagnostics-less selectors through the same bounded envelope.
+- Verification passed with 518/518 offline tests, the Phase 1B fixture benchmark, `git diff --check`, and `scripts/check-release-guard.sh`.
+- Tengwar deployment rebuilt orchestrator image `sha256:701de5836617a00439a48c4ae0a489f4915b5b1b668c71db6d612ed33796f2e3` on `tengwar-shared`. Live `/healthz` reported every dependency healthy; a real `curl` to `/v1/search` returned HTTP 200 with five verbatim passages, exact citation spans, contributor/selection diagnostics, `reranked=true`, one successful reranker batch, and `embedding_degraded=false`.
 
 ## Phase 2 — Resource envelope and fetch outcome routing
 **Status:** pending

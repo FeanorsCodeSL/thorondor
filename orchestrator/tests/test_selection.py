@@ -118,3 +118,18 @@ def test_selection_diagnostics_report_selected_and_filtered_reasons():
     assert reasons["https://blocked.test/x"] == "blocked_domain"
     assert reasons["https://same.test/a"] == "engine_diversity"
     assert reasons["https://same.test/c"] == "domain_cap"
+
+
+def test_selection_diagnostics_keep_all_decisions_and_selected_lexical_scores():
+    blocked = [_r(f"https://blocked.test/{index}", 1.0) for index in range(60)]
+    selected, diagnostics = SelectionPolicyImpl().select_with_diagnostics(
+        blocked + [_result("Oppenheimer", "https://answer.test/x", "born in New York", "e", 0.8)],
+        1,
+        {"blocked.test"},
+        query="Where was Oppenheimer born?",
+    )
+
+    assert [item.url for item in selected] == ["https://answer.test/x"]
+    assert len(diagnostics) == 61
+    selected_decision = next(item for item in diagnostics if item.selected)
+    assert selected_decision.lexical_score > 0

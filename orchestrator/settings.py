@@ -5,6 +5,7 @@ import os
 import re
 from urllib.parse import urlparse
 
+from .models import MAX_SUBQUERY_COUNT
 from .url_safety import UrlSafetyPolicy
 
 MAX_CRAWL_CONCURRENCY = 20
@@ -98,6 +99,7 @@ class Settings:
     reranker_batch_size: int
     reranker_timeout_s: int
     relevance_score_floor: float
+    evidence_quality_enabled: bool
     llm_endpoint: str | None
     llm_model: str | None
     max_urls: int
@@ -153,8 +155,10 @@ class Settings:
             raise RuntimeError("HEALTHCHECK_MAX_KEEPALIVE_CONNECTIONS must be >= 1")
         if self.markdown_extractor.lower() != "trafilatura":
             raise RuntimeError("MARKDOWN_EXTRACTOR must be trafilatura")
-        if self.max_subqueries < 1:
-            raise RuntimeError("MAX_SUBQUERIES must be >= 1")
+        if not 1 <= self.max_subqueries <= MAX_SUBQUERY_COUNT:
+            raise RuntimeError(
+                f"MAX_SUBQUERIES must be between 1 and {MAX_SUBQUERY_COUNT}"
+            )
 
 
 def load_settings() -> Settings:
@@ -170,6 +174,7 @@ def load_settings() -> Settings:
         reranker_batch_size=_int_env("RERANKER_BATCH_SIZE"),
         reranker_timeout_s=_int_env("RERANKER_TIMEOUT_S"),
         relevance_score_floor=_float_env("RELEVANCE_SCORE_FLOOR"),
+        evidence_quality_enabled=_bool_env("EVIDENCE_QUALITY_ENABLED"),
         llm_endpoint=_configured_optional("LLM_ENDPOINT"),
         llm_model=_configured_optional("LLM_MODEL"),
         max_urls=_int_env("MAX_URLS"),

@@ -2,8 +2,15 @@
 from dataclasses import dataclass, field
 from typing import TypeAlias
 
-
 JsonValue: TypeAlias = str | int | float | bool | None | list["JsonValue"] | dict[str, "JsonValue"]
+
+
+@dataclass(frozen=True)
+class DiscoveryContribution:
+    subquery: str
+    engine: str
+    position: int | None
+    score: float
 
 
 @dataclass
@@ -14,6 +21,7 @@ class DiscoveryResult:
     engine: str
     score: float
     published_at: str | None = None
+    contributions: tuple[DiscoveryContribution, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -104,10 +112,42 @@ class Chunk:
     evidence_metadata: DocumentMetadata | None = None
 
 
+@dataclass(frozen=True)
+class ScoreComponent:
+    name: str
+    score: float
+    strategy: str
+
+
 @dataclass
 class ScoredChunk:
     chunk: Chunk
     score: float
+    score_components: tuple[ScoreComponent, ...] = ()
+
+
+@dataclass(frozen=True)
+class RerankerTelemetry:
+    batches: int = 0
+    batches_failed: int = 0
+    floor_filled: bool = False
+    scored_count: int = 0
+
+
+@dataclass
+class RerankOutcome:
+    scored: list[ScoredChunk]
+    telemetry: RerankerTelemetry
+    strategy: str
+
+    def __getitem__(self, index):
+        return self.scored[index]
+
+    def __iter__(self):
+        return iter(self.scored)
+
+    def __len__(self) -> int:
+        return len(self.scored)
 
 
 @dataclass
@@ -130,6 +170,7 @@ class AssembledPassage:
     document_id: str | None = None
     evidence_id: str | None = None
     section_heading: str | None = None
+    score_components: tuple[ScoreComponent, ...] = ()
 
 
 @dataclass(frozen=True)

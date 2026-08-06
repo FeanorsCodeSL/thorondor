@@ -89,7 +89,7 @@ flowchart TD
     N -- yes --> EMPTY3[200 empty\nreason=all_crawls_failed]
     N -- no --> O[MarkdownCleanerImpl\ntrafilatura per page]
 
-    O --> P[content_dedup\nremove near-duplicate pages]
+    O --> P[content_dedup\nremove full-document exact duplicates]
     P --> Q[ChunkerClient.chunk\nPOST /chunk per page]
     Q -- ChunkerUnavailable --> FAIL503B[503 SearchDependencyUnavailable\ndependency=chunker]
     Q --> R{chunks_produced == 0?}
@@ -105,7 +105,13 @@ flowchart TD
     W -- yes --> EMPTY5[200 empty\nreason=no_chunks_after_rerank]
     W -- no --> X[relevance floor filter\nif RELEVANCE_SCORE_FLOOR > 0]
 
-    X --> Y[ResultAssemblerImpl\ntoken budget greedy fill\nmax_passages cap]
+    X --> X2{EVIDENCE_QUALITY_ENABLED?}
+    X2 -- yes --> X3[evidence-quality@1\nnoise rejection]
+    X3 -- empty --> EMPTY6[200 empty\nreason=no_evidence_after_quality_gate]
+    X2 -- no --> X4[serialized evidence envelope]
+    X3 -- retained --> X4
+    X4 -- empty --> EMPTY7[200 empty\nreason=no_evidence_after_output_budget]
+    X4 -- retained --> Y[ResultAssemblerImpl\ntoken budget greedy fill\nmax_passages cap]
     Y --> Z[Build SearchResponse\npassages + citations + stats]
     Z --> LOG[emit search_completed log]
     LOG --> RESP[Return SearchResponse]
@@ -119,7 +125,7 @@ SearXNG returns engine failures and suspension reasons in `unresponsive_engines`
 
 ### Reranker unavailable
 
-When every reranker batch fails, `RerankerClient.rerank` raises `RerankerUnavailable`. The pipeline catches this and assigns scores by position (score = 1/(index+1)). `stats.reranked=false` is set. The response is still a 200 with passages — callers must check `stats.reranked` to know whether semantic ranking was applied.
+Every reranker invocation returns request-owned scores and telemetry together. When every batch fails, `RerankerClient.rerank` raises `RerankerUnavailable` carrying that request's counters. The pipeline assigns scores by position (score = 1/(index+1)) and sets `stats.reranked=false`. The scalar score remains the ordering contract, while `score_components` labels the actual versioned reranker, partial-floor, or fallback calculation.
 
 ```mermaid
 flowchart LR

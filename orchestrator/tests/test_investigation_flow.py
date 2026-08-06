@@ -152,7 +152,7 @@ def test_investigation_flow_broadens_cleans_prefilters_batches_and_shapes_result
     assert resp.stats.urls_selected == 6
     assert resp.stats.url_diagnostics
     assert resp.stats.pages_cleaned == 6
-    assert resp.stats.markdown_blocks_dropped == 0
+    assert resp.stats.markdown_blocks_dropped == 18
     assert resp.stats.chunks_produced == 60
     assert resp.stats.chunks_sent_to_reranker == 10
     assert resp.stats.chunks_prefiltered == 50

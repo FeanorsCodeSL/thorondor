@@ -35,7 +35,7 @@ All environment variables must be present in `.env` (and `.env.llamacpp` or `.en
 
 | Variable | Required / Default | Type | Description | Related |
 |---|---|---|---|---|
-| `MAX_SUBQUERIES` | Required / `3` | int (≥ 1) | Cap on sub-queries the LLM planner may return. Also caps the list even if decompose=true. | `LLM_ENDPOINT` |
+| `MAX_SUBQUERIES` | Required / `3` | int (1–8) | Cap on sub-queries the LLM planner may return. Also caps the list even if decompose=true. | `LLM_ENDPOINT` |
 | `DEFAULT_TOKEN_BUDGET` | Required / `4000` | int (≥ 1) | Token budget when no profile and no explicit `token_budget` in the request. | `SEARCH_PROFILE_*_TOKEN_BUDGET` |
 | `SEARCH_PROFILE_QUICK_TOKEN_BUDGET` | Required / `2000` | int (≥ 1) | Token budget for the `quick` search profile. | `SEARCH_PROFILE_QUICK_MAX_URLS` |
 | `SEARCH_PROFILE_QUICK_MAX_URLS` | Required / `5` | int (≥ 1) | Max URLs to crawl for the `quick` profile. | `SEARCH_PROFILE_QUICK_TOKEN_BUDGET` |
@@ -102,6 +102,7 @@ All environment variables must be present in `.env` (and `.env.llamacpp` or `.en
 | `RERANKER_BATCH_SIZE` | Required / `32` | int (≥ 1) | Chunks per reranker API call. | `RERANKER_TIMEOUT_S` |
 | `RERANKER_TIMEOUT_S` | Required / `30` | int (≥ 1) | Reranker request timeout in seconds. | `RERANKER_BATCH_SIZE` |
 | `RELEVANCE_SCORE_FLOOR` | Required / `0.0` | float | Passages with reranker score ≤ this value are dropped post-reranking. `0.0` disables the floor. Has no effect when `stats.reranked=false`. | `RERANKER_ENDPOINT` |
+| `EVIDENCE_QUALITY_ENABLED` | Required / `false` | bool | Enable the `evidence-quality@1` structural filter. It remains disabled by default pending broader independent-corpus measurement. | `RELEVANCE_SCORE_FLOOR` |
 
 ### Optional LLM Planner
 
@@ -216,7 +217,7 @@ The settings loader enforces the following constraints at startup time:
 | `HEALTHCHECK_MAX_CONNECTIONS` ≥ 1 | `RuntimeError` |
 | `HEALTHCHECK_MAX_KEEPALIVE_CONNECTIONS` ≥ 1 | `RuntimeError` |
 | `MARKDOWN_EXTRACTOR` must equal `trafilatura` (case-insensitive) | `RuntimeError: MARKDOWN_EXTRACTOR must be trafilatura` |
-| `MAX_SUBQUERIES` ≥ 1 | `RuntimeError` |
+| `MAX_SUBQUERIES` between 1 and 8 | `RuntimeError: MAX_SUBQUERIES must be between 1 and 8` |
 | `SEARCH_PROFILE_*_TOKEN_BUDGET` ≥ 1 | `RuntimeError: search profile token_budget must be >= 1` |
 | `SEARCH_PROFILE_*_MAX_URLS` ≥ 1 | `RuntimeError: search profile max_urls must be >= 1` |
 | `SEARCH_PROFILE_*_MAX_PASSAGES` ≥ 1 | `RuntimeError: search profile max_passages must be >= 1` |

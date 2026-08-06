@@ -10,6 +10,7 @@ from .types import (
     DiscoveryResult,
     Page,
     PrefilteredChunks,
+    RerankOutcome,
     ScoredChunk,
 )
 
@@ -50,7 +51,7 @@ class CandidatePrefilter(Protocol):
 
 
 class Reranker(Protocol):
-    async def rerank(self, query: str, chunks: list[Chunk]) -> list[ScoredChunk]: ...
+    async def rerank(self, query: str, chunks: list[Chunk]) -> RerankOutcome: ...
 
 
 class ResultAssembler(Protocol):
