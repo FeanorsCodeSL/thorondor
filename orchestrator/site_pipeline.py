@@ -2,7 +2,6 @@ import asyncio
 import time
 from collections import Counter, deque
 from dataclasses import replace
-from html.parser import HTMLParser
 from inspect import isawaitable
 from urllib.parse import urlsplit
 
@@ -23,7 +22,7 @@ from .normalize import canonical_host
 from .outcome_codes import FetchOutcomeCode
 from .politeness import parse_retry_after
 from .resource_policy import RouteDeadlineExceeded
-from .robots_policy import RobotsSnapshot
+from .robots_policy import RobotsSnapshot, robots_body
 from .sitemap_policy import parse_sitemap
 from .types import FetchStageOutcome
 
@@ -52,40 +51,14 @@ def _origin(url: str) -> str | None:
     return f"{parsed.scheme.casefold()}://{host}{suffix}"
 
 
-class _PreTextParser(HTMLParser):
-    def __init__(self):
-        super().__init__(convert_charrefs=True)
-        self.depth = 0
-        self.parts: list[str] = []
-
-    def handle_starttag(self, tag: str, _attrs) -> None:
-        if tag.casefold() == "pre":
-            self.depth += 1
-        elif self.depth and tag.casefold() == "br":
-            self.parts.append("\n")
-
-    def handle_endtag(self, tag: str) -> None:
-        if tag.casefold() == "pre" and self.depth:
-            self.depth -= 1
-
-    def handle_data(self, data: str) -> None:
-        if self.depth:
-            self.parts.append(data)
-
-    def text(self) -> str:
-        return "".join(self.parts)
-
-
 def _body(outcome: FetchStageOutcome) -> str:
     if outcome.page is None:
         return ""
-    content_type = outcome.content_type or outcome.page.content_type or ""
-    if content_type.split(";", 1)[0].strip().casefold() == "text/plain":
-        parser = _PreTextParser()
-        parser.feed(outcome.page.html or "")
-        if parser.text():
-            return parser.text()
-    return outcome.page.html or outcome.page.markdown
+    return robots_body(
+        outcome.page.markdown,
+        outcome.page.raw_html or outcome.page.html,
+        outcome.content_type or outcome.page.content_type,
+    )
 
 
 def _links(outcome: FetchStageOutcome) -> list[str]:

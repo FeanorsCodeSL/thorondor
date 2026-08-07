@@ -562,6 +562,7 @@ class Crawl4aiExtractor:
         ) = self._allowlisted_response_headers(item)
         markdown = self._markdown_from_result(item, payload if isinstance(payload, dict) else {})
         html = self._html_from_result(item, payload if isinstance(payload, dict) else {})
+        raw_html = self._raw_html_from_result(item, payload if isinstance(payload, dict) else {})
         base = {
             "requested_url": source_url,
             "final_url": final_url,
@@ -592,6 +593,8 @@ class Crawl4aiExtractor:
         content_bytes = len(markdown.encode("utf-8", "replace"))
         if html:
             content_bytes += len(html.encode("utf-8", "replace"))
+        if raw_html and raw_html != html:
+            content_bytes += len(raw_html.encode("utf-8", "replace"))
         if content_bytes > self.max_content_bytes:
             return FetchStageOutcome(code=FetchOutcomeCode.CONTENT_TOO_LARGE, **base)
         if not markdown:
@@ -606,6 +609,7 @@ class Crawl4aiExtractor:
             title=title,
             markdown=markdown,
             html=html,
+            raw_html=raw_html,
             requested_url=source_url,
             final_url=final_url,
             status_code=status_code,
@@ -668,6 +672,11 @@ class Crawl4aiExtractor:
                 return value
         return None
 
+    @staticmethod
+    def _raw_html_from_result(item: dict, payload: dict) -> str | None:
+        value = item.get("html") or payload.get("html")
+        return value if isinstance(value, str) and value.strip() else None
+
     def _page_from_payload(self, source_url: str, payload: dict) -> Page | None:
         for item in self._result_items(payload):
             if item.get("success") is False:
@@ -689,11 +698,13 @@ class Crawl4aiExtractor:
                 retry_after,
             ) = self._allowlisted_response_headers(item)
             html = self._html_from_result(item, payload, content_type)
+            raw_html = self._raw_html_from_result(item, payload)
             return Page(
                 url=source_url,
                 title=title,
                 markdown=markdown,
                 html=html,
+                raw_html=raw_html,
                 requested_url=source_url,
                 final_url=final_url,
                 status_code=self._status_code(item),

@@ -1,10 +1,46 @@
+import asyncio
 from dataclasses import dataclass
+from html.parser import HTMLParser
 from typing import Literal
 from urllib.parse import urljoin, urlsplit
+from weakref import WeakValueDictionary
 
 UNRESERVED = frozenset(
     "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~"
 )
+ROBOTS_FAILURE_CACHE_TTL_S = 60.0
+
+
+class _PreTextParser(HTMLParser):
+    def __init__(self):
+        super().__init__(convert_charrefs=True)
+        self.depth = 0
+        self.parts: list[str] = []
+
+    def handle_starttag(self, tag: str, _attrs) -> None:
+        if tag.casefold() == "pre":
+            self.depth += 1
+        elif self.depth and tag.casefold() == "br":
+            self.parts.append("\n")
+
+    def handle_endtag(self, tag: str) -> None:
+        if tag.casefold() == "pre" and self.depth:
+            self.depth -= 1
+
+    def handle_data(self, data: str) -> None:
+        if self.depth:
+            self.parts.append(data)
+
+
+def robots_body(markdown: str | None, html: str | None, content_type: str | None) -> str:
+    media_type = (content_type or "").split(";", 1)[0].strip().casefold()
+    if media_type == "text/plain" and html:
+        parser = _PreTextParser()
+        parser.feed(html)
+        body = "".join(parser.parts)
+        if body:
+            return body
+    return html or markdown or ""
 
 
 def _normalize_octets(value: str) -> str:
@@ -229,13 +265,27 @@ class RobotsCache:
             raise ValueError("robots cache ttl must be between 0 and 86400 seconds")
         self.ttl_s = ttl_s
         self._values: dict[str, RobotsSnapshot] = {}
+        self._locks: WeakValueDictionary[str, asyncio.Lock] = WeakValueDictionary()
 
     def get(self, origin: str, *, now: float) -> RobotsSnapshot | None:
         snapshot = self._values.get(origin)
-        if snapshot is None or now >= snapshot.fetched_at + self.ttl_s:
+        if snapshot is None:
+            return None
+        ttl_s = self.ttl_s if snapshot.state != "unreachable" else min(
+            self.ttl_s,
+            ROBOTS_FAILURE_CACHE_TTL_S,
+        )
+        if now >= snapshot.fetched_at + ttl_s:
+            self._values.pop(origin, None)
             return None
         return snapshot
 
     def put(self, snapshot: RobotsSnapshot) -> None:
-        if snapshot.state == "available":
-            self._values[snapshot.origin] = snapshot
+        self._values[snapshot.origin] = snapshot
+
+    def lock_for(self, origin: str) -> asyncio.Lock:
+        lock = self._locks.get(origin)
+        if lock is None:
+            lock = asyncio.Lock()
+            self._locks[origin] = lock
+        return lock

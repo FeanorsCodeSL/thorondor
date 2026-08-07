@@ -53,6 +53,20 @@ All environment variables must be present in `.env` (and `.env.llamacpp` or `.en
 | `MAX_CONTENT_BYTES` | Required / `262144` | int (≥ 1) | Maximum combined Markdown and HTML bytes retained per fetched page. Must not exceed `MAX_RESPONSE_BODY_BYTES`. | `MAX_RESPONSE_BODY_BYTES` |
 | `CHUNK_CONCURRENCY` | Required / `4` | int (≥ 1) | Process-owned concurrent chunk-service requests. | `CHUNK_TIMEOUT_S` |
 
+### Page Cache and Change Detection
+
+| Variable | Required / Default | Type | Description | Related |
+|---|---|---|---|---|
+| `PAGE_CACHE_ENABLED` | Required / `false` | bool | Enable persistent records only for known-URL fetch. Search, map, and crawl remain live. | `PAGE_CACHE_PATH` |
+| `PAGE_CACHE_PATH` | Required / `/var/lib/thorondor/page-cache.sqlite3` | absolute container path | SQLite page-cache path inside the dedicated Compose volume. | `PAGE_CACHE_ENABLED` |
+| `PAGE_CACHE_TTL_S` | Required / `300` | int (≥ 1) | Fresh lifetime from fetch time. Cache reads do not extend it. | `PAGE_CACHE_STALE_S` |
+| `PAGE_CACHE_STALE_S` | Required / `900` | int (≥ 0) | Additional stale-while-revalidate window accepted only by explicit non-watch requests. | `PAGE_CACHE_TTL_S` |
+| `PAGE_CACHE_RETENTION_S` | Required / `604800` | int (≥ TTL + stale) | Absolute retention from the full content fetch. Reads and `304` responses do not extend it. | `PAGE_CACHE_TTL_S` |
+| `PAGE_CACHE_RAW_HTML_ENABLED` | Required / `false` | bool | Permit raw HTML persistence only when a fetch also requests `raw_html`. | `PAGE_CACHE_ENABLED` |
+| `PAGE_DIFF_MAX_INPUT_LINES` | Required / `2000` | int (≥ 1) | Per-document line cap for detailed comparison. | `PAGE_DIFF_MAX_OPERATIONS` |
+| `PAGE_DIFF_MAX_OPERATIONS` | Required / `1000000` | int (≥ 1) | Maximum old-line × new-line comparison work. | `PAGE_DIFF_MAX_INPUT_LINES` |
+| `PAGE_DIFF_MAX_OUTPUT_LINES` | Required / `24` | int (1–24) | Maximum added and removed lines returned. | `MAX_RESPONSE_BODY_BYTES` |
+
 ### Search Profiles
 
 | Variable | Required / Default | Type | Description | Related |

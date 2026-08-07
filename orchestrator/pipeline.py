@@ -20,6 +20,7 @@ from .interfaces import (
     CandidatePrefilter,
     ContentExtractor,
     MarkdownCleaner,
+    PageCacheRepository,
     QueryPlanner,
     Reranker,
     ResultAssembler,
@@ -57,6 +58,7 @@ from .models import (
 from .normalize import canonical_host, host_for
 from .observability import query_hash
 from .outcome_codes import FetchOutcomeCode
+from .page_cache import DisabledPageCache, PageRefreshCoordinator, SqlitePageCache
 from .politeness import HostPoliteness
 from .resource_policy import ResourcePolicy, RouteDeadlineExceeded, RuntimeAdmission
 from .robots_policy import RobotsCache
@@ -136,8 +138,23 @@ class PipelineDeps:
     max_sitemap_bytes: int
     max_sitemap_entries: int
     max_sitemap_documents: int
+    crawl_respect_robots_txt: bool
+    page_cache: PageCacheRepository
+    page_refresh: PageRefreshCoordinator
+    page_cache_ttl_s: int
+    page_cache_stale_s: int
+    page_cache_retention_s: int
+    page_cache_raw_html_enabled: bool
+    page_diff_max_input_lines: int
+    page_diff_max_operations: int
+    page_diff_max_output_lines: int
+
+    async def start(self) -> None:
+        await self.page_cache.start()
 
     async def aclose(self) -> None:
+        await self.page_refresh.aclose()
+        await self.page_cache.aclose()
         for component in (self.planner, self.discovery, self.extractor, self.chunker, self.reranker):
             close = getattr(component, "aclose", None)
             if close is not None:
@@ -1061,6 +1078,11 @@ def build_deps_from_settings(settings) -> PipelineDeps:
         max_content_bytes=settings.max_content_bytes,
         chunk_concurrency=settings.chunk_concurrency,
     )
+    page_cache = (
+        SqlitePageCache(settings.page_cache_path)
+        if settings.page_cache_enabled
+        else DisabledPageCache()
+    )
     return PipelineDeps(
         planner=planner,
         discovery=SearxngDiscovery(
@@ -1139,4 +1161,14 @@ def build_deps_from_settings(settings) -> PipelineDeps:
         max_sitemap_bytes=settings.max_sitemap_bytes,
         max_sitemap_entries=settings.max_sitemap_entries,
         max_sitemap_documents=settings.max_sitemap_documents,
+        crawl_respect_robots_txt=settings.crawl_respect_robots_txt,
+        page_cache=page_cache,
+        page_refresh=PageRefreshCoordinator(),
+        page_cache_ttl_s=settings.page_cache_ttl_s,
+        page_cache_stale_s=settings.page_cache_stale_s,
+        page_cache_retention_s=settings.page_cache_retention_s,
+        page_cache_raw_html_enabled=settings.page_cache_raw_html_enabled,
+        page_diff_max_input_lines=settings.page_diff_max_input_lines,
+        page_diff_max_operations=settings.page_diff_max_operations,
+        page_diff_max_output_lines=settings.page_diff_max_output_lines,
     )

@@ -17,6 +17,7 @@ import orchestrator.app as appmod
 import orchestrator.mcp_server as mcpmod
 from orchestrator import fakes
 from orchestrator.app import app
+from orchestrator.page_cache import DisabledPageCache
 from orchestrator.resource_policy import ResourcePolicy
 
 
@@ -62,6 +63,29 @@ def test_web_fetch_returns_typed_outcomes():
     assert out["schema_version"] == "thorondor.fetch.v1"
     assert out["results"][0]["outcome"] == "content"
     assert out["results"][0]["trust"] == "untrusted"
+
+
+def test_stdio_runtime_starts_and_closes_page_cache(monkeypatch):
+    events = []
+
+    class TrackingPageCache(DisabledPageCache):
+        async def start(self):
+            events.append("start")
+
+        async def aclose(self):
+            events.append("close")
+
+    runtime_deps = fakes.deps(page_cache=TrackingPageCache())
+    mcpmod.set_deps(runtime_deps)
+
+    async def run_stdio_async():
+        events.append("run")
+
+    monkeypatch.setattr(mcpmod.mcp, "run_stdio_async", run_stdio_async)
+
+    anyio.run(mcpmod._run_stdio)
+
+    assert events == ["start", "run", "close"]
 
 
 def test_in_process_mcp_enforces_request_and_response_byte_limits():
@@ -346,6 +370,22 @@ def test_map_and_crawl_advertise_concise_agent_oriented_descriptors():
     assert "typed page evidence" in tools["web_crawl"].description
     assert len(tools["web_map"].description) <= 300
     assert len(tools["web_crawl"].description) <= 300
+
+
+def test_web_fetch_advertises_typed_target_watch_schema():
+    async def advertised():
+        return next(tool for tool in await mcpmod.mcp.list_tools() if tool.name == "web_fetch")
+
+    tool = anyio.run(advertised)
+    watch_schema = tool.input_schema["properties"]["watch"]
+
+    assert watch_schema["anyOf"][0]["$ref"] == "#/$defs/TargetWatch"
+    assert set(tool.input_schema["$defs"]["TargetWatch"]["properties"]) == {
+        "target",
+        "desired",
+        "expected",
+        "match",
+    }
 
 
 def test_fetch_mcp_returns_closed_capacity_error():

@@ -17,6 +17,7 @@ from thorondor_contracts import (
     MAP_TOOL_DESCRIPTION,
     SEARCH_TOOL_DESCRIPTION,
     FetchCapability,
+    TargetWatch,
 )
 
 mcp = MCPServer("thorondor")
@@ -129,6 +130,9 @@ async def web_search(
 async def web_fetch(
     urls: list[str],
     capabilities: list[FetchCapability] | None = None,
+    force_refresh: bool | None = None,
+    stale_while_revalidate: bool | None = None,
+    watch: TargetWatch | None = None,
 ) -> dict:
     """Fetch evidence from one to four known URLs.
 
@@ -149,7 +153,13 @@ async def web_fetch(
         The versioned `thorondor.fetch.v1` envelope with bounded per-URL
         results and aggregate terminal-outcome counts.
     """
-    request_data = {"urls": urls, "capabilities": capabilities}
+    request_data = {
+        "urls": urls,
+        "capabilities": capabilities,
+        "force_refresh": force_refresh,
+        "stale_while_revalidate": stale_while_revalidate,
+        "watch": watch.model_dump() if watch is not None else None,
+    }
     payload = {key: value for key, value in request_data.items() if value is not None}
     return await _post(
         "/v1/fetch",

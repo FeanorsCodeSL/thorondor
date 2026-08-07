@@ -1248,6 +1248,27 @@ def test_xml_page_prefers_well_formed_raw_html_over_cleaned_html():
 
     assert page is not None
     assert page.html == raw_html
+    assert page.raw_html == raw_html
+
+
+def test_html_page_preserves_raw_dom_separately_from_cleaned_html():
+    page = _extractor(url_safety=lambda _url: True)._page_from_payload(
+        "https://example.com/product",
+        {
+            "results": [
+                {
+                    "success": True,
+                    "markdown": "Out of stock",
+                    "cleaned_html": "<main>Out of stock</main>",
+                    "html": '<button id="stock">Out of stock</button>',
+                }
+            ]
+        },
+    )
+
+    assert page is not None
+    assert page.html == "<main>Out of stock</main>"
+    assert page.raw_html == '<button id="stock">Out of stock</button>'
 
 
 def test_unsafe_redirect_takes_precedence_over_page_classification():

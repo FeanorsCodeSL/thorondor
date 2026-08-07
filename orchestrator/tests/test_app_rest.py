@@ -10,6 +10,7 @@ import time
 import orchestrator.app as appmod
 from orchestrator import fakes
 import orchestrator.url_safety as url_safety
+from orchestrator.tests.test_page_cache import SequenceFetcher, _cache_deps, _outcome
 from orchestrator.types import DiscoveryOutcome, DiscoveryResult, Page
 
 
@@ -332,7 +333,34 @@ def test_v1_fetch_returns_typed_outcome(monkeypatch):
         "failed": 0,
         "outcomes": [{"outcome": "content", "count": 1}],
         "elapsed_ms": body["stats"]["elapsed_ms"],
+        "cache_fresh": 0,
+        "cache_stale": 0,
+        "cache_revalidated": 0,
+        "cache_bypassed": 1,
     }
+
+
+def test_v1_fetch_exposes_enabled_cache_hit(monkeypatch, tmp_path):
+    runtime_deps = _cache_deps(
+        tmp_path,
+        SequenceFetcher([_outcome("Body", "<main>Body</main>")]),
+    )
+    monkeypatch.setattr(appmod, "deps", runtime_deps)
+
+    client = TestClient(appmod.app)
+    first = client.post(
+        "/v1/fetch",
+        json={"urls": ["https://shop.test/product"]},
+    ).json()
+    cached = client.post(
+        "/v1/fetch",
+        json={"urls": ["https://shop.test/product"]},
+    ).json()
+    client.close()
+
+    assert first["results"][0]["cache"]["reason"] == "miss"
+    assert cached["results"][0]["cache"]["state"] == "fresh"
+    assert cached["results"][0]["change"]["state"] == "same"
 
 
 @pytest.mark.parametrize(

@@ -59,7 +59,11 @@ sequenceDiagram
 
 ### Known-URL fetch path
 
-`POST /v1/fetch` and MCP `web_fetch` skip discovery, chunking, embedding, and reranking. They validate one to four URLs, acquire the shared process and per-host capacity, call Crawl4AI with the requested capability set, validate changed final URLs, clean successful content, and return one bounded typed outcome per input URL. Request, response, content, and route-deadline limits are shared across the REST and MCP surfaces; timeout or caller cancellation cancels pending work.
+`POST /v1/fetch` and MCP `web_fetch` skip discovery, chunking, embedding, and reranking. They validate one to four URLs and always rerun URL safety and current robots policy before consulting the optional page cache. Cache identity preserves host and query distinctions and includes retrieval capabilities plus cleaner version. Credential-bearing URLs, raw HTML without operator opt-in, PDFs, and documents bypass persistence; the fetch contract does not accept caller-supplied headers or cookies.
+
+A fresh record is returned directly. An expired record is refreshed synchronously unless a non-watch request opts into the bounded stale window. Concurrent refreshes for one key coalesce. `force_refresh` always requests a current comparison. The production browser route performs a full Crawl4AI refetch and compares cleaned-content hash plus HTTP status; a separately capable extractor may send validators and reuse the stored record after a `304`. Challenge shells, robots refusals, and fetch failures never replace a valid record; `404` and `410` are retained as bounded tombstones so removal transitions remain observable.
+
+Target watches parse the raw fetched DOM when available without executing caller code, resolve exactly one declared element, project only its normalized text and requested condition attribute, and compare that snapshot independently from the whole-page hash. History is keyed by the complete watch definition, and an unresolved observation retains the last valid comparison baseline while exposing the current failure. The condition becomes true only on an expected-to-desired transition. Diffs normalize line endings and stop before configured input or comparison-work caps. Request, response, content, and route-deadline limits remain shared across REST and MCP; foreground timeout or caller cancellation cancels pending work, while explicitly requested stale refreshes reacquire admission, run under the fetch deadline, and are cancelled during process shutdown.
 
 ### Site map and crawl path
 

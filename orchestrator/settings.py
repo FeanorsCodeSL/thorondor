@@ -157,6 +157,15 @@ class Settings:
     max_sitemap_bytes: int
     max_sitemap_entries: int
     max_sitemap_documents: int
+    page_cache_enabled: bool
+    page_cache_path: str
+    page_cache_ttl_s: int
+    page_cache_stale_s: int
+    page_cache_retention_s: int
+    page_cache_raw_html_enabled: bool
+    page_diff_max_input_lines: int
+    page_diff_max_operations: int
+    page_diff_max_output_lines: int
     search_profiles: dict[str, SearchProfileDefaults]
     url_safety_policy: UrlSafetyPolicy
 
@@ -256,6 +265,25 @@ class Settings:
             raise RuntimeError(
                 "MAX_SITEMAP_DOCUMENTS must not exceed MAX_INTERNAL_FANOUT"
             )
+        if not self.page_cache_path:
+            raise RuntimeError("PAGE_CACHE_PATH must not be blank")
+        for name, value in (
+            ("PAGE_CACHE_TTL_S", self.page_cache_ttl_s),
+            ("PAGE_CACHE_RETENTION_S", self.page_cache_retention_s),
+            ("PAGE_DIFF_MAX_INPUT_LINES", self.page_diff_max_input_lines),
+            ("PAGE_DIFF_MAX_OPERATIONS", self.page_diff_max_operations),
+            ("PAGE_DIFF_MAX_OUTPUT_LINES", self.page_diff_max_output_lines),
+        ):
+            if value < 1:
+                raise RuntimeError(f"{name} must be >= 1")
+        if self.page_cache_stale_s < 0:
+            raise RuntimeError("PAGE_CACHE_STALE_S must be >= 0")
+        if self.page_cache_retention_s < self.page_cache_ttl_s + self.page_cache_stale_s:
+            raise RuntimeError(
+                "PAGE_CACHE_RETENTION_S must cover PAGE_CACHE_TTL_S plus PAGE_CACHE_STALE_S"
+            )
+        if self.page_diff_max_output_lines > 24:
+            raise RuntimeError("PAGE_DIFF_MAX_OUTPUT_LINES must not exceed 24")
 
 
 def load_settings() -> Settings:
@@ -324,6 +352,15 @@ def load_settings() -> Settings:
         max_sitemap_bytes=_int_env("MAX_SITEMAP_BYTES"),
         max_sitemap_entries=_int_env("MAX_SITEMAP_ENTRIES"),
         max_sitemap_documents=_int_env("MAX_SITEMAP_DOCUMENTS"),
+        page_cache_enabled=_bool_env("PAGE_CACHE_ENABLED"),
+        page_cache_path=_required("PAGE_CACHE_PATH"),
+        page_cache_ttl_s=_int_env("PAGE_CACHE_TTL_S"),
+        page_cache_stale_s=_int_env("PAGE_CACHE_STALE_S"),
+        page_cache_retention_s=_int_env("PAGE_CACHE_RETENTION_S"),
+        page_cache_raw_html_enabled=_bool_env("PAGE_CACHE_RAW_HTML_ENABLED"),
+        page_diff_max_input_lines=_int_env("PAGE_DIFF_MAX_INPUT_LINES"),
+        page_diff_max_operations=_int_env("PAGE_DIFF_MAX_OPERATIONS"),
+        page_diff_max_output_lines=_int_env("PAGE_DIFF_MAX_OUTPUT_LINES"),
         search_profiles={
             profile: SearchProfileDefaults(
                 token_budget=_int_env(f"SEARCH_PROFILE_{profile.upper()}_TOKEN_BUDGET"),

@@ -72,6 +72,7 @@ class Page:
     source_id: int | None = None
     original_markdown: str | None = None
     html: str | None = None
+    raw_html: str | None = None
     requested_url: str | None = None
     final_url: str | None = None
     status_code: int | None = None

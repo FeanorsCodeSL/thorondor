@@ -7,8 +7,10 @@ from thorondor_contracts import (
     FETCH_CAPABILITIES,
     MAX_FETCH_URL_BYTES,
     MAX_FETCH_URLS,
+    MAX_TARGET_TEXT_CHARS,
     RESOURCE_POLICY_SUMMARY,
     FetchCapability,
+    TargetWatch,
 )
 
 MAX_QUERY_CHARS = 500
@@ -31,6 +33,8 @@ MAX_SITE_PATTERNS = 32
 MAX_SITE_PATTERN_CHARS = 256
 MAX_SITE_EXTENSIONS = 16
 DEFAULT_SITE_EXTENSIONS = ("", ".htm", ".html", ".pdf")
+MAX_TARGET_ATTRIBUTES = 32
+MAX_DIFF_OUTPUT_LINES = 24
 
 SearchProfile = Literal["quick", "research", "deep"]
 ReasonCode = Literal[
@@ -335,6 +339,42 @@ class SearchResponse(BaseModel):
     schema_version: Literal["thorondor.search.v1"] = "thorondor.search.v1"
 
 
+class TargetWatchSnapshot(BaseModel):
+    text: str = Field(max_length=MAX_TARGET_TEXT_CHARS)
+    attributes: dict[str, str] = Field(default_factory=dict, max_length=MAX_TARGET_ATTRIBUTES)
+
+
+class TargetWatchResult(BaseModel):
+    resolution: Literal["found", "missing", "ambiguous", "unsupported"]
+    state: Literal["new", "same", "changed", "removed"] | None = None
+    previous: TargetWatchSnapshot | None = None
+    current: TargetWatchSnapshot | None = None
+    condition_met: bool = False
+
+
+class FetchCacheInfo(BaseModel):
+    state: Literal["fresh", "stale", "revalidated", "bypass"]
+    reason: str = Field(max_length=64)
+    age_s: float | None = Field(default=None, ge=0)
+
+
+class PageChange(BaseModel):
+    state: Literal["new", "same", "changed", "removed"]
+    previous_sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+    current_sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+    previous_status: int | None = Field(default=None, ge=100, le=599)
+    current_status: int | None = Field(default=None, ge=100, le=599)
+
+
+class PageDiff(BaseModel):
+    truncated: bool
+    previous_lines: int = Field(ge=0)
+    current_lines: int = Field(ge=0)
+    added_lines: list[str] = Field(default_factory=list, max_length=MAX_DIFF_OUTPUT_LINES)
+    removed_lines: list[str] = Field(default_factory=list, max_length=MAX_DIFF_OUTPUT_LINES)
+    changed_sections: list[str] = Field(default_factory=list, max_length=MAX_DIFF_OUTPUT_LINES)
+
+
 class FetchRequest(BaseModel):
     model_config = ConfigDict(json_schema_extra={"x-resource-policy": RESOURCE_POLICY_SUMMARY})
 
@@ -347,6 +387,9 @@ class FetchRequest(BaseModel):
         min_length=1,
         max_length=len(FETCH_CAPABILITIES),
     )
+    force_refresh: bool = False
+    stale_while_revalidate: bool = False
+    watch: TargetWatch | None = None
 
     @model_validator(mode="after")
     def validate_unique_values(self) -> "FetchRequest":
@@ -378,6 +421,12 @@ class FetchResult(BaseModel):
     ] = Field(
         default_factory=dict
     )
+    cache: FetchCacheInfo = Field(
+        default_factory=lambda: FetchCacheInfo(state="bypass", reason="disabled")
+    )
+    change: PageChange | None = None
+    diff: PageDiff | None = None
+    watch: TargetWatchResult | None = None
     provenance: Literal["external_web"] = "external_web"
     trust: Literal["untrusted"] = "untrusted"
 
@@ -388,6 +437,10 @@ class FetchStats(BaseModel):
     failed: int = Field(ge=0)
     outcomes: list[FetchOutcomeCount]
     elapsed_ms: int = Field(ge=0)
+    cache_fresh: int = Field(default=0, ge=0)
+    cache_stale: int = Field(default=0, ge=0)
+    cache_revalidated: int = Field(default=0, ge=0)
+    cache_bypassed: int = Field(default=0, ge=0)
 
 
 class FetchResponse(BaseModel):

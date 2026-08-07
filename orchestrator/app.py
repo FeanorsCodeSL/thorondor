@@ -34,7 +34,8 @@ from .site_pipeline import run_crawl, run_map
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
-    get_deps()
+    runtime_deps = get_deps()
+    await runtime_deps.start()
     async with mcp.session_manager.run():
         try:
             yield

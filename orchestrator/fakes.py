@@ -7,6 +7,7 @@ from .clients.reranker_client import RerankerUnavailable
 from .clients.searxng_client import DiscoveryUnavailable
 from .markdown_cleaner import MarkdownCleanerImpl
 from .outcome_codes import FetchOutcomeCode
+from .page_cache import DisabledPageCache, PageRefreshCoordinator
 from .pipeline import PipelineDeps
 from .politeness import HostPoliteness
 from .prefilter import CandidatePrefilterImpl
@@ -461,6 +462,16 @@ def deps(**overrides) -> PipelineDeps:
         "max_sitemap_bytes": 262144,
         "max_sitemap_entries": 500,
         "max_sitemap_documents": 16,
+        "crawl_respect_robots_txt": True,
+        "page_cache": DisabledPageCache(),
+        "page_refresh": PageRefreshCoordinator(),
+        "page_cache_ttl_s": 300,
+        "page_cache_stale_s": 900,
+        "page_cache_retention_s": 604800,
+        "page_cache_raw_html_enabled": False,
+        "page_diff_max_input_lines": 2000,
+        "page_diff_max_operations": 1_000_000,
+        "page_diff_max_output_lines": 24,
     }
     values.update(overrides)
     return PipelineDeps(**values)

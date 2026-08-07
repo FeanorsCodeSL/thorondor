@@ -3,20 +3,21 @@ import json
 import os
 from typing import Literal
 
+import anyio
 from mcp.server.mcpserver import MCPServer
 from mcp.server.transport_security import TransportSecuritySettings
-
 from thorondor_contracts import (
     CRAWL_TOOL_DESCRIPTION,
     FETCH_TOOL_DESCRIPTION,
     MAP_TOOL_DESCRIPTION,
     SEARCH_TOOL_DESCRIPTION,
+    FetchCapability,
+    TargetWatch,
 )
 
 from .fetch_pipeline import run_fetch
 from .models import (
     CrawlRequest,
-    FetchCapability,
     FetchRequest,
     MapRequest,
     SearchRequest,
@@ -149,6 +150,9 @@ async def web_search(
 async def web_fetch(
     urls: list[str],
     capabilities: list[FetchCapability] | None = None,
+    force_refresh: bool | None = None,
+    stale_while_revalidate: bool | None = None,
+    watch: TargetWatch | None = None,
 ) -> dict:
     """Fetch evidence from one to four known URLs.
 
@@ -169,7 +173,13 @@ async def web_fetch(
         The versioned `thorondor.fetch.v1` envelope with bounded per-URL
         results and aggregate terminal-outcome counts.
     """
-    request_data = {"urls": urls, "capabilities": capabilities}
+    request_data = {
+        "urls": urls,
+        "capabilities": capabilities,
+        "force_refresh": force_refresh,
+        "stale_while_revalidate": stale_while_revalidate,
+        "watch": watch.model_dump() if watch is not None else None,
+    }
     request_data = {key: value for key, value in request_data.items() if value is not None}
     deps = _get_deps()
     if error := _request_limit_error(request_data, deps):
@@ -277,5 +287,14 @@ mcp_http_app = mcp.streamable_http_app(
 )
 
 
+async def _run_stdio() -> None:
+    deps = _get_deps()
+    await deps.start()
+    try:
+        await mcp.run_stdio_async()
+    finally:
+        await deps.aclose()
+
+
 def main() -> None:
-    mcp.run(transport="stdio")
+    anyio.run(_run_stdio)

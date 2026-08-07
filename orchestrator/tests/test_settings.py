@@ -69,6 +69,15 @@ REQUIRED = [
     "MAX_SITEMAP_BYTES",
     "MAX_SITEMAP_ENTRIES",
     "MAX_SITEMAP_DOCUMENTS",
+    "PAGE_CACHE_ENABLED",
+    "PAGE_CACHE_PATH",
+    "PAGE_CACHE_TTL_S",
+    "PAGE_CACHE_STALE_S",
+    "PAGE_CACHE_RETENTION_S",
+    "PAGE_CACHE_RAW_HTML_ENABLED",
+    "PAGE_DIFF_MAX_INPUT_LINES",
+    "PAGE_DIFF_MAX_OPERATIONS",
+    "PAGE_DIFF_MAX_OUTPUT_LINES",
     "SEARCH_PROFILE_QUICK_TOKEN_BUDGET",
     "SEARCH_PROFILE_QUICK_MAX_URLS",
     "SEARCH_PROFILE_QUICK_MAX_PASSAGES",
@@ -152,6 +161,15 @@ def set_required_env(monkeypatch):
         "MAX_SITEMAP_BYTES": "262144",
         "MAX_SITEMAP_ENTRIES": "500",
         "MAX_SITEMAP_DOCUMENTS": "16",
+        "PAGE_CACHE_ENABLED": "false",
+        "PAGE_CACHE_PATH": "/var/lib/thorondor/page-cache.sqlite3",
+        "PAGE_CACHE_TTL_S": "300",
+        "PAGE_CACHE_STALE_S": "900",
+        "PAGE_CACHE_RETENTION_S": "604800",
+        "PAGE_CACHE_RAW_HTML_ENABLED": "false",
+        "PAGE_DIFF_MAX_INPUT_LINES": "2000",
+        "PAGE_DIFF_MAX_OPERATIONS": "1000000",
+        "PAGE_DIFF_MAX_OUTPUT_LINES": "24",
         "SEARCH_PROFILE_QUICK_TOKEN_BUDGET": "2000",
         "SEARCH_PROFILE_QUICK_MAX_URLS": "5",
         "SEARCH_PROFILE_QUICK_MAX_PASSAGES": "5",
@@ -247,6 +265,15 @@ def test_domain_blocklist_parses_explicit_configuration(monkeypatch):
     assert settings.max_sitemap_bytes == 262144
     assert settings.max_sitemap_entries == 500
     assert settings.max_sitemap_documents == 16
+    assert settings.page_cache_enabled is False
+    assert settings.page_cache_path == "/var/lib/thorondor/page-cache.sqlite3"
+    assert settings.page_cache_ttl_s == 300
+    assert settings.page_cache_stale_s == 900
+    assert settings.page_cache_retention_s == 604800
+    assert settings.page_cache_raw_html_enabled is False
+    assert settings.page_diff_max_input_lines == 2000
+    assert settings.page_diff_max_operations == 1000000
+    assert settings.page_diff_max_output_lines == 24
     assert settings.search_profiles["quick"].token_budget == 2000
     assert settings.search_profiles["research"].max_urls == 12
     assert settings.search_profiles["deep"].max_passages == 40
@@ -347,6 +374,15 @@ def test_compose_manifests_forward_resource_policy(path):
         "MAX_SITEMAP_BYTES",
         "MAX_SITEMAP_ENTRIES",
         "MAX_SITEMAP_DOCUMENTS",
+        "PAGE_CACHE_ENABLED",
+        "PAGE_CACHE_PATH",
+        "PAGE_CACHE_TTL_S",
+        "PAGE_CACHE_STALE_S",
+        "PAGE_CACHE_RETENTION_S",
+        "PAGE_CACHE_RAW_HTML_ENABLED",
+        "PAGE_DIFF_MAX_INPUT_LINES",
+        "PAGE_DIFF_MAX_OPERATIONS",
+        "PAGE_DIFF_MAX_OUTPUT_LINES",
     ):
         assert f'{name}: "${{{name}}}"' in manifest
 
@@ -367,6 +403,12 @@ def test_compose_manifests_forward_resource_policy(path):
         ("MAX_SITEMAP_BYTES", "262145", "MAX_SITEMAP_BYTES"),
         ("MAX_SITEMAP_ENTRIES", "501", "MAX_SITEMAP_ENTRIES"),
         ("MAX_SITEMAP_DOCUMENTS", "21", "MAX_SITEMAP_DOCUMENTS"),
+        ("PAGE_CACHE_TTL_S", "0", "PAGE_CACHE_TTL_S"),
+        ("PAGE_CACHE_STALE_S", "-1", "PAGE_CACHE_STALE_S"),
+        ("PAGE_CACHE_RETENTION_S", "1199", "PAGE_CACHE_RETENTION_S"),
+        ("PAGE_DIFF_MAX_INPUT_LINES", "0", "PAGE_DIFF_MAX_INPUT_LINES"),
+        ("PAGE_DIFF_MAX_OPERATIONS", "0", "PAGE_DIFF_MAX_OPERATIONS"),
+        ("PAGE_DIFF_MAX_OUTPUT_LINES", "25", "PAGE_DIFF_MAX_OUTPUT_LINES"),
         ("MAX_URLS", "21", "MAX_URLS must be between 1 and 20"),
         (
             "SEARCH_PROFILE_DEEP_MAX_URLS",

@@ -96,6 +96,31 @@ The wrapper recreates only the Thorondor Compose project. Preserve the external
 network and all volumes; do not use `down -v`, volume pruning, or a whole-host
 Compose shutdown to change Thorondor versions.
 
+The orchestrator mounts the named `thorondor-page-cache` volume at
+`/var/lib/thorondor`; the image pre-creates that directory for its non-root
+runtime user. Persistence remains inactive while `PAGE_CACHE_ENABLED=false`.
+Before enabling it, set the TTL, stale window, absolute retention, raw-HTML
+policy, and diff bounds in the deployment environment. Inspect or maintain the
+database without exposing an unauthenticated administration endpoint:
+
+Keep these shared values in `.env`; the later `.env.llamacpp` and
+`.env.production` overlays intentionally contain only mode-specific settings so
+they cannot silently replace the operator's page-cache policy.
+
+```bash
+docker exec thorondor python -m orchestrator.page_cache \
+  --path /var/lib/thorondor/page-cache.sqlite3 stats
+docker exec thorondor python -m orchestrator.page_cache \
+  --path /var/lib/thorondor/page-cache.sqlite3 clear-url https://example.com/private
+docker exec thorondor python -m orchestrator.page_cache \
+  --path /var/lib/thorondor/page-cache.sqlite3 cleanup
+```
+
+The exact container name may include the Compose project prefix. `clear-url`
+deletes every capability and cleaner variant for that conservative URL identity;
+it does not clear other URLs. Removing the named volume is a separate destructive
+operation and is never part of routine deployment.
+
 Validate the production config with:
 
 ```powershell
@@ -300,8 +325,9 @@ A passing run exits with code 0 and prints each request/response JSON pair. A fa
 ## 7. Upgrading
 
 Before upgrading an existing installation, synchronize its secret-bearing `.env`
-with the tracked environment template. Add the required `CRAWLER_USER_AGENT` and
-`CRAWLER_ROBOTS_USER_AGENT` values, and remove the retired
+with the tracked environment template. Add the required `PAGE_CACHE_*` and
+`PAGE_DIFF_*` values while keeping `PAGE_CACHE_ENABLED=false` unless persistence
+is intended. Add `CRAWLER_USER_AGENT` and `CRAWLER_ROBOTS_USER_AGENT`, and remove the retired
 `CRAWL_VALIDATE_REDIRECTS` and `CRAWL_MAX_PREFLIGHT_REDIRECTS` keys. Promote the
 orchestrator and semantic chunker images together because exact evidence uses the
 `ORCHESTRATOR_MARKDOWN` chunking contract. A mismatched older chunker now causes an

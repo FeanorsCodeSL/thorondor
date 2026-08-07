@@ -6,7 +6,8 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 WORKDIR /app
 COPY orchestrator/requirements.lock ./requirements.lock
 RUN pip install --no-cache-dir -r requirements.lock \
-    && useradd --create-home --uid 10001 --shell /usr/sbin/nologin appuser
+    && useradd --create-home --uid 10001 --shell /usr/sbin/nologin appuser \
+    && install -d -o appuser -g appuser /var/lib/thorondor
 COPY --chown=appuser:appuser orchestrator/ ./orchestrator/
 COPY --chown=appuser:appuser thorondor_contracts.py ./thorondor_contracts.py
 

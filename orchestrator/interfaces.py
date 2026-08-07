@@ -1,6 +1,7 @@
 """Protocols for orchestrator pipeline stages."""
 from typing import Protocol
 
+from .page_cache import CacheRepositoryStats, PageCacheRecord, StoredTargetSnapshot
 from .types import (
     AssembledCitation,
     AssembledPassage,
@@ -44,6 +45,44 @@ class ContentExtractor(Protocol):
         capabilities: frozenset[str],
         include_raw_html: bool,
     ) -> list[FetchStageOutcome]: ...
+
+
+class PageCacheRepository(Protocol):
+    enabled: bool
+
+    async def get(self, cache_key: str) -> PageCacheRecord | None: ...
+
+    async def put(self, record: PageCacheRecord) -> None: ...
+
+    async def put_with_target(
+        self,
+        record: PageCacheRecord,
+        locator_hash: str,
+        snapshot: StoredTargetSnapshot,
+    ) -> None: ...
+
+    async def get_target(
+        self, cache_key: str, locator_hash: str
+    ) -> StoredTargetSnapshot | None: ...
+
+    async def put_target(
+        self,
+        cache_key: str,
+        locator_hash: str,
+        snapshot: StoredTargetSnapshot,
+    ) -> None: ...
+
+    async def delete(self, cache_key: str) -> None: ...
+
+    async def clear_url(self, url_identity: str) -> int: ...
+
+    async def cleanup(self, now: float | None = None) -> int: ...
+
+    async def stats(self) -> CacheRepositoryStats: ...
+
+    async def aclose(self) -> None: ...
+
+    async def start(self) -> None: ...
 
 
 class MarkdownCleaner(Protocol):

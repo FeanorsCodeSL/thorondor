@@ -29,7 +29,7 @@ The serializer removes the fragment, lowercases the scheme, canonicalizes IP lit
 
 It examines each raw `&`-separated query component. The form-decoded name before the first `=` is compared case-insensitively with the `utm_` prefix; matching components are omitted. Every other component is retained without decoding, reordering, collapsing, or re-encoding, including repeated keys, blank values, empty components, and encoded values. It does not remove `gclid`, `ref`, `utmx`, or any other key. No declared canonical URL participates in this serializer, for either same-origin or cross-origin declarations.
 
-`CacheIdentity` is deliberately separate from the display URL. It consists of the dedup key, policy version, retrieval variant, and extraction variant. Browser-rendered and static results, or distinct extraction variants, cannot share an entry merely because they display the same URL. Cleaner version and cache persistence are Phase 4 concerns and are not introduced here.
+`CacheIdentity` is deliberately separate from the display URL. The implemented `thorondor.page-cache.v1` identity lowercases scheme and host, removes fragments and default ports, preserves `www`, path, query order, and repeated query keys, then adds the sorted capability set, browser/HTTP retrieval variant, and cleaner version. Embedding and chunker versions are intentionally absent because the page record stores pre-chunk cleaned content. Browser-rendered and static results, or distinct extraction variants, cannot share an entry merely because they display the same URL.
 
 ## Source-document identity
 

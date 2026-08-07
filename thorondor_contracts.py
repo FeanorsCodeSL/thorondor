@@ -1,5 +1,6 @@
 from typing import Literal
 
+from pydantic import BaseModel, Field, model_validator
 
 MAX_FETCH_URLS = 4
 MAX_FETCH_URL_BYTES = 8192
@@ -22,6 +23,74 @@ FetchCapability = Literal[
     "document",
 ]
 DEFAULT_FETCH_CAPABILITIES = ("markdown", "javascript", "links", "metadata")
+MAX_TARGET_SELECTOR_CHARS = 256
+MAX_TARGET_TEXT_CHARS = 1024
+
+
+class TargetLocator(BaseModel):
+    css: str | None = Field(default=None, min_length=1, max_length=MAX_TARGET_SELECTOR_CHARS)
+    role: Literal[
+        "button",
+        "link",
+        "heading",
+        "checkbox",
+        "radio",
+        "textbox",
+        "combobox",
+        "img",
+    ] | None = None
+    name: str | None = Field(default=None, min_length=1, max_length=MAX_TARGET_TEXT_CHARS)
+    text: str | None = Field(default=None, min_length=1, max_length=MAX_TARGET_TEXT_CHARS)
+    section: str | None = Field(default=None, min_length=1, max_length=MAX_TARGET_TEXT_CHARS)
+
+    @model_validator(mode="after")
+    def validate_locator(self) -> "TargetLocator":
+        modes = sum(value is not None for value in (self.css, self.role, self.text))
+        if modes != 1:
+            raise ValueError("target requires exactly one of css, role, or text")
+        if self.name is not None and self.role is None:
+            raise ValueError("target name requires role")
+        if self.text is not None and self.section is None:
+            raise ValueError("text targets require a named section")
+        if self.css is not None and any(
+            token in self.css for token in (",", ":", ">", "+", "~", "*", " ")
+        ):
+            raise ValueError("css target must be one bounded compound selector")
+        return self
+
+
+class TargetState(BaseModel):
+    text: str | None = Field(default=None, min_length=1, max_length=MAX_TARGET_TEXT_CHARS)
+    attribute: str | None = Field(
+        default=None,
+        min_length=1,
+        max_length=64,
+        pattern=r"^[A-Za-z_:][A-Za-z0-9_.:-]*$",
+    )
+    value: str | None = Field(default=None, max_length=MAX_TARGET_TEXT_CHARS)
+
+    @model_validator(mode="after")
+    def validate_state(self) -> "TargetState":
+        if self.text is not None and (self.attribute is not None or self.value is not None):
+            raise ValueError("target state must use text or attribute/value")
+        if self.text is None and (self.attribute is None or self.value is None):
+            raise ValueError("target state requires text or attribute/value")
+        return self
+
+
+class TargetWatch(BaseModel):
+    target: TargetLocator
+    desired: TargetState
+    expected: TargetState | None = None
+    match: Literal["exact", "contains"] = "exact"
+
+    @model_validator(mode="after")
+    def validate_contains_state(self) -> "TargetWatch":
+        if self.match == "contains":
+            for state in (self.expected, self.desired):
+                if state is not None and state.attribute is not None and not state.value.strip():
+                    raise ValueError("contains attribute states require a non-blank value")
+        return self
 DEFAULT_MAX_REQUEST_BODY_BYTES = 32768
 DEFAULT_MAX_RESPONSE_BODY_BYTES = 2097152
 DEFAULT_SEARCH_ROUTE_DEADLINE_S = 120.0
@@ -52,8 +121,10 @@ SEARCH_TOOL_DESCRIPTION = (
     "include_raw_markdown adds source Markdown when exact source context is needed."
 )
 FETCH_TOOL_DESCRIPTION = (
-    "Fetch bounded evidence from known URLs with per-URL terminal outcomes. "
-    f"{RESOURCE_POLICY_SUMMARY}"
+    "Fetch bounded evidence from known URLs. When the operator enables page caching, "
+    "force_refresh compares a live fetch with the stored page and watch evaluates one "
+    "declared target transition; condition_met is fail-closed. stale_while_revalidate "
+    "is for non-watch reads that may accept bounded stale content."
 )
 MAP_TOOL_DESCRIPTION = (
     "Discover a bounded, robots-aware URL map for one site. Uses sitemaps first and "

@@ -6,7 +6,7 @@ A self-hosted, data-sovereign semantic web-search service for agents — discove
 
 ## What It Is
 
-Thorondor is a local semantic web-search stack designed to replace hosted search-for-agents APIs (Exa, Tavily, and equivalents) with an on-premises, operator-controlled pipeline. It uses SearXNG for multi-engine URL discovery, Crawl4AI for JavaScript-capable page crawling, a first-party `ClusterSemanticChunker` backed by BGE-M3 embeddings for globally-optimal chunk boundaries, and BGE-reranker-v2-m3 to score passages against the original query before assembly. The orchestrator exposes versioned search, known-URL fetch, site-map, and bounded site-crawl contracts through REST and MCP. No persistent corpus, vector store, or implemented cache exists — all content is fetched live, processed, returned, and discarded.
+Thorondor is a local semantic web-search stack designed to replace hosted search-for-agents APIs (Exa, Tavily, and equivalents) with an on-premises, operator-controlled pipeline. It uses SearXNG for multi-engine URL discovery, Crawl4AI for JavaScript-capable page crawling, a first-party `ClusterSemanticChunker` backed by BGE-M3 embeddings for globally-optimal chunk boundaries, and BGE-reranker-v2-m3 to score passages against the original query before assembly. The orchestrator exposes versioned search, known-URL fetch, site-map, and bounded site-crawl contracts through REST and MCP. Search remains live and non-persistent; operators may separately enable a bounded local page cache for known-URL fetches and change monitoring.
 
 ## Architecture Overview
 
@@ -410,6 +410,10 @@ Use `POST /v1/fetch` when the agent already knows one to four target URLs. The r
 
 Terminal outcomes distinguish content from challenge or empty shells, robots refusal, timeout, rate limiting, unsafe redirects or targets, unsupported content or capabilities, oversized content, malformed upstream data, and local processing failures. Returned web content is always marked `provenance: "external_web"` and `trust: "untrusted"`.
 
+When `PAGE_CACHE_ENABLED=true`, each result also reports `cache.state` (`fresh`, `stale`, `revalidated`, or `bypass`), a `new`/`same`/`changed`/`removed` page transition, and bounded changed-section and line summaries when content changed. `force_refresh=true` performs a live comparison. `stale_while_revalidate=true` may return bounded stale content while refreshing only for ordinary non-watch reads. Background refreshes reacquire fetch admission and run under the fetch deadline. Browser-rendered requests use a full refetch and hash comparison because the hardened Crawl4AI API cannot accept request-supplied validators; an extractor that explicitly supports conditional revalidation may reuse the stored document after `304 Not Modified` without extending its absolute retention deadline.
+
+An optional `watch` evaluates one declarative target by a bounded compound CSS selector, role/name, or normalized text inside a named section. It compares text or one declared attribute and sets `condition_met=true` only for a uniquely resolved transition from the expected state to the desired state. Missing, ambiguous, unsupported, fetch-failure, and first-observation cases fail closed. No caller JavaScript or regular expression is accepted. Whole-page changes such as advertisements may still set `change.state=changed`, but cannot satisfy a target watch.
+
 ### POST /v1/map and POST /v1/crawl
 
 Use `POST /v1/map` to discover a deterministic, robots-aware URL set for one site. Use `POST /v1/crawl` for the same bounded traversal plus typed page results. Both resolve the seed first, scope the operation to its effective origin and seed directory by default, combine declared and common sitemaps with bounded breadth-first link traversal, and optionally add SearXNG `site:` discovery. Parent paths and subdomains require explicit opt-in; arbitrary external-origin crawling is not supported.
@@ -592,6 +596,20 @@ All keys must be present in `.env` (leave optional keys blank rather than deleti
 | `MAX_SITEMAP_BYTES` | `262144` | Maximum bytes parsed from one sitemap document. |
 | `MAX_SITEMAP_ENTRIES` | `500` | Maximum retained entries per sitemap document. |
 | `MAX_SITEMAP_DOCUMENTS` | `16` | Maximum sitemap documents fetched per operation. |
+
+### Optional Page Cache and Change Detection
+
+| Variable | Default | Description |
+|---|---|---|
+| `PAGE_CACHE_ENABLED` | `false` | Enable persistent caching for `/v1/fetch` and `web_fetch`; ordinary search is never persisted. |
+| `PAGE_CACHE_PATH` | `/var/lib/thorondor/page-cache.sqlite3` | SQLite file in the dedicated `thorondor-page-cache` volume. |
+| `PAGE_CACHE_TTL_S` | `300` | Fresh lifetime from fetch time; reads never extend it. |
+| `PAGE_CACHE_STALE_S` | `900` | Additional bounded stale-while-revalidate window. |
+| `PAGE_CACHE_RETENTION_S` | `604800` | Absolute page and target-snapshot retention from the full content fetch; reads and `304` responses do not extend it. |
+| `PAGE_CACHE_RAW_HTML_ENABLED` | `false` | Permit raw HTML persistence when the request also asks for `raw_html`. |
+| `PAGE_DIFF_MAX_INPUT_LINES` | `2000` | Per-document line cap before returning summary-only truncated diff metadata. |
+| `PAGE_DIFF_MAX_OPERATIONS` | `1000000` | Maximum old-line × new-line comparison work. |
+| `PAGE_DIFF_MAX_OUTPUT_LINES` | `24` | Maximum added and removed lines returned; hard cap 24. |
 
 ### Markdown Extraction
 

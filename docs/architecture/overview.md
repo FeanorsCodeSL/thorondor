@@ -6,7 +6,7 @@ Thorondor is a self-hosted semantic web-search service designed for agent workfl
 
 The design is built around three hard constraints:
 
-1. **No persistent corpus** — no vector store, no web index. Every search, fetch, map, and crawl is a fresh live request; page content is not cached between calls. Robots snapshots use only a bounded in-memory policy cache.
+1. **No persistent corpus** — no vector store or web index. Search, map, and crawl remain fresh live requests. Known-URL fetches may use an operator-enabled local page cache that is disabled by default, capability-keyed, and retention-bounded. Robots snapshots use a separate bounded in-memory policy cache.
 2. **Citations are first-class** — every passage is linked to the URL and title of its source page. Agents always know where a fact came from.
 3. **Operator-controlled data path** — the operator decides which search engines SearXNG uses, which model endpoints handle embeddings and reranking, and which domains are crawlable. No data leaves the operator's infrastructure unless the operator explicitly configures outbound endpoints.
 
@@ -16,7 +16,7 @@ The design is built around three hard constraints:
 
 The central FastAPI service. It exposes `POST /v1/search`, a backward-compatible `POST /search` alias, `POST /v1/fetch`, `POST /v1/map`, and `POST /v1/crawl`, with matching MCP tools mounted at `/mcp`. All four operation families share process-owned admission, byte, deadline, URL-safety, and Crawl4AI outcome policies. Map and crawl additionally share one deterministic frontier, robots, sitemap, scope, and politeness policy.
 
-The orchestrator is the only service that speaks to all other components. It holds no state between requests other than shared HTTP connection pools (reused for efficiency). On startup it validates every required environment variable through a strict settings loader; missing or blank required keys raise `RuntimeError` and prevent the process from starting.
+The orchestrator is the only service that speaks to all other components. It holds shared HTTP connection pools and robots snapshots, plus an optional SQLite page cache for known-URL fetches. On startup it validates every required environment variable through a strict settings loader; missing or blank required keys raise `RuntimeError` and prevent the process from starting.
 
 ### Semantic Chunking Service (`semantic-chunking-service/`)
 
@@ -120,8 +120,9 @@ The llama.cpp build `b10276` image is pinned to a specific SHA (`bde659bf...`) t
 
 ## 6. Intentionally Out of Scope
 
-- **Persistent corpus** — no web index, no vector store. The design is stateless between requests.
-- **Implemented page/result cache** — there is no page or result cache. The architecture has a cache seam defined in the interface layer but it is not instantiated in the current deployment. The robots policy cache is process-local, bounded to 24 hours, and stores no page content.
+- **Persistent corpus** — no web index or vector store. Optional known-URL page records are not a searchable corpus and are never used by ordinary search.
+- **Search, map, or crawl result cache** — only `/v1/fetch` and `web_fetch` can use the optional page cache. Search, map, and bounded crawl remain live.
+- **Scheduler or autonomous actions** — Thorondor evaluates a target watch only when called. Tengwar or another agent runtime owns schedules, notifications, and follow-up actions.
 - **Authentication on the orchestrator** — the REST and MCP endpoints have no built-in auth. Operators should place a reverse proxy with TLS and access control in front of the orchestrator port.
 - **Rate limiting** — not implemented in the service itself; add a reverse proxy if needed.
 - **Crawled content sandboxing** — beyond Crawl4AI's non-root, read-only container posture and built-in egress controls, crawled content is not sandboxed at the OS level. The orchestrator treats all crawled text as untrusted.

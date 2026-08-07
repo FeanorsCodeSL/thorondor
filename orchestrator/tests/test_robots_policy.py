@@ -1,4 +1,4 @@
-from orchestrator.robots_policy import RobotsCache, RobotsSnapshot, parse_robots
+from orchestrator.robots_policy import RobotsCache, RobotsSnapshot, parse_robots, robots_body
 
 
 def test_robots_merges_matching_groups_and_uses_longest_allow_tie():
@@ -167,6 +167,40 @@ def test_robots_cache_is_absolute_and_supplies_valid_copy_on_failure():
         cached=valid,
     )
     assert fallback is valid
+
+
+def test_robots_body_prefers_unescaped_plain_text_html():
+    body = robots_body(
+        "User-agent: \\*\nDisallow: /private",
+        "<html><body><pre>User-agent: *\nDisallow: /private</pre></body></html>",
+        "text/plain; charset=utf-8",
+    )
+
+    assert body == "User-agent: *\nDisallow: /private"
+
+
+def test_robots_cache_bounds_unavailable_and_unreachable_results():
+    cache = RobotsCache(ttl_s=86400)
+    unavailable = RobotsSnapshot.from_http(
+        origin="https://missing.test",
+        user_agent="ThorondorBot",
+        status_code=404,
+        body="",
+        fetched_at=100,
+    )
+    unreachable = RobotsSnapshot.from_http(
+        origin="https://down.test",
+        user_agent="ThorondorBot",
+        status_code=503,
+        body="",
+        fetched_at=100,
+    )
+    cache.put(unavailable)
+    cache.put(unreachable)
+
+    assert cache.get("https://missing.test", now=200) is unavailable
+    assert cache.get("https://down.test", now=159) is unreachable
+    assert cache.get("https://down.test", now=160) is None
 
 
 def test_robots_rejects_oversized_body():

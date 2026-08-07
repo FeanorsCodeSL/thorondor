@@ -417,28 +417,69 @@ Do not adopt:
 - Accepted under the user's instruction to commit and push after the external review, canonical Tengwar deployment, and successful live REST and MCP verification.
 
 ## Phase 4 — Opt-in page cache, revalidation, and change detection
-**Status:** pending
+**Status:** in_progress
 **Kind:** logic
 
 ### Tasks
 
 - [ ] Introduce a cache repository protocol and an orchestrator-owned, operator-enabled local persistent adapter. Keep persistence disabled by default and use an explicit volume and retention configuration when enabled.
-- [ ] Key page entries by conservative URL identity plus retrieval/extraction variant, cleaner version, and content capability. Bypass cache for authorization/cookie/custom-header requests and any capability whose output is not represented in the key. Keep the page cache independent of embedding/chunker versions unless a separately designed chunk cache is added.
+- [ ] Key page entries by conservative URL identity plus retrieval/extraction variant, cleaner version, and content capability. Bypass credential-bearing URLs and any capability whose output is not represented in the key. The fetch contract does not accept caller-supplied headers or cookies. Keep the page cache independent of embedding/chunker versions unless a separately designed chunk cache is added.
 - [ ] Store the minimum record: requested/final URL, cleaned Markdown, source-document hash, title/metadata/links, status, content type, retrieval method, validators, fetched/expiry timestamps, and cleaner version. Raw HTML requires a separate opt-in.
 - [ ] Do not collapse `www` into the apex host, cache challenge shells, persist robots refusals as content, or let a cache hit bypass URL safety and current request policy.
 - [ ] Add `force_refresh`, bounded stale-while-revalidate, request coalescing, and caller-visible `fresh`, `stale`, `revalidated`, and `bypass` states. Use `If-None-Match`/`If-Modified-Since` only on a backend that can send them; a `304` reuses the prior document while updating freshness metadata, while incompatible JavaScript routes perform a full bounded refetch and hash comparison.
 - [ ] Detect `new`, `same`, `changed`, and `removed` using both document hash and HTTP status. Treat transitions such as `200` to `404` as changes and ship these flags before diff summaries.
-- [ ] Add cache stats, scoped clear, retention cleanup, schema migration, corruption recovery, and observable hit/miss/bypass/stale/revalidated reasons.
+- [ ] Add an optional bounded target-watch contract for specific changes rather than treating every page mutation as actionable. Let an agent identify one target using declarative element role/name, bounded CSS selector, or normalized text within a named section, then define expected and desired text/attribute states. Persist and compare only the normalized target snapshot for the target result, while retaining the independent whole-page change flag. Return explicit `found`, `missing`, and `ambiguous` target resolution plus `new`, `same`, `changed`, and `removed` target states and a separate `condition_met` flag. Never execute caller-provided JavaScript or regular expressions.
+- [ ] Keep off-target dynamic content such as advertisements, recommendations, timestamps, and analytics UI from satisfying a target watch. A whole-page hash may still report `changed`, but a watch condition may become true only when the uniquely resolved target transitions to its declared desired state. Fetch, extraction, missing-target, ambiguous-target, and unsupported-capability failures must fail closed and never trigger an action.
+- [ ] Add cache stats, scoped clear, deadline-driven retention cleanup, schema-version initialization and future-version rejection, corruption recovery, and observable hit/miss/bypass/stale/revalidated reasons.
 - [ ] Produce bounded section/line diff summaries only after cache, revalidation, and change flags are stable. Cap both input and algorithmic work; above the cap, return a summary-only `truncated` result instead of running unbounded quadratic comparison.
 - [ ] Defer semantic vectors and scheduled watch jobs until page-cache lifecycle, retention, and change detection are proven.
 
 ### Verification
 
-- [ ] Add tests for cache identity variants, custom-header bypass, page-cache independence from chunker changes, `www` separation, repeated query keys, cleaner-version changes, TTL boundaries, stale windows, force refresh, and concurrent refresh coalescing.
-- [ ] Add tests for capable/incompatible validator routes, `ETag`, `Last-Modified`, `304`, full-refetch fallback, changed validators, status-only changes, caller-visible freshness state, challenge/error non-caching, corruption, migrations, retention, and raw-HTML opt-in.
+- [ ] Add tests for cache identity variants, credential-bearing URL bypass, page-cache independence from chunker changes, `www` separation, repeated query keys, cleaner-version changes, TTL boundaries, stale windows, force refresh, and concurrent refresh coalescing.
+- [ ] Add tests for capable/incompatible validator routes, `ETag`, `Last-Modified`, `304`, full-refetch fallback, changed validators, status-only changes, caller-visible freshness state, challenge/error non-caching, corruption, schema-version compatibility, retention, and raw-HTML opt-in.
+- [ ] Add target-watch tests where advertisements and timestamps change outside the target, the target remains unchanged, availability transitions from out-of-stock to in-stock, desired text appears without the target resolving, selectors resolve zero or multiple elements, the target disappears, mixed inline text preserves DOM order, incompatible watches cannot share history, transient resolution failures retain the last valid baseline, and fetch/extraction failures must not satisfy the condition.
 - [ ] Add diff tests for empty/new/removed content, CRLF, large documents, truncation, and complexity caps.
 - [ ] Add a restart integration test using a temporary persistent volume and verify that default search writes nothing when cache is disabled.
 - [ ] Add and verify a deployment privacy/retention checklist.
+
+### Implementation report — 2026-08-07
+
+- Added an orchestrator-owned SQLite page-cache repository behind a protocol, disabled by default and mounted on a dedicated named volume. Conservative keys preserve `www`, query order, and repeated keys while separating capabilities, retrieval variant, and cleaner version; embedding and chunker versions do not affect page identity.
+- Known-URL fetch now reports bounded cache freshness, `new`/`same`/`changed`/`removed` page state, and capped changed-section and line summaries. It supports force refresh, explicit non-watch stale-while-revalidate, per-key refresh coalescing, absolute retention, startup/deadline-driven/on-access cleanup, schema-version initialization and future-version rejection, invalid-row deletion, corrupt-database quarantine, repository stats, and URL-scoped local clearing.
+- Browser-rendered Crawl4AI requests perform full refetch and cleaned-hash/status comparison. A feature-detected extractor revalidation seam can send `ETag`/`Last-Modified` and reuse the stored document after `304`; the current hardened Crawl4AI route does not receive request-supplied headers.
+- Cache access reruns URL safety and current robots policy. Credential-bearing URLs, unrepresented document/PDF capabilities, raw HTML without operator opt-in, challenge shells, robots refusals, and ordinary failures bypass or do not update persistence. The network contract does not accept caller-supplied headers or cookies. `404`/`410` tombstones retain removal state without treating an error body as page content.
+- Added target watches with bounded compound CSS, role/name, and normalized-text-within-section locators. Watches compare only normalized target text and declared condition attributes, require one unique target, trigger only on an expected-to-desired transition, and fail closed for first observation, missing/ambiguous targets, unsupported HTML, and fetch failures. Scheduling and actions remain outside Thorondor.
+- Updated REST, in-process MCP, stdio MCP, all tracked environment templates, all Compose variants, the non-root image volume path, README, architecture, configuration, security, deployment, and URL-identity documentation. Added a local maintenance CLI for stats, scoped clearing, and retention cleanup without an unauthenticated administration endpoint.
+
+### Verification report — 2026-08-07
+
+- The separate verification pass found and fixed false page changes on ordinary refresh failures, overly broad 404/410 tombstone caching, stale and non-atomic target snapshots, cached-final-URL policy bypass, credential-bearing URL cache collisions, missing internal Markdown for non-Markdown response variants, unbounded target nesting, case-sensitive attribute lookup, a rejected stale-refresh coroutine, stdio/in-process MCP schema drift, missing section summaries, template drift, stale REST expectations, and timing-sensitive refresh-coalescing tests.
+- Focused Phase 4 verification passed 33 tests. The full semantic-chunking/orchestrator suite passed 662 tests, and the Python 3.13 CLI suite passed 83 tests.
+- Focused Phase 4 modules passed Ruff and Python compilation. `PYTHON=.venv/bin/python bash scripts/check-release-guard.sh` and `git diff --check` passed; the release guard rendered and validated the managed Compose variants and tracked CLI assets.
+- No Claude review was launched.
+
+### External Opus review remediation — 2026-08-07
+
+- Claude Code 2.1.224 completed a read-only `claude-opus-5` review at `xhigh` effort over the complete uncommitted Phase 4 tree. It made no changes and ran no commands beyond read-only repository inspection.
+- The independently verified findings were remediated: robots text uses the unescaped source body and same-origin lookups coalesce; unavailable and transient-unreachable policies have bounded caching; watch identity includes the complete condition; raw DOM and mixed inline text are preserved; unresolved targets retain their last valid baseline; blank `contains` attribute states fail validation; absolute retention is enforced on access and by a runtime deadline worker; `304` does not extend retention; background refresh reacquires admission, has a deadline, and logs failures; and later environment overlays no longer replace the base cache policy.
+- Plan and architecture claims now match the implemented header-free fetch contract, schema-version behavior, retention lifecycle, and environment precedence. Focused tests cover the reviewed failure scenarios.
+
+### Post-remediation verification — 2026-08-07
+
+- The separate verification pass found one additional lifecycle gap: the REST lifespan started deadline-driven retention cleanup, but the direct stdio MCP entry point did not. The stdio runtime now starts and closes the page cache explicitly, with focused lifecycle coverage.
+- Focused cache, watch, robots, diff, Crawl4AI, REST, and MCP verification passed 213 tests.
+- The full semantic-chunking/orchestrator suite passed 686 tests. The Python 3.13 CLI suite passed 83 tests.
+- Focused `F`, `B`, and async Ruff checks, Python compilation, `git diff --check`, and `PYTHON=.venv/bin/python bash scripts/check-release-guard.sh` passed. No documentation link-check script exists in this repository, so that check was unavailable rather than run.
+- No service was built or redeployed in this remediation turn. The earlier Tengwar live evidence above predates these fixes.
+
+### Live Tengwar deployment verification — 2026-08-07
+
+- Tengwar's canonical `just thorondor-deploy` recipe built orchestrator image `sha256:cfba580e5f8132eed7abb0b608ff9d12a22cd772d9883dff5324f6f604c9366e`, recreated only the Thorondor orchestrator, preserved the existing dependency containers and volumes, and reported Thorondor healthy on `tengwar-shared`.
+- Runtime inspection confirmed the dedicated `thorondor-page-cache` volume is mounted at `/var/lib/thorondor` and the nine Phase 4 limits are present. Persistence remains explicitly disabled by default with `PAGE_CACHE_ENABLED=false`.
+- A real `curl` request from Tengwar's backend to `/v1/fetch` returned HTTP 200 content for `https://example.com/`, `cache.state=bypass`, `cache.reason=disabled`, and a requested watch failed closed with `resolution=unsupported` and `condition_met=false`.
+- A real MCP client listed `web_search`, `web_fetch`, `web_map`, and `web_crawl`; `web_fetch` advertised the typed `TargetWatch` reference and returned `is_error=false` with the same fail-closed disabled-cache contract.
+- A real shared-network `/v1/search` request crawled three public pages, returned three citation-bearing passages across two sources, and reported `embedding_degraded=false`, `reranked=true`, and five chunks reranked by Tengwar's existing model services.
 
 ## Phase 5 — Durable asynchronous crawl jobs
 **Status:** pending
