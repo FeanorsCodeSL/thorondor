@@ -1,4 +1,5 @@
 import anyio
+import asyncio
 import json
 import httpx
 import pytest
@@ -243,3 +244,106 @@ def test_request_id_is_forwarded(monkeypatch):
         reset_request_id(token)
 
     assert seen["request_id"] == "req-456"
+
+
+def test_chunking_uses_bounded_concurrency_and_preserves_page_order():
+    active = 0
+    peak = 0
+
+    async def handler(req):
+        nonlocal active, peak
+        active += 1
+        peak = max(peak, active)
+        payload = json.loads(req.content)
+        await anyio.sleep(0.01 if payload["metadata"]["source_url"].endswith("a") else 0)
+        active -= 1
+        return httpx.Response(
+            200,
+            json={
+                "chunks": [
+                    {
+                        "text": payload["text"],
+                        "token_count": 1,
+                        "position": 0,
+                    }
+                ]
+            },
+        )
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    chunker = ChunkerClient(
+        "http://chunker:8000",
+        client=client,
+        concurrency=2,
+        timeout_s=1,
+    )
+
+    chunks = anyio.run(
+        chunker.chunk,
+        [Page("https://a.test/a", "A", "a"), Page("https://b.test/b", "B", "b")],
+    )
+
+    assert peak == 2
+    assert [chunk.text for chunk in chunks] == ["a", "b"]
+    anyio.run(client.aclose)
+
+
+def test_chunk_stage_timeout_cancels_pending_work():
+    cancelled = asyncio.Event()
+
+    async def handler(_req):
+        try:
+            await asyncio.Event().wait()
+        finally:
+            cancelled.set()
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    chunker = ChunkerClient(
+        "http://chunker:8000",
+        client=client,
+        concurrency=1,
+        timeout_s=0.01,
+    )
+
+    with pytest.raises(ChunkerUnavailable) as exc_info:
+        anyio.run(chunker.chunk, [Page("https://a.test", "A", "a")])
+
+    assert exc_info.value.reason == "timeout"
+    assert cancelled.is_set()
+    anyio.run(client.aclose)
+
+
+def test_chunk_concurrency_is_shared_across_calls():
+    active = 0
+    peak = 0
+
+    async def handler(req):
+        nonlocal active, peak
+        active += 1
+        peak = max(peak, active)
+        await anyio.sleep(0.01)
+        active -= 1
+        payload = json.loads(req.content)
+        return httpx.Response(
+            200,
+            json={"chunks": [{"text": payload["text"], "token_count": 1}]},
+        )
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    chunker = ChunkerClient(
+        "http://chunker:8000",
+        client=client,
+        concurrency=1,
+        timeout_s=1,
+    )
+
+    async def exercise():
+        await asyncio.gather(
+            chunker.chunk([Page("https://a.test", "A", "a")]),
+            chunker.chunk([Page("https://b.test", "B", "b")]),
+        )
+
+    anyio.run(exercise)
+
+    assert peak == 1
+    anyio.run(client.aclose)

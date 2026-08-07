@@ -45,6 +45,19 @@ REQUIRED = [
     "MARKDOWN_EXTRACTOR_INCLUDE_TABLES",
     "MARKDOWN_EXTRACTOR_DEDUPLICATE",
     "MAX_SUBQUERIES",
+    "MAX_REQUEST_BODY_BYTES",
+    "MAX_RESPONSE_BODY_BYTES",
+    "SEARCH_ROUTE_DEADLINE_S",
+    "FETCH_ROUTE_DEADLINE_S",
+    "DISCOVERY_TIMEOUT_S",
+    "CHUNK_TIMEOUT_S",
+    "MAX_INFLIGHT_SEARCHES",
+    "MAX_INFLIGHT_FETCHES",
+    "ADMISSION_WAIT_S",
+    "ADMISSION_RETRY_AFTER_S",
+    "MAX_INTERNAL_FANOUT",
+    "MAX_CONTENT_BYTES",
+    "CHUNK_CONCURRENCY",
     "SEARCH_PROFILE_QUICK_TOKEN_BUDGET",
     "SEARCH_PROFILE_QUICK_MAX_URLS",
     "SEARCH_PROFILE_QUICK_MAX_PASSAGES",
@@ -103,6 +116,19 @@ def set_required_env(monkeypatch):
         "MARKDOWN_EXTRACTOR_INCLUDE_TABLES": "true",
         "MARKDOWN_EXTRACTOR_DEDUPLICATE": "true",
         "MAX_SUBQUERIES": "3",
+        "MAX_REQUEST_BODY_BYTES": "32768",
+        "MAX_RESPONSE_BODY_BYTES": "2097152",
+        "SEARCH_ROUTE_DEADLINE_S": "120",
+        "FETCH_ROUTE_DEADLINE_S": "60",
+        "DISCOVERY_TIMEOUT_S": "20",
+        "CHUNK_TIMEOUT_S": "45",
+        "MAX_INFLIGHT_SEARCHES": "4",
+        "MAX_INFLIGHT_FETCHES": "8",
+        "ADMISSION_WAIT_S": "0.05",
+        "ADMISSION_RETRY_AFTER_S": "1",
+        "MAX_INTERNAL_FANOUT": "20",
+        "MAX_CONTENT_BYTES": "262144",
+        "CHUNK_CONCURRENCY": "4",
         "SEARCH_PROFILE_QUICK_TOKEN_BUDGET": "2000",
         "SEARCH_PROFILE_QUICK_MAX_URLS": "5",
         "SEARCH_PROFILE_QUICK_MAX_PASSAGES": "5",
@@ -173,6 +199,19 @@ def test_domain_blocklist_parses_explicit_configuration(monkeypatch):
     assert settings.markdown_extractor_include_tables is True
     assert settings.markdown_extractor_deduplicate is True
     assert settings.max_subqueries == 3
+    assert settings.max_request_body_bytes == 32768
+    assert settings.max_response_body_bytes == 2097152
+    assert settings.search_route_deadline_s == 120
+    assert settings.fetch_route_deadline_s == 60
+    assert settings.discovery_timeout_s == 20
+    assert settings.chunk_timeout_s == 45
+    assert settings.max_inflight_searches == 4
+    assert settings.max_inflight_fetches == 8
+    assert settings.admission_wait_s == 0.05
+    assert settings.admission_retry_after_s == 1
+    assert settings.max_internal_fanout == 20
+    assert settings.max_content_bytes == 262144
+    assert settings.chunk_concurrency == 4
     assert settings.search_profiles["quick"].token_budget == 2000
     assert settings.search_profiles["research"].max_urls == 12
     assert settings.search_profiles["deep"].max_passages == 40
@@ -234,6 +273,59 @@ def test_compose_manifests_forward_evidence_quality_setting(path):
     manifest = Path(path).read_text(encoding="utf-8")
 
     assert 'EVIDENCE_QUALITY_ENABLED: "${EVIDENCE_QUALITY_ENABLED}"' in manifest
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "docker-compose.yml",
+        "docker-compose.production.yml",
+        "thorondor_cli/assets/docker-compose.yml",
+    ],
+)
+def test_compose_manifests_forward_resource_policy(path):
+    manifest = Path(path).read_text(encoding="utf-8")
+
+    for name in (
+        "MAX_REQUEST_BODY_BYTES",
+        "MAX_RESPONSE_BODY_BYTES",
+        "SEARCH_ROUTE_DEADLINE_S",
+        "FETCH_ROUTE_DEADLINE_S",
+        "DISCOVERY_TIMEOUT_S",
+        "CHUNK_TIMEOUT_S",
+        "MAX_INFLIGHT_SEARCHES",
+        "MAX_INFLIGHT_FETCHES",
+        "ADMISSION_WAIT_S",
+        "ADMISSION_RETRY_AFTER_S",
+        "MAX_INTERNAL_FANOUT",
+        "MAX_CONTENT_BYTES",
+        "CHUNK_CONCURRENCY",
+    ):
+        assert f'{name}: "${{{name}}}"' in manifest
+
+
+@pytest.mark.parametrize(
+    ("name", "value", "match"),
+    [
+        ("MAX_REQUEST_BODY_BYTES", "0", "max_request_body_bytes"),
+        ("SEARCH_ROUTE_DEADLINE_S", "0", "search_route_deadline_s"),
+        ("ADMISSION_WAIT_S", "-1", "admission_wait_s"),
+        ("MAX_CONTENT_BYTES", "3000000", "max_content_bytes"),
+        ("MAX_INTERNAL_FANOUT", "5", "MAX_INTERNAL_FANOUT"),
+        ("MAX_URLS", "21", "MAX_URLS must be between 1 and 20"),
+        (
+            "SEARCH_PROFILE_DEEP_MAX_URLS",
+            "21",
+            "search profile max_urls must be <= 20",
+        ),
+    ],
+)
+def test_invalid_resource_policy_rejected(monkeypatch, name, value, match):
+    set_required_env(monkeypatch)
+    monkeypatch.setenv(name, value)
+
+    with pytest.raises(RuntimeError, match=match):
+        load_settings()
 
 
 @pytest.mark.parametrize(

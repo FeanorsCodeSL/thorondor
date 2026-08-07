@@ -291,6 +291,154 @@
       "title": "EvidenceSpan",
       "type": "object"
     },
+    "FetchDiagnostic": {
+      "properties": {
+        "content_type": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Content Type"
+        },
+        "elapsed_ms": {
+          "minimum": 0,
+          "title": "Elapsed Ms",
+          "type": "integer"
+        },
+        "final_url": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Final Url"
+        },
+        "outcome": {
+          "enum": [
+            "content",
+            "empty_shell",
+            "challenge",
+            "robots_refused",
+            "upstream_timeout",
+            "deadline_cancelled",
+            "unsafe_redirect",
+            "unsupported_content",
+            "unsupported_capability",
+            "content_too_large",
+            "extraction_empty",
+            "malformed_upstream_response",
+            "upstream_failure",
+            "rate_limited",
+            "capacity_unavailable",
+            "unsafe_target",
+            "local_processing_failure"
+          ],
+          "title": "Outcome",
+          "type": "string"
+        },
+        "requested_url": {
+          "title": "Requested Url",
+          "type": "string"
+        },
+        "retrieval_method": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Retrieval Method"
+        },
+        "retryable": {
+          "title": "Retryable",
+          "type": "boolean"
+        },
+        "status_code": {
+          "anyOf": [
+            {
+              "maximum": 599,
+              "minimum": 100,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Status Code"
+        },
+        "title": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Title"
+        }
+      },
+      "required": [
+        "requested_url",
+        "outcome",
+        "retryable",
+        "elapsed_ms"
+      ],
+      "title": "FetchDiagnostic",
+      "type": "object"
+    },
+    "FetchOutcomeCount": {
+      "properties": {
+        "count": {
+          "minimum": 1,
+          "title": "Count",
+          "type": "integer"
+        },
+        "outcome": {
+          "enum": [
+            "content",
+            "empty_shell",
+            "challenge",
+            "robots_refused",
+            "upstream_timeout",
+            "deadline_cancelled",
+            "unsafe_redirect",
+            "unsupported_content",
+            "unsupported_capability",
+            "content_too_large",
+            "extraction_empty",
+            "malformed_upstream_response",
+            "upstream_failure",
+            "rate_limited",
+            "capacity_unavailable",
+            "unsafe_target",
+            "local_processing_failure"
+          ],
+          "title": "Outcome",
+          "type": "string"
+        }
+      },
+      "required": [
+        "outcome",
+        "count"
+      ],
+      "title": "FetchOutcomeCount",
+      "type": "object"
+    },
     "MetadataConflict": {
       "properties": {
         "candidates": {
@@ -643,6 +791,22 @@
           ],
           "default": null,
           "title": "Evidence Quality Strategy"
+        },
+        "fetch_outcome_counts": {
+          "items": {
+            "$ref": "#/$defs/FetchOutcomeCount"
+          },
+          "maxItems": 16,
+          "title": "Fetch Outcome Counts",
+          "type": "array"
+        },
+        "fetch_outcomes": {
+          "items": {
+            "$ref": "#/$defs/FetchDiagnostic"
+          },
+          "maxItems": 20,
+          "title": "Fetch Outcomes",
+          "type": "array"
         },
         "markdown_blocks_dropped": {
           "default": 0,

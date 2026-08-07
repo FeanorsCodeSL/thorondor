@@ -57,6 +57,10 @@ sequenceDiagram
     Orchestrator-->>Client: SearchResponse {passages, citations, stats}
 ```
 
+### Known-URL fetch path
+
+`POST /v1/fetch` and MCP `web_fetch` skip discovery, chunking, embedding, and reranking. They validate one to four URLs, acquire the shared process and per-host capacity, call Crawl4AI with the requested capability set, validate changed final URLs, clean successful content, and return one bounded typed outcome per input URL. Request, response, content, and route-deadline limits are shared across the REST and MCP surfaces; timeout or caller cancellation cancels pending work.
+
 ## 2. Orchestrator Internal State Machine
 
 This diagram shows the sequential stages inside `run_search` in `orchestrator/pipeline.py`, including the early-exit branches that produce empty 200 responses.
@@ -206,7 +210,7 @@ sequenceDiagram
 
 ## 5. MCP Tool Invocation Flow
 
-The MCP `web_search` tool is a thin wrapper over the same `run_search` pipeline. No separate code path or logic exists between the REST and MCP surfaces.
+The MCP `web_search` tool is a thin wrapper over the same `run_search` pipeline. MCP `web_fetch` similarly wraps the same `run_fetch` pipeline used by `POST /v1/fetch`. No separate production pipeline exists between the REST and MCP surfaces.
 
 ```mermaid
 sequenceDiagram

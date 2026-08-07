@@ -1,17 +1,26 @@
 """Crawl4AI extraction client."""
 import asyncio
-from collections import defaultdict
 import json
 import logging
 import math
+import re
+import time
 from collections.abc import Awaitable, Callable
 from inspect import isawaitable
 from urllib.parse import urlparse
+from weakref import WeakValueDictionary
 
 import httpx
 
 from ..observability import redact_url, request_id_headers
-from ..types import JsonValue, Page
+from ..outcome_codes import FetchOutcomeCode
+from ..types import FetchStageOutcome, JsonValue, Page
+from thorondor_contracts import (
+    DEFAULT_ADMISSION_WAIT_S,
+    DEFAULT_MAX_CONTENT_BYTES,
+    DEFAULT_MAX_RESPONSE_BODY_BYTES,
+    FETCH_CAPABILITIES,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -23,6 +32,20 @@ MAX_METADATA_BYTES = 4096
 MAX_LINK_ITEMS = 64
 MAX_LINK_BYTES = 8192
 MAX_JSON_DEPTH = 8
+CHALLENGE_MARKERS = (
+    "captcha",
+    "cf-chl",
+    "challenge-platform",
+    "checking your connection before continuing",
+    "please verify your browser",
+    "verify you are human",
+    "just a moment",
+)
+_SCRIPT_STYLE = re.compile(
+    r"<(script|style|noscript)\b[^>]*>.*?</\1>",
+    re.IGNORECASE | re.DOTALL,
+)
+_HTML_TAG = re.compile(r"<[^>]+>")
 
 
 def _json_size(value: object) -> int | None:
@@ -147,6 +170,8 @@ def _bounded_json_mapping(value: object, max_items: int, max_bytes: int) -> dict
 
 
 class Crawl4aiExtractor:
+    supported_capabilities = frozenset(FETCH_CAPABILITIES)
+
     def __init__(
         self,
         base_url: str,
@@ -158,6 +183,9 @@ class Crawl4aiExtractor:
         url_safety: Callable[[str], bool | Awaitable[bool]],
         client: httpx.AsyncClient | None = None,
         api_key: str | None = None,
+        max_content_bytes: int = DEFAULT_MAX_CONTENT_BYTES,
+        max_response_body_bytes: int = DEFAULT_MAX_RESPONSE_BODY_BYTES,
+        admission_wait_s: float = DEFAULT_ADMISSION_WAIT_S,
     ):
         if concurrency < 1:
             raise ValueError("concurrency must be >= 1")
@@ -167,6 +195,12 @@ class Crawl4aiExtractor:
             raise ValueError("per_host_concurrency must be >= 1")
         if not crawler_user_agent:
             raise ValueError("crawler_user_agent must not be blank")
+        if max_content_bytes < 1:
+            raise ValueError("max_content_bytes must be >= 1")
+        if max_response_body_bytes < max_content_bytes:
+            raise ValueError("max_response_body_bytes must be >= max_content_bytes")
+        if admission_wait_s < 0:
+            raise ValueError("admission_wait_s must be >= 0")
         self.base_url = base_url.rstrip("/")
         self.concurrency = concurrency
         self.timeout_s = timeout_s
@@ -175,6 +209,13 @@ class Crawl4aiExtractor:
         self.api_key = api_key
         self.crawler_user_agent = crawler_user_agent
         self.url_safety = url_safety
+        self.max_content_bytes = max_content_bytes
+        self.max_response_body_bytes = max_response_body_bytes
+        self.admission_wait_s = admission_wait_s
+        self._global_semaphore = asyncio.Semaphore(concurrency)
+        self._host_semaphores: WeakValueDictionary[str, asyncio.Semaphore] = (
+            WeakValueDictionary()
+        )
         timeout = httpx.Timeout(
             self.timeout_s,
             connect=min(5.0, self.timeout_s),
@@ -193,15 +234,16 @@ class Crawl4aiExtractor:
             await self._client.aclose()
 
     async def extract(self, urls: list[str]) -> list[Page]:
-        semaphore = asyncio.Semaphore(self.concurrency)
-        host_semaphores: dict[str, asyncio.Semaphore] = defaultdict(
-            lambda: asyncio.Semaphore(self.per_host_concurrency)
+        outcomes = await self.fetch(
+            urls,
+            self.supported_capabilities,
+            False,
         )
-        tasks = [
-            asyncio.create_task(self._extract_one(self._client, url, semaphore, host_semaphores))
-            for url in urls
+        return [
+            outcome.page
+            for outcome in outcomes
+            if outcome.code == FetchOutcomeCode.CONTENT and outcome.page is not None
         ]
-        return await self._collect_pages(tasks)
 
     def _crawl_payload(self, url: str) -> dict:
         return {
@@ -219,6 +261,357 @@ class Crawl4aiExtractor:
                 },
             },
         }
+
+    async def fetch(
+        self,
+        urls: list[str],
+        capabilities: frozenset[str],
+        include_raw_html: bool,
+    ) -> list[FetchStageOutcome]:
+        if not urls:
+            return []
+        requested_capabilities = frozenset(capabilities)
+        if include_raw_html:
+            requested_capabilities |= {"raw_html"}
+        tasks = [
+            (
+                url,
+                asyncio.create_task(
+                    self._guarded_fetch_one_outcome(url, requested_capabilities)
+                ),
+            )
+            for url in urls
+        ]
+        try:
+            done, pending = await asyncio.wait(
+                [task for _url, task in tasks],
+                timeout=self.timeout_s,
+            )
+            for task in pending:
+                task.cancel()
+            if pending:
+                await asyncio.gather(*pending, return_exceptions=True)
+            return [
+                task.result()
+                if task in done
+                else FetchStageOutcome(
+                    requested_url=url,
+                    final_url=None,
+                    code=FetchOutcomeCode.UPSTREAM_TIMEOUT,
+                    retrieval_method="crawl4ai_browser",
+                    elapsed_ms=int(self.timeout_s * 1000),
+                )
+                for url, task in tasks
+            ]
+        except BaseException:
+            for _url, task in tasks:
+                if not task.done():
+                    task.cancel()
+            await asyncio.gather(
+                *(task for _url, task in tasks),
+                return_exceptions=True,
+            )
+            raise
+
+    async def _guarded_fetch_one_outcome(
+        self,
+        source_url: str,
+        capabilities: frozenset[str],
+    ) -> FetchStageOutcome:
+        started = time.perf_counter()
+        try:
+            return await self._fetch_one_outcome(source_url, capabilities)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception("Crawl failed during local processing for %s", redact_url(source_url))
+            return self._failure_outcome(
+                source_url,
+                FetchOutcomeCode.LOCAL_PROCESSING_FAILURE,
+                started,
+            )
+
+    async def _fetch_one_outcome(
+        self,
+        source_url: str,
+        capabilities: frozenset[str],
+    ) -> FetchStageOutcome:
+        started = time.perf_counter()
+        host = urlparse(source_url).hostname or ""
+        host_semaphore = self._host_semaphores.get(host)
+        if host_semaphore is None:
+            host_semaphore = asyncio.Semaphore(self.per_host_concurrency)
+            self._host_semaphores[host] = host_semaphore
+        global_acquired = await self._acquire(self._global_semaphore)
+        if not global_acquired:
+            return self._failure_outcome(
+                source_url,
+                FetchOutcomeCode.CAPACITY_UNAVAILABLE,
+                started,
+            )
+        host_acquired = False
+        try:
+            host_acquired = await self._acquire(host_semaphore)
+            if not host_acquired:
+                return self._failure_outcome(
+                    source_url,
+                    FetchOutcomeCode.CAPACITY_UNAVAILABLE,
+                    started,
+                )
+            headers = (
+                {"Authorization": f"Bearer {self.api_key}"}
+                if self.api_key
+                else None
+            )
+            try:
+                request = self._client.build_request(
+                    "POST",
+                    f"{self.base_url}/crawl",
+                    json=self._crawl_payload(source_url),
+                    headers=request_id_headers(headers),
+                )
+                response = await self._client.send(request, stream=True)
+                try:
+                    if response.status_code == 429:
+                        return self._failure_outcome(
+                            source_url,
+                            FetchOutcomeCode.RATE_LIMITED,
+                            started,
+                            status_code=429,
+                        )
+                    if response.status_code != 200:
+                        return self._failure_outcome(
+                            source_url,
+                            FetchOutcomeCode.UPSTREAM_FAILURE,
+                            started,
+                            status_code=response.status_code,
+                        )
+                    body = bytearray()
+                    async for chunk in response.aiter_bytes():
+                        if len(body) + len(chunk) > self.max_response_body_bytes:
+                            return self._failure_outcome(
+                                source_url,
+                                FetchOutcomeCode.CONTENT_TOO_LARGE,
+                                started,
+                                status_code=response.status_code,
+                            )
+                        body.extend(chunk)
+                    try:
+                        payload = json.loads(bytes(body))
+                    except (ValueError, UnicodeError):
+                        return self._failure_outcome(
+                            source_url,
+                            FetchOutcomeCode.MALFORMED_UPSTREAM_RESPONSE,
+                            started,
+                        )
+                finally:
+                    await response.aclose()
+            except httpx.TimeoutException:
+                return self._failure_outcome(
+                    source_url,
+                    FetchOutcomeCode.UPSTREAM_TIMEOUT,
+                    started,
+                )
+            except httpx.HTTPError:
+                return self._failure_outcome(
+                    source_url,
+                    FetchOutcomeCode.UPSTREAM_FAILURE,
+                    started,
+                )
+            return await self._outcome_from_payload(
+                source_url,
+                payload,
+                capabilities,
+                started,
+            )
+        finally:
+            if host_acquired:
+                host_semaphore.release()
+            self._global_semaphore.release()
+
+    async def _acquire(self, semaphore: asyncio.Semaphore) -> bool:
+        if self.admission_wait_s == 0:
+            if semaphore.locked():
+                return False
+            await semaphore.acquire()
+            return True
+        try:
+            await asyncio.wait_for(
+                semaphore.acquire(),
+                timeout=self.admission_wait_s,
+            )
+            return True
+        except TimeoutError:
+            return False
+
+    @staticmethod
+    def _failure_outcome(
+        source_url: str,
+        code: FetchOutcomeCode,
+        started: float,
+        status_code: int | None = None,
+    ) -> FetchStageOutcome:
+        return FetchStageOutcome(
+            requested_url=source_url,
+            final_url=None,
+            code=code,
+            retrieval_method="crawl4ai_browser",
+            elapsed_ms=int((time.perf_counter() - started) * 1000),
+            status_code=status_code,
+        )
+
+    @staticmethod
+    def _strict_result_items(payload: object) -> list[dict] | None:
+        if not isinstance(payload, dict):
+            return None
+        if "results" in payload:
+            results = payload["results"]
+            if not isinstance(results, list) or not results:
+                return None
+            return results if all(isinstance(item, dict) for item in results) else None
+        recognized = {
+            "success",
+            "url",
+            "redirected_url",
+            "markdown",
+            "content",
+            "fit_markdown",
+            "raw_markdown",
+            "html",
+            "cleaned_html",
+            "fit_html",
+        }
+        return [payload] if recognized & payload.keys() else None
+
+    @staticmethod
+    def _is_challenge(markdown: str, html: str | None) -> bool:
+        sample = f"{markdown}\n{html or ''}"[:16384].casefold()
+        return any(marker in sample for marker in CHALLENGE_MARKERS)
+
+    @staticmethod
+    def _is_empty_shell(html: str | None) -> bool:
+        if not html or "<script" not in html.casefold():
+            return False
+        without_scripts = _SCRIPT_STYLE.sub(" ", html)
+        visible = " ".join(_HTML_TAG.sub(" ", without_scripts).split())
+        return len(visible) < 32
+
+    @staticmethod
+    def _structured_robots_denial(item: dict, metadata: dict) -> bool:
+        return item.get("robots_denied") is True or metadata.get("robots_denied") is True
+
+    @staticmethod
+    def _unsupported_content_code(
+        content_type: str | None,
+        capabilities: frozenset[str],
+    ) -> FetchOutcomeCode | None:
+        if not content_type:
+            return None
+        media_type = content_type.split(";", 1)[0].strip().casefold()
+        if media_type == "application/pdf":
+            return None if "pdf" in capabilities else FetchOutcomeCode.UNSUPPORTED_CAPABILITY
+        document_types = {
+            "application/msword",
+            "application/rtf",
+            "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            "application/vnd.oasis.opendocument.text",
+        }
+        if media_type in document_types:
+            return None if "document" in capabilities else FetchOutcomeCode.UNSUPPORTED_CAPABILITY
+        if media_type.startswith("text/") or media_type in {
+            "application/xhtml+xml",
+            "application/json",
+        }:
+            return None
+        return FetchOutcomeCode.UNSUPPORTED_CONTENT
+
+    async def _outcome_from_payload(
+        self,
+        source_url: str,
+        payload: object,
+        capabilities: frozenset[str],
+        started: float,
+    ) -> FetchStageOutcome:
+        items = self._strict_result_items(payload)
+        if items is None:
+            return self._failure_outcome(
+                source_url,
+                FetchOutcomeCode.MALFORMED_UPSTREAM_RESPONSE,
+                started,
+            )
+        item = items[0]
+        final_url = self._final_url(source_url, item)
+        if not _is_utf8_within_limit(final_url, MAX_FINAL_URL_BYTES):
+            return self._failure_outcome(
+                source_url,
+                FetchOutcomeCode.MALFORMED_UPSTREAM_RESPONSE,
+                started,
+            )
+        status_code = self._status_code(item)
+        raw_metadata = item.get("metadata") if isinstance(item.get("metadata"), dict) else {}
+        metadata = _bounded_json_mapping(raw_metadata, MAX_METADATA_ITEMS, MAX_METADATA_BYTES)
+        links = _bounded_json_mapping(item.get("links"), MAX_LINK_ITEMS, MAX_LINK_BYTES)
+        title = self._title_from_result(item, raw_metadata, source_url)
+        content_type, etag, last_modified = self._allowlisted_response_headers(item)
+        markdown = self._markdown_from_result(item, payload if isinstance(payload, dict) else {})
+        html = self._html_from_result(item, payload if isinstance(payload, dict) else {})
+        base = {
+            "requested_url": source_url,
+            "final_url": final_url,
+            "retrieval_method": "crawl4ai_browser",
+            "elapsed_ms": int((time.perf_counter() - started) * 1000),
+            "status_code": status_code,
+            "content_type": content_type,
+            "title": title,
+            "links": links,
+            "metadata": metadata,
+            "etag": etag,
+            "last_modified": last_modified,
+        }
+        if await self._has_unsafe_final_url(source_url, final_url):
+            return FetchStageOutcome(code=FetchOutcomeCode.UNSAFE_REDIRECT, **base)
+        if status_code == 429:
+            return FetchStageOutcome(code=FetchOutcomeCode.RATE_LIMITED, **base)
+        if self._structured_robots_denial(item, raw_metadata):
+            return FetchStageOutcome(code=FetchOutcomeCode.ROBOTS_REFUSED, **base)
+        if self._is_challenge(markdown, html):
+            return FetchStageOutcome(code=FetchOutcomeCode.CHALLENGE, **base)
+        if item.get("success") is False:
+            return FetchStageOutcome(code=FetchOutcomeCode.UPSTREAM_FAILURE, **base)
+        unsupported = self._unsupported_content_code(content_type, capabilities)
+        if unsupported is not None:
+            return FetchStageOutcome(code=unsupported, **base)
+        content_bytes = len(markdown.encode("utf-8", "replace"))
+        if html:
+            content_bytes += len(html.encode("utf-8", "replace"))
+        if content_bytes > self.max_content_bytes:
+            return FetchStageOutcome(code=FetchOutcomeCode.CONTENT_TOO_LARGE, **base)
+        if not markdown:
+            code = (
+                FetchOutcomeCode.EMPTY_SHELL
+                if self._is_empty_shell(html)
+                else FetchOutcomeCode.EXTRACTION_EMPTY
+            )
+            return FetchStageOutcome(code=code, **base)
+        page = Page(
+            url=source_url,
+            title=title,
+            markdown=markdown,
+            html=html,
+            requested_url=source_url,
+            final_url=final_url,
+            status_code=status_code,
+            content_type=content_type,
+            etag=etag,
+            last_modified=last_modified,
+            metadata=metadata,
+            links=links,
+        )
+        return FetchStageOutcome(
+            code=FetchOutcomeCode.CONTENT,
+            page=page,
+            **base,
+        )
 
     @staticmethod
     def _result_items(payload: dict) -> list[dict]:
@@ -256,22 +649,6 @@ class Crawl4aiExtractor:
             if isinstance(value, str) and value.strip():
                 return value
         return None
-
-    async def _fetch_payload(self, client: httpx.AsyncClient, source_url: str) -> dict | None:
-        headers = {"Authorization": f"Bearer {self.api_key}"} if self.api_key else None
-        response = await client.post(
-            f"{self.base_url}/crawl",
-            json=self._crawl_payload(source_url),
-            headers=request_id_headers(headers),
-        )
-        if response.status_code != 200:
-            logger.warning(
-                "Crawl failed for %s: status %s",
-                redact_url(source_url),
-                response.status_code,
-            )
-            return None
-        return response.json()
 
     def _page_from_payload(self, source_url: str, payload: dict) -> Page | None:
         for item in self._result_items(payload):
@@ -361,36 +738,3 @@ class Crawl4aiExtractor:
             logger.warning("Crawl dropped for %s: unsafe final URL", redact_url(source_url))
             return True
         return False
-
-    async def _extract_one(
-        self,
-        client: httpx.AsyncClient,
-        url: str,
-        semaphore: asyncio.Semaphore,
-        host_semaphores: dict[str, asyncio.Semaphore],
-    ) -> Page | None:
-        host = urlparse(url).hostname or ""
-        async with semaphore:
-            async with host_semaphores[host]:
-                try:
-                    payload = await self._fetch_payload(client, url)
-                    page = self._page_from_payload(url, payload) if payload is not None else None
-                    if page is None or await self._has_unsafe_final_url(url, page.final_url or url):
-                        return None
-                    return page
-                except Exception as exc:
-                    logger.warning("Crawl failed for %s: %s", redact_url(url), exc.__class__.__name__)
-                    return None
-
-    async def _collect_pages(self, tasks: list[asyncio.Task[Page | None]]) -> list[Page]:
-        done, pending = await asyncio.wait(tasks, timeout=self.timeout_s)
-        for task in pending:
-            task.cancel()
-        if pending:
-            await asyncio.gather(*pending, return_exceptions=True)
-        pages = [
-            task.result()
-            for task in tasks
-            if task in done and not task.cancelled()
-        ]
-        return [page for page in pages if page is not None]

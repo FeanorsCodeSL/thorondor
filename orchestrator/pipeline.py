@@ -2,6 +2,7 @@
 import asyncio
 import logging
 import time
+from collections import Counter
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, replace
 from importlib import import_module
@@ -35,12 +36,15 @@ from .models import (
     MAX_RAW_MARKDOWN_BYTES,
     MAX_RAW_MARKDOWN_ITEM_BYTES,
     MAX_RAW_MARKDOWN_ITEMS,
+    MAX_SELECTED_URLS,
     MAX_URL_DIAGNOSTICS,
     MAX_URL_DIAGNOSTICS_BYTES,
     Citation,
     DiagnosticOmission,
     EngineContribution,
     EvidenceQualityDrop,
+    FetchDiagnostic,
+    FetchOutcomeCount,
     Passage,
     RawMarkdown,
     SearchRequest,
@@ -51,11 +55,14 @@ from .models import (
     UrlDiagnostic,
 )
 from .observability import query_hash
+from .outcome_codes import FetchOutcomeCode
+from .resource_policy import ResourcePolicy, RouteDeadlineExceeded, RuntimeAdmission
 from .selection import SelectionDecision
 from .types import (
     DiscoveryOutcome,
     DiscoveryResult,
     DocumentMetadata,
+    FetchStageOutcome,
     Page,
     RerankerTelemetry,
     RerankOutcome,
@@ -68,6 +75,15 @@ from .url_safety import (
 )
 
 logger = logging.getLogger(__name__)
+
+SEARCH_FETCH_CAPABILITIES = frozenset({"markdown", "javascript", "links", "metadata"})
+RETRYABLE_FETCH_OUTCOMES = {
+    FetchOutcomeCode.CAPACITY_UNAVAILABLE,
+    FetchOutcomeCode.UPSTREAM_TIMEOUT,
+    FetchOutcomeCode.DEADLINE_CANCELLED,
+    FetchOutcomeCode.UPSTREAM_FAILURE,
+    FetchOutcomeCode.RATE_LIMITED,
+}
 
 
 class SearchDependencyUnavailable(Exception):
@@ -106,6 +122,9 @@ class PipelineDeps:
     evidence_quality_enabled: bool
     domain_allowlist: set[str] | None
     allowlist_only: bool
+    resource_policy: ResourcePolicy
+    admission: RuntimeAdmission
+    crawl_url_safety: Callable[[str], bool | Awaitable[bool]]
 
     async def aclose(self) -> None:
         for component in (self.planner, self.discovery, self.extractor, self.chunker, self.reranker):
@@ -159,16 +178,24 @@ def _truncate_utf8(value: str, max_bytes: int) -> str:
 def _request_limits(req: SearchRequest, deps: PipelineDeps) -> tuple[int, int, int | None]:
     profile_defaults = deps.profile_defaults.get(req.search_profile or "", {})
     token_budget = req.token_budget or profile_defaults.get("token_budget", deps.default_token_budget)
-    max_urls = req.max_urls or profile_defaults.get("max_urls", deps.default_max_urls)
+    max_urls = min(
+        req.max_urls or profile_defaults.get("max_urls", deps.default_max_urls),
+        deps.resource_policy.max_internal_fanout,
+    )
     max_passages = req.max_passages if req.max_passages is not None else profile_defaults.get("max_passages")
     return token_budget, max_urls, max_passages
 
 
 async def _planned_subqueries(req: SearchRequest, deps: PipelineDeps, stats: SearchStats) -> list[str]:
-    planned = await deps.planner.plan(req.query) if req.decompose else [req.query]
+    try:
+        async with asyncio.timeout(deps.resource_policy.discovery_stage_deadline_s):
+            planned = await deps.planner.plan(req.query) if req.decompose else [req.query]
+    except TimeoutError:
+        planned = [req.query]
+    limit = min(deps.max_subqueries, deps.resource_policy.max_internal_fanout)
     subqueries = [
         str(query)[:MAX_QUERY_CHARS]
-        for query in (planned or [req.query])[:deps.max_subqueries]
+        for query in (planned or [req.query])[:limit]
     ]
     stats.sub_queries = subqueries
     return subqueries
@@ -184,8 +211,16 @@ async def _discover_results(
     async def attempt(query: str) -> _DiscoveryAttempt:
         attempt_started = time.perf_counter()
         try:
-            outcome = await deps.discovery.search(query, req.freshness)
+            async with asyncio.timeout(deps.resource_policy.discovery_stage_deadline_s):
+                outcome = await deps.discovery.search(query, req.freshness)
             return _DiscoveryAttempt(query, outcome, None, _elapsed_ms(attempt_started))
+        except TimeoutError:
+            return _DiscoveryAttempt(
+                query,
+                None,
+                "timeout",
+                _elapsed_ms(attempt_started),
+            )
         except DiscoveryUnavailable as exc:
             failure_reason = (
                 exc.reason
@@ -403,6 +438,87 @@ def _set_bounded_url_diagnostics(stats: SearchStats, decisions: list) -> None:
     ]
 
 
+def _set_fetch_diagnostics(
+    stats: SearchStats,
+    outcomes: list[FetchStageOutcome],
+) -> None:
+    stats.fetch_outcomes = [
+        FetchDiagnostic(
+            requested_url=item.requested_url,
+            final_url=item.final_url,
+            outcome=item.code.value,
+            retryable=item.code in RETRYABLE_FETCH_OUTCOMES,
+            status_code=item.status_code,
+            content_type=item.content_type,
+            title=item.title,
+            retrieval_method=item.retrieval_method or None,
+            elapsed_ms=item.elapsed_ms,
+        )
+        for item in outcomes[:MAX_SELECTED_URLS]
+    ]
+    counts = Counter(item.code.value for item in outcomes)
+    stats.fetch_outcome_counts = [
+        FetchOutcomeCount(outcome=outcome, count=count)
+        for outcome, count in sorted(counts.items())
+    ]
+
+
+async def _fetch_pages(
+    deps: PipelineDeps,
+    urls: list[str],
+    stats: SearchStats,
+) -> list[Page]:
+    fetch = getattr(deps.extractor, "fetch", None)
+    if fetch is None:
+        pages = await deps.extractor.extract(urls)
+        page_by_url = {page.requested_url or page.url: page for page in pages}
+        outcomes = [
+            FetchStageOutcome(
+                requested_url=url,
+                final_url=(page.final_url or page.url) if page is not None else None,
+                code=(
+                    FetchOutcomeCode.CONTENT
+                    if page is not None
+                    else FetchOutcomeCode.UPSTREAM_FAILURE
+                ),
+                retrieval_method="legacy_extractor",
+                elapsed_ms=0,
+                status_code=page.status_code if page is not None else None,
+                content_type=page.content_type if page is not None else None,
+                title=page.title if page is not None else None,
+                page=page,
+            )
+            for url in urls
+            for page in [page_by_url.get(url)]
+        ]
+    else:
+        try:
+            async with asyncio.timeout(deps.resource_policy.crawl_stage_deadline_s):
+                outcomes = await fetch(urls, SEARCH_FETCH_CAPABILITIES, False)
+        except TimeoutError:
+            outcomes = [
+                FetchStageOutcome(
+                    requested_url=url,
+                    final_url=None,
+                    code=FetchOutcomeCode.DEADLINE_CANCELLED,
+                    retrieval_method="crawl4ai_browser",
+                    elapsed_ms=int(deps.resource_policy.crawl_stage_deadline_s * 1000),
+                )
+                for url in urls
+            ]
+        pages = [
+            item.page
+            for item in outcomes
+            if item.code == FetchOutcomeCode.CONTENT and item.page is not None
+        ]
+    _set_fetch_diagnostics(stats, outcomes)
+    stats.urls_crawled_ok = sum(
+        item.code == FetchOutcomeCode.CONTENT for item in outcomes
+    )
+    stats.urls_crawled_failed = max(0, len(urls) - stats.urls_crawled_ok)
+    return pages
+
+
 def _clean_pages(deps: PipelineDeps, pages: list[Page], stats: SearchStats) -> list[Page]:
     cleaned_pages = [deps.markdown_cleaner.clean(page) for page in pages]
     if not cleaned_pages:
@@ -485,7 +601,12 @@ async def _chunk_pages(
     started: float,
 ) -> list:
     try:
-        chunks = await deps.chunker.chunk(pages)
+        async with asyncio.timeout(deps.resource_policy.chunk_stage_deadline_s):
+            chunks = await deps.chunker.chunk(pages)
+    except TimeoutError as exc:
+        stats.elapsed_ms = _elapsed_ms(started)
+        _log_search_summary(req.query, stats, "chunker_timeout")
+        raise SearchDependencyUnavailable("chunker", "chunker_timeout") from exc
     except ChunkerUnavailable as exc:
         stats.elapsed_ms = _elapsed_ms(started)
         _log_search_summary(req.query, stats, "chunker_unavailable")
@@ -507,7 +628,8 @@ def _prefilter_chunks(req: SearchRequest, deps: PipelineDeps, chunks: list, stat
 
 async def _rerank_chunks(req: SearchRequest, deps: PipelineDeps, chunks: list, stats: SearchStats) -> list[ScoredChunk]:
     try:
-        result = await deps.reranker.rerank(req.query, chunks)
+        async with asyncio.timeout(deps.resource_policy.rerank_stage_deadline_s):
+            result = await deps.reranker.rerank(req.query, chunks)
         if isinstance(result, RerankOutcome):
             outcome = result
         else:
@@ -537,10 +659,15 @@ async def _rerank_chunks(req: SearchRequest, deps: PipelineDeps, chunks: list, s
         stats.reranker_floor_filled = outcome.telemetry.floor_filled
         stats.chunks_reranked = outcome.telemetry.scored_count
         return scored
-    except RerankerUnavailable as exc:
+    except (RerankerUnavailable, TimeoutError) as exc:
+        telemetry = (
+            exc.telemetry
+            if isinstance(exc, RerankerUnavailable)
+            else RerankerTelemetry()
+        )
         stats.reranked = False
-        stats.reranker_batches = exc.telemetry.batches
-        stats.reranker_batches_failed = exc.telemetry.batches_failed
+        stats.reranker_batches = telemetry.batches
+        stats.reranker_batches_failed = telemetry.batches_failed
         stats.reranker_floor_filled = False
         stats.chunks_reranked = 0
         return [
@@ -688,7 +815,7 @@ def _build_raw_markdown(
     return raw_markdown
 
 
-async def run_search(req: SearchRequest, deps: PipelineDeps) -> SearchResponse:
+async def _run_search(req: SearchRequest, deps: PipelineDeps) -> SearchResponse:
     started = time.perf_counter()
     token_budget, max_urls, max_passages = _request_limits(req, deps)
     stats = SearchStats()
@@ -712,11 +839,9 @@ async def run_search(req: SearchRequest, deps: PipelineDeps) -> SearchResponse:
         return _empty_response(req.query, stats, "no_urls_after_selection")
 
     pages = _attach_discovery_metadata(
-        await deps.extractor.extract([result.url for result in selected]),
+        await _fetch_pages(deps, [result.url for result in selected], stats),
         selected,
     )
-    stats.urls_crawled_ok = len(pages)
-    stats.urls_crawled_failed = max(0, stats.urls_selected - stats.urls_crawled_ok)
     if not pages:
         stats.elapsed_ms = _elapsed_ms(started)
         return _empty_response(req.query, stats, "all_crawls_failed")
@@ -842,6 +967,15 @@ async def run_search(req: SearchRequest, deps: PipelineDeps) -> SearchResponse:
     return response
 
 
+async def run_search(req: SearchRequest, deps: PipelineDeps) -> SearchResponse:
+    async with deps.admission.search_slot():
+        try:
+            async with asyncio.timeout(deps.resource_policy.search_route_deadline_s):
+                return await _run_search(req, deps)
+        except TimeoutError as exc:
+            raise RouteDeadlineExceeded("search") from exc
+
+
 def build_deps_from_settings(settings) -> PipelineDeps:
     from .clients.chunker_client import ChunkerClient
     from .clients.crawl4ai_client import Crawl4aiExtractor
@@ -861,7 +995,12 @@ def build_deps_from_settings(settings) -> PipelineDeps:
         raise RuntimeError("MARKDOWN_EXTRACTOR=trafilatura requires the trafilatura package") from exc
 
     planner = (
-        LlmPlanner(settings.llm_endpoint, settings.llm_model, api_key=settings.llm_api_key)
+        LlmPlanner(
+            settings.llm_endpoint,
+            settings.llm_model,
+            api_key=settings.llm_api_key,
+            timeout_s=settings.discovery_timeout_s,
+        )
         if settings.llm_endpoint and settings.llm_model
         else IdentityPlanner()
     )
@@ -875,9 +1014,30 @@ def build_deps_from_settings(settings) -> PipelineDeps:
     async def crawl_url_safety(url: str) -> bool:
         return await is_safe_crawl_url_async(url, settings.url_safety_policy)
 
+    resource_policy = ResourcePolicy(
+        max_request_body_bytes=settings.max_request_body_bytes,
+        max_response_body_bytes=settings.max_response_body_bytes,
+        search_route_deadline_s=settings.search_route_deadline_s,
+        fetch_route_deadline_s=settings.fetch_route_deadline_s,
+        discovery_stage_deadline_s=settings.discovery_timeout_s,
+        crawl_stage_deadline_s=settings.crawl_timeout_s,
+        chunk_stage_deadline_s=settings.chunk_timeout_s,
+        rerank_stage_deadline_s=settings.reranker_timeout_s,
+        max_inflight_searches=settings.max_inflight_searches,
+        max_inflight_fetches=settings.max_inflight_fetches,
+        admission_wait_s=settings.admission_wait_s,
+        admission_retry_after_s=settings.admission_retry_after_s,
+        max_internal_fanout=settings.max_internal_fanout,
+        max_content_bytes=settings.max_content_bytes,
+        chunk_concurrency=settings.chunk_concurrency,
+    )
     return PipelineDeps(
         planner=planner,
-        discovery=SearxngDiscovery(settings.searxng_url, api_key=settings.searxng_api_key),
+        discovery=SearxngDiscovery(
+            settings.searxng_url,
+            api_key=settings.searxng_api_key,
+            timeout_s=settings.discovery_timeout_s,
+        ),
         selector=SelectionPolicyImpl(),
         extractor=Crawl4aiExtractor(
             settings.crawl4ai_url,
@@ -888,6 +1048,9 @@ def build_deps_from_settings(settings) -> PipelineDeps:
             crawler_user_agent=settings.crawler_user_agent,
             url_safety=crawl_url_safety,
             api_key=settings.crawl4ai_api_key,
+            max_content_bytes=settings.max_content_bytes,
+            max_response_body_bytes=settings.max_response_body_bytes,
+            admission_wait_s=settings.admission_wait_s,
         ),
         markdown_cleaner=MarkdownCleanerImpl(
             extractor=trafilatura.extract,
@@ -898,7 +1061,12 @@ def build_deps_from_settings(settings) -> PipelineDeps:
             include_tables=settings.markdown_extractor_include_tables,
             deduplicate=settings.markdown_extractor_deduplicate,
         ),
-        chunker=ChunkerClient(settings.chunker_url, api_key=settings.chunker_api_key),
+        chunker=ChunkerClient(
+            settings.chunker_url,
+            api_key=settings.chunker_api_key,
+            concurrency=settings.chunk_concurrency,
+            timeout_s=settings.chunk_timeout_s,
+        ),
         candidate_prefilter=CandidatePrefilterImpl(),
         reranker=RerankerClient(
             settings.reranker_endpoint,
@@ -926,4 +1094,7 @@ def build_deps_from_settings(settings) -> PipelineDeps:
         domain_allowlist=settings.domain_allowlist,
         allowlist_only=settings.allowlist_only,
         url_safety=url_safety,
+        crawl_url_safety=crawl_url_safety,
+        resource_policy=resource_policy,
+        admission=RuntimeAdmission(resource_policy),
     )

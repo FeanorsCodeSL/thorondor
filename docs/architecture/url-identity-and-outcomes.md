@@ -2,9 +2,9 @@
 
 ## Scope and current integration
 
-This contract is now used internally and exposed through additive fields on the existing REST and MCP `thorondor.search.v1` response. It adds no endpoint, cache implementation, or ingress enforcement.
+This contract is used internally, exposed through additive fields on the existing REST and MCP `thorondor.search.v1` response, and returned directly by the bounded REST/MCP `thorondor.fetch.v1` contract. It adds no cache implementation or ingress enforcement.
 
-Document and exact-evidence identities are now carried through passages, citations, REST, and MCP. URL and cache identities are not yet wired into page deduplication or persistence. The internal `Page` boundary and Crawl4AI client capture requested and final URLs, status, content type, allowlisted validators, links, and bounded metadata. Future fetch, map, crawl, cache, and job work must use these identities and codes before exposing diagnostics.
+Document and exact-evidence identities are carried through passages, citations, REST, and MCP. URL and cache identities are not yet wired into persistence. The internal `Page` boundary and Crawl4AI client capture requested and final URLs, status, content type, allowlisted validators, links, and bounded metadata. The known-URL fetch surface exposes these values through typed, bounded per-URL outcomes; future map, crawl, cache, and job work must reuse the same identities and codes.
 
 ## URL roles
 
@@ -66,16 +66,16 @@ The internal `str` enums in `orchestrator/outcome_codes.py` are the only control
 
 | Stage | Codes |
 |---|---|
-| Fetch | `content`, `empty_shell`, `challenge`, `robots_refused`, `upstream_timeout`, `deadline_cancelled`, `unsafe_redirect`, `unsupported_content`, `unsupported_capability`, `content_too_large`, `extraction_empty`, `malformed_upstream_response`, `upstream_failure`, `rate_limited`, `unsafe_target`, `local_processing_failure` |
+| Fetch | `content`, `empty_shell`, `challenge`, `robots_refused`, `upstream_timeout`, `deadline_cancelled`, `unsafe_redirect`, `unsupported_content`, `unsupported_capability`, `content_too_large`, `extraction_empty`, `malformed_upstream_response`, `upstream_failure`, `rate_limited`, `capacity_unavailable`, `unsafe_target`, `local_processing_failure` |
 | Map | `completed`, `partial`, `cancelled`, `unsafe_seed`, `unsafe_redirect`, `robots_refused`, `limit_reached`, `upstream_timeout`, `deadline_cancelled`, `malformed_upstream_response`, `upstream_failure`, `rate_limited`, `unsafe_target`, `local_processing_failure` |
 | Crawl | `completed`, `partial`, `failed`, `cancelled`, `no_admitted_urls`, `deadline_cancelled`, `upstream_timeout`, `upstream_failure`, `rate_limited`, `unsafe_seed`, `unsafe_target`, `unsafe_redirect`, `local_processing_failure` |
 | Cache | `miss`, `fresh`, `stale`, `revalidated`, `bypass`, `corrupt`, `unsupported_capability` |
 | Job | `queued`, `running`, `completed`, `partial`, `failed`, `cancelled`, `expired` |
 
-`rate_limited`, `unsafe_target`, `unsafe_redirect`, `unsafe_seed`, and `local_processing_failure` remain distinct so later per-URL outcome aggregation can distinguish retryable limits, unsafe source classes, and local faults.
+`rate_limited`, `capacity_unavailable`, `unsafe_target`, `unsafe_redirect`, `unsafe_seed`, and `local_processing_failure` remain distinct so per-URL outcome aggregation can distinguish upstream throttling, local capacity, unsafe source classes, and local faults.
 
 ## Endpoint access and egress decisions
 
-New endpoints must remain deployment-internal behind an operator-supplied protected ingress/access layer until a future approved first-party-auth design broadens exposure. A loopback default is not evidence that a proxy or protected ingress exists. This slice adds no endpoint and does not enforce ingress.
+New endpoints must remain deployment-internal behind an operator-supplied protected ingress/access layer until a future approved first-party-auth design broadens exposure. A loopback default is not evidence that a proxy or protected ingress exists. The fetch endpoint preserves this access decision and does not add first-party ingress authentication.
 
 The first-party Compose configurations attach Crawl4AI to an isolated internal control network and a dedicated outbound network. Crawl4AI's built-in proxy owns connect-time DNS pinning and rejects non-global targets; the orchestrator performs non-blocking safety checks before dispatch and revalidates every changed final URL before accepting content. The identity models do not themselves authorize dispatch or bypass either enforcement layer.

@@ -46,16 +46,19 @@ class MarkdownCleanerImpl:
         original = page.original_markdown or page.markdown
         source = page.html
         if source:
-            extracted = self._extractor(
-                source,
-                url=page.url,
-                output_format="markdown",
-                favor_recall=self._favor_recall,
-                include_comments=self._include_comments,
-                include_tables=self._include_tables,
-                deduplicate=self._deduplicate,
-            )
-            cleaned = extracted.strip() if extracted else ""
+            try:
+                extracted = self._extractor(
+                    source,
+                    url=page.url,
+                    output_format="markdown",
+                    favor_recall=self._favor_recall,
+                    include_comments=self._include_comments,
+                    include_tables=self._include_tables,
+                    deduplicate=self._deduplicate,
+                )
+            except Exception:
+                extracted = None
+            cleaned = extracted.strip() if extracted else page.markdown.strip()
         else:
             cleaned = page.markdown.strip()
 

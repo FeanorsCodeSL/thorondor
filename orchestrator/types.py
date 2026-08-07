@@ -2,6 +2,8 @@
 from dataclasses import dataclass, field
 from typing import TypeAlias
 
+from .outcome_codes import FetchOutcomeCode
+
 JsonValue: TypeAlias = str | int | float | bool | None | list["JsonValue"] | dict[str, "JsonValue"]
 
 
@@ -80,6 +82,23 @@ class Page:
     links: dict[str, JsonValue] = field(default_factory=dict)
     discovery_published_at: str | None = None
     evidence_metadata: DocumentMetadata | None = None
+
+
+@dataclass
+class FetchStageOutcome:
+    requested_url: str
+    final_url: str | None
+    code: FetchOutcomeCode
+    retrieval_method: str
+    elapsed_ms: int
+    status_code: int | None = None
+    content_type: str | None = None
+    title: str | None = None
+    links: dict[str, JsonValue] = field(default_factory=dict)
+    metadata: dict[str, JsonValue] = field(default_factory=dict)
+    etag: str | None = None
+    last_modified: str | None = None
+    page: Page | None = None
 
 
 @dataclass

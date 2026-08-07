@@ -153,11 +153,17 @@ def _parse_failures(payload: dict) -> list[DiscoveryEngineFailure]:
 
 
 class SearxngDiscovery:
-    def __init__(self, base_url: str, client: httpx.AsyncClient | None = None, api_key: str | None = None):
+    def __init__(
+        self,
+        base_url: str,
+        client: httpx.AsyncClient | None = None,
+        api_key: str | None = None,
+        timeout_s: float = 20.0,
+    ):
         self.base_url = base_url.rstrip("/")
         self.api_key = api_key
         self._client = client or httpx.AsyncClient(
-            timeout=15.0,
+            timeout=timeout_s,
             limits=httpx.Limits(max_connections=20, max_keepalive_connections=10),
         )
         self._owns_client = client is None

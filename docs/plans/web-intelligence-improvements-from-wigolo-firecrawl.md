@@ -310,30 +310,56 @@ Do not adopt:
 - Tengwar deployment rebuilt orchestrator image `sha256:701de5836617a00439a48c4ae0a489f4915b5b1b668c71db6d612ed33796f2e3` on `tengwar-shared`. Live `/healthz` reported every dependency healthy; a real `curl` to `/v1/search` returned HTTP 200 with five verbatim passages, exact citation spans, contributor/selection diagnostics, `reranked=true`, one successful reranker batch, and `embedding_degraded=false`.
 
 ## Phase 2 — Resource envelope and fetch outcome routing
-**Status:** pending
+**Status:** completed
 **Kind:** logic
 
 ### Tasks
 
-- [ ] Add one shared transport policy for request-body bytes, total response bytes, per-route and per-stage deadlines, process-wide in-flight searches/fetches, per-host work, subqueries, URLs, raw-content size, and internal fan-out. Replace per-call crawl semaphores with process-owned limiters and give sequential chunking bounded concurrency plus a configurable stage budget. Enforcement, settings validation, OpenAPI metadata, and MCP descriptions must read from the same definitions.
-- [ ] Return `413` for oversized bodies, `429` with bounded `Retry-After` when no request slot is available, and a closed timeout error when the route deadline expires. Keep `/livez` process-only. Thread a cancellation scope through REST, in-process MCP, stdio MCP, `run_search`, and every client so timeout or disconnect stops pending work and records why.
-- [ ] Introduce typed stage outcomes with requested/final URL, status, content type, title, links, retrieval method, elapsed time, and closed reasons including content, empty shell, challenge, robots refusal, upstream timeout, orchestrator deadline cancellation, unsafe redirect, unsupported content/capability, content too large, extraction empty, malformed upstream response, and upstream failure.
-- [ ] Wrap the current Crawl4AI backend first. Preserve its browser-capable role; capture its status, final URL, links, metadata, and allowlisted `ETag`/`Last-Modified`/content headers; map every response/failure into the typed outcome; and never return or log arbitrary headers.
-- [ ] Complete the Phase 0 redirect/egress design. Preserve per-hop and final URL checks, but remove any duplicate target-site request that bypasses connect-time DNS pinning.
-- [ ] Define backend capabilities such as HTML, JavaScript rendering, PDF/document, links, metadata, and raw HTML. Routing must either choose a capable backend or return `unsupported_capability`; it must not silently drop requested behavior.
-- [ ] Apply the configured crawler identity consistently through Crawl4AI and every direct target-site request. Treat identity as honest attribution, not a mechanism for rotating or impersonating browsers.
-- [ ] Detect empty/SPA, challenge, extraction-empty, and oversize outcomes conservatively. Fall back from failed HTML extraction to the already-returned Crawl4AI Markdown before classifying the document empty; never cache, chunk, or return challenge/error shells as evidence.
-- [ ] Return bounded per-URL terminal outcomes and aggregate counts so an agent can distinguish retryable timeouts/rate limits from robots refusal, unsafe targets, unsupported formats, and local processing failures.
-- [ ] Benchmark a direct static HTTP path last, after the egress gate. Add it only if it materially improves latency/request cost and uses the same proxy/DNS pinning, redirects, byte limits, crawler identity, and cancellation. Its ability to send conditional validators is a Phase 4 requirement because Crawl4AI's network API cannot accept arbitrary request headers.
-- [ ] Add a bounded `/v1/fetch` REST/MCP contract after the internal outcome model and egress gate are stable. It is useful to agents with a known URL and need not wait for site crawl; raw HTML remains opt-in, size-capped, and absent from ordinary search.
+- [x] Add one shared transport policy for request-body bytes, total response bytes, per-route and per-stage deadlines, process-wide in-flight searches/fetches, per-host work, subqueries, URLs, raw-content size, and internal fan-out. Replace per-call crawl semaphores with process-owned limiters and give sequential chunking bounded concurrency plus a configurable stage budget. Enforcement, settings validation, OpenAPI metadata, and MCP descriptions must read from the same definitions.
+- [x] Return `413` for oversized bodies, `429` with bounded `Retry-After` when no request slot is available, and a closed timeout error when the route deadline expires. Keep `/livez` process-only. Thread a cancellation scope through REST, in-process MCP, stdio MCP, `run_search`, and every client so timeout or disconnect stops pending work and records why.
+- [x] Introduce typed stage outcomes with requested/final URL, status, content type, title, links, retrieval method, elapsed time, and closed reasons including content, empty shell, challenge, robots refusal, upstream timeout, orchestrator deadline cancellation, unsafe redirect, unsupported content/capability, content too large, extraction empty, malformed upstream response, and upstream failure.
+- [x] Wrap the current Crawl4AI backend first. Preserve its browser-capable role; capture its status, final URL, links, metadata, and allowlisted `ETag`/`Last-Modified`/content headers; map every response/failure into the typed outcome; and never return or log arbitrary headers.
+- [x] Complete the Phase 0 redirect/egress design. Preserve per-hop and final URL checks, but remove any duplicate target-site request that bypasses connect-time DNS pinning.
+- [x] Define backend capabilities such as HTML, JavaScript rendering, PDF/document, links, metadata, and raw HTML. Routing must either choose a capable backend or return `unsupported_capability`; it must not silently drop requested behavior.
+- [x] Apply the configured crawler identity consistently through Crawl4AI and every direct target-site request. Treat identity as honest attribution, not a mechanism for rotating or impersonating browsers.
+- [x] Detect empty/SPA, challenge, extraction-empty, and oversize outcomes conservatively. Fall back from failed HTML extraction to the already-returned Crawl4AI Markdown before classifying the document empty; never cache, chunk, or return challenge/error shells as evidence.
+- [x] Return bounded per-URL terminal outcomes and aggregate counts so an agent can distinguish retryable timeouts/rate limits from robots refusal, unsafe targets, unsupported formats, and local processing failures.
+- [x] Benchmark a direct static HTTP path last, after the egress gate. Add it only if it materially improves latency/request cost and uses the same proxy/DNS pinning, redirects, byte limits, crawler identity, and cancellation. Its ability to send conditional validators is a Phase 4 requirement because Crawl4AI's network API cannot accept arbitrary request headers.
+- [x] Add a bounded `/v1/fetch` REST/MCP contract after the internal outcome model and egress gate are stable. It is useful to agents with a known URL and need not wait for site crawl; raw HTML remains opt-in, size-capped, and absent from ordinary search.
+
+### Implementation report — 2026-08-07
+
+- Added shared request, response, content, route-deadline, stage-deadline, process-admission, per-host, and internal-fan-out policies across REST, in-process MCP, stdio MCP, search, known-URL fetch, Crawl4AI, and chunking.
+- Added bounded `POST /v1/fetch` plus matching in-process and stdio `web_fetch` tools. The typed per-URL contract reports requested/final URL, status, content type, title, links, bounded metadata and validators, retrieval method, elapsed time, retryability, and closed terminal reasons without changing `thorondor.search.v1`.
+- Reworked Crawl4AI handling to stream and cap upstream bodies, preserve duplicate inputs safely, retain only allowlisted provenance, validate changed final URLs before content acceptance, classify challenge and empty shells, and contain local failures per URL. Failed HTML cleaning falls back to Crawl4AI Markdown.
+- Added cancellation-aware route cleanup and stage deadlines for planning, discovery, crawling, chunking, and reranking. Capacity exhaustion returns bounded retry metadata while `/livez` remains dependency-free.
+- Evaluated a direct static HTTP route and rejected it at the egress security gate because no reviewed connector currently supplies connect-time DNS pinning and redirect enforcement. Crawl4AI remains the only target-site route; no cache or persistence was introduced.
+- Added deterministic Phase 2 fixtures and benchmark reporting for static HTML, modeled browser rendering, PDF/document content, challenge and empty shells, malformed payloads, metadata, links, bytes, requests, latency, and terminal-reason accuracy.
 
 ### Verification
 
-- [ ] Add transport tests for body/response caps, process-wide and per-host rejection, per-stage attribution, deadline/disconnect cancellation, cleanup of tasks/slots, bounded `Retry-After`, and unaffected liveness checks.
-- [ ] Add deterministic backend tests for static and browser-rendered success, final URL/status/headers/links capture, empty/challenge/extraction-empty shells, cleaner fallback, PDF/document, timeout, malformed payload, robots refusal, unsafe redirect, oversize content, and unsupported capability.
-- [ ] Add regression tests proving every target-site dispatch uses URL safety and enforced egress, final URLs are revalidated, and no arbitrary request/response header crosses the trust boundary.
-- [ ] Add REST/in-process-MCP/stdio-MCP parity tests for `/v1/fetch`, cancellation, limits, and per-URL outcomes.
-- [ ] Publish a fixture benchmark comparing candidate routes by evidence quality, JavaScript/static/document coverage, metadata/links completeness, latency, requests, bytes, and terminal reason before enabling a new route.
+- [x] Add transport tests for body/response caps, process-wide and per-host rejection, per-stage attribution, deadline/disconnect cancellation, cleanup of tasks/slots, bounded `Retry-After`, and unaffected liveness checks.
+- [x] Add deterministic backend tests for static and browser-rendered success, final URL/status/headers/links capture, empty/challenge/extraction-empty shells, cleaner fallback, PDF/document, timeout, malformed payload, robots refusal, unsafe redirect, oversize content, and unsupported capability.
+- [x] Add regression tests proving every target-site dispatch uses URL safety and enforced egress, final URLs are revalidated, and no arbitrary request/response header crosses the trust boundary.
+- [x] Add REST/in-process-MCP/stdio-MCP parity tests for `/v1/fetch`, cancellation, limits, and per-URL outcomes.
+- [x] Publish a fixture benchmark comparing candidate routes by evidence quality, JavaScript/static/document coverage, metadata/links completeness, latency, requests, bytes, and terminal reason before enabling a new route.
+
+### Verification report — 2026-08-07
+
+- Separate verification found two low-severity omissions and corrected them: the closed fetch-outcome test and contract prose lacked the intentional `capacity_unavailable` member, and cancellation was proven at REST/pipeline boundaries but not directly at both MCP wrappers. No production behavior was weakened or bypassed.
+- Focused MCP verification passed 23 in-process/transport tests and 9 stdio-proxy tests, including caller-cancellation propagation, fetch parity, response caps, capacity errors, and the concise stable `web_search` descriptor.
+- Full offline service and orchestrator suite: 526 passed. Full CLI suite: 80 passed.
+- `PYTHON=.venv/bin/python bash scripts/check-release-guard.sh` passed, including compilation, locked dependency checks, tests, and rendered Compose topology. `git diff --check` also passed.
+- The final fixture benchmark processed seven outcomes in 0.294 ms with zero network requests and 2,546 payload bytes. Terminal-reason accuracy, content Markdown coverage, metadata coverage, and applicable HTML link coverage were each 1.0.
+- The direct static route remains disabled because it failed the connect-time DNS-pinning and redirect-enforcement eligibility gate.
+- Tengwar's `just thorondor-deploy` recipe rebuilt local orchestrator image `sha256:c2023edce3d1a425c325b351f29f3bf1ad850260aea94590e6469a29481e4665`, recreated only the Thorondor orchestrator, preserved the shared network and existing services, and reported every readiness dependency healthy.
+- Real MCP 2.0 `curl` calls from Tengwar's backend container listed both tools, executed `web_search` through discovery, Crawl4AI, chunking, embedding, and reranking, and executed `web_fetch` against `https://example.com` with a successful typed `thorondor.fetch.v1` content outcome.
+- Tengwar discovered both live descriptors but correctly withheld them from agent chat because the changed `web_search` checksum and new `web_fetch` descriptor require explicit administrator approval. No registry policy was bypassed or silently accepted.
+- Phase 2 was accepted by the user after deployment and live verification.
+
+### Acceptance — 2026-08-07
+
+- Accepted by the user after separate verification, canonical Tengwar deployment, and successful live MCP calls to both `web_search` and `web_fetch`.
 
 ## Phase 3 — Sitemap-first mapping and bounded site crawl
 **Status:** pending

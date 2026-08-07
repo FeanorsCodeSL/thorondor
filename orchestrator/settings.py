@@ -5,7 +5,8 @@ import os
 import re
 from urllib.parse import urlparse
 
-from .models import MAX_SUBQUERY_COUNT
+from .models import MAX_SELECTED_URLS, MAX_SUBQUERY_COUNT
+from .resource_policy import ResourcePolicy
 from .url_safety import UrlSafetyPolicy
 
 MAX_CRAWL_CONCURRENCY = 20
@@ -84,6 +85,10 @@ class SearchProfileDefaults:
             raise RuntimeError("search profile max_urls must be >= 1")
         if self.max_passages < 1:
             raise RuntimeError("search profile max_passages must be >= 1")
+        if self.max_urls > MAX_SELECTED_URLS:
+            raise RuntimeError(
+                f"search profile max_urls must be <= {MAX_SELECTED_URLS}"
+            )
 
 
 @dataclass(frozen=True)
@@ -127,6 +132,19 @@ class Settings:
     markdown_extractor_include_tables: bool
     markdown_extractor_deduplicate: bool
     max_subqueries: int
+    max_request_body_bytes: int
+    max_response_body_bytes: int
+    search_route_deadline_s: float
+    fetch_route_deadline_s: float
+    discovery_timeout_s: float
+    chunk_timeout_s: float
+    max_inflight_searches: int
+    max_inflight_fetches: int
+    admission_wait_s: float
+    admission_retry_after_s: int
+    max_internal_fanout: int
+    max_content_bytes: int
+    chunk_concurrency: int
     search_profiles: dict[str, SearchProfileDefaults]
     url_safety_policy: UrlSafetyPolicy
 
@@ -158,6 +176,41 @@ class Settings:
         if not 1 <= self.max_subqueries <= MAX_SUBQUERY_COUNT:
             raise RuntimeError(
                 f"MAX_SUBQUERIES must be between 1 and {MAX_SUBQUERY_COUNT}"
+            )
+        if not 1 <= self.max_urls <= MAX_SELECTED_URLS:
+            raise RuntimeError(
+                f"MAX_URLS must be between 1 and {MAX_SELECTED_URLS}"
+            )
+        try:
+            ResourcePolicy(
+                max_request_body_bytes=self.max_request_body_bytes,
+                max_response_body_bytes=self.max_response_body_bytes,
+                search_route_deadline_s=self.search_route_deadline_s,
+                fetch_route_deadline_s=self.fetch_route_deadline_s,
+                discovery_stage_deadline_s=self.discovery_timeout_s,
+                crawl_stage_deadline_s=self.crawl_timeout_s,
+                chunk_stage_deadline_s=self.chunk_timeout_s,
+                rerank_stage_deadline_s=self.reranker_timeout_s,
+                max_inflight_searches=self.max_inflight_searches,
+                max_inflight_fetches=self.max_inflight_fetches,
+                admission_wait_s=self.admission_wait_s,
+                admission_retry_after_s=self.admission_retry_after_s,
+                max_internal_fanout=self.max_internal_fanout,
+                max_content_bytes=self.max_content_bytes,
+                chunk_concurrency=self.chunk_concurrency,
+            )
+        except ValueError as exc:
+            raise RuntimeError(str(exc)) from exc
+        required_fanout = max(
+            self.max_urls,
+            self.max_subqueries,
+            self.crawl_concurrency,
+            self.chunk_concurrency,
+            *(profile.max_urls for profile in self.search_profiles.values()),
+        )
+        if self.max_internal_fanout < required_fanout:
+            raise RuntimeError(
+                "MAX_INTERNAL_FANOUT must cover URL, subquery, crawl, chunk, and profile limits"
             )
 
 
@@ -202,6 +255,19 @@ def load_settings() -> Settings:
         markdown_extractor_include_tables=_bool_env("MARKDOWN_EXTRACTOR_INCLUDE_TABLES"),
         markdown_extractor_deduplicate=_bool_env("MARKDOWN_EXTRACTOR_DEDUPLICATE"),
         max_subqueries=_int_env("MAX_SUBQUERIES"),
+        max_request_body_bytes=_int_env("MAX_REQUEST_BODY_BYTES"),
+        max_response_body_bytes=_int_env("MAX_RESPONSE_BODY_BYTES"),
+        search_route_deadline_s=_float_env("SEARCH_ROUTE_DEADLINE_S"),
+        fetch_route_deadline_s=_float_env("FETCH_ROUTE_DEADLINE_S"),
+        discovery_timeout_s=_float_env("DISCOVERY_TIMEOUT_S"),
+        chunk_timeout_s=_float_env("CHUNK_TIMEOUT_S"),
+        max_inflight_searches=_int_env("MAX_INFLIGHT_SEARCHES"),
+        max_inflight_fetches=_int_env("MAX_INFLIGHT_FETCHES"),
+        admission_wait_s=_float_env("ADMISSION_WAIT_S"),
+        admission_retry_after_s=_int_env("ADMISSION_RETRY_AFTER_S"),
+        max_internal_fanout=_int_env("MAX_INTERNAL_FANOUT"),
+        max_content_bytes=_int_env("MAX_CONTENT_BYTES"),
+        chunk_concurrency=_int_env("CHUNK_CONCURRENCY"),
         search_profiles={
             profile: SearchProfileDefaults(
                 token_budget=_int_env(f"SEARCH_PROFILE_{profile.upper()}_TOKEN_BUDGET"),

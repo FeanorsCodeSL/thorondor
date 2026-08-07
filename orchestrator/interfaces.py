@@ -8,6 +8,7 @@ from .types import (
     CleanedPage,
     DiscoveryOutcome,
     DiscoveryResult,
+    FetchStageOutcome,
     Page,
     PrefilteredChunks,
     RerankOutcome,
@@ -36,6 +37,13 @@ class SelectionPolicy(Protocol):
 
 class ContentExtractor(Protocol):
     async def extract(self, urls: list[str]) -> list[Page]: ...
+
+    async def fetch(
+        self,
+        urls: list[str],
+        capabilities: frozenset[str],
+        include_raw_html: bool,
+    ) -> list[FetchStageOutcome]: ...
 
 
 class MarkdownCleaner(Protocol):

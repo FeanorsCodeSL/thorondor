@@ -14,7 +14,7 @@ The design is built around three hard constraints:
 
 ### Orchestrator (`orchestrator/`)
 
-The central FastAPI service. It exposes `POST /v1/search`, a backward-compatible `POST /search` alias, and an MCP `web_search` tool mounted at `/mcp`. A single `run_search` pipeline function handles both surfaces.
+The central FastAPI service. It exposes `POST /v1/search`, a backward-compatible `POST /search` alias, bounded `POST /v1/fetch`, and matching MCP `web_search` and `web_fetch` tools mounted at `/mcp`. Search and known-URL fetch share the same process-owned admission, byte, deadline, URL-safety, and Crawl4AI outcome policies.
 
 The orchestrator is the only service that speaks to all other components. It holds no state between requests other than shared HTTP connection pools (reused for efficiency). On startup it validates every required environment variable through a strict settings loader; missing or blank required keys raise `RuntimeError` and prevent the process from starting.
 

@@ -54,7 +54,7 @@ publishes multi-arch manifests and records digest refs in the release artifact
 | httpx | 0.28.1 | BSD-3-Clause | Async HTTP client for all downstream seams |
 | idna | 3.18 | BSD-3-Clause | Non-transitional IDNA encoding for conservative URL identity |
 | Pydantic | 2.13.4 | MIT | Request/response wire models, settings validation |
-| MCP Python SDK | 2.0.0 | MIT | MCP `web_search` tool surface |
+| MCP Python SDK | 2.0.0 | MIT | MCP `web_search` and `web_fetch` tool surfaces |
 | Trafilatura | 2.2.0 | Apache-2.0 | HTML-to-Markdown content extraction |
 
 ### Semantic Chunking Service (`semantic-chunking-service/requirements.txt`)

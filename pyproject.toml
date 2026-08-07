@@ -28,6 +28,9 @@ thorondor-mcp = "thorondor_cli.mcp_proxy:main"
 requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
 
+[tool.setuptools]
+py-modules = ["thorondor_contracts"]
+
 [tool.setuptools.packages.find]
 include = ["thorondor_cli*"]
 exclude = ["thorondor_cli.tests*"]

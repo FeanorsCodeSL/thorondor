@@ -1,12 +1,17 @@
 """MCP web_search tool for Thorondor."""
+import json
 import os
 from typing import Literal
 
 from mcp.server.mcpserver import MCPServer
 from mcp.server.transport_security import TransportSecuritySettings
 
-from .models import SearchRequest
+from thorondor_contracts import FETCH_TOOL_DESCRIPTION, SEARCH_TOOL_DESCRIPTION
+
+from .fetch_pipeline import run_fetch
+from .models import FetchCapability, FetchRequest, SearchRequest
 from .pipeline import run_search
+from .resource_policy import CapacityUnavailable, RouteDeadlineExceeded
 
 DEFAULT_MCP_ALLOWED_HOSTS = (
     "127.0.0.1:*",
@@ -33,8 +38,6 @@ def _csv_env(name: str, default: tuple[str, ...]) -> list[str]:
 
 mcp = MCPServer("thorondor")
 deps_override = None
-
-
 def set_deps(deps) -> None:
     global deps_override
     deps_override = deps
@@ -48,7 +51,45 @@ def _get_deps():
     return get_deps()
 
 
-@mcp.tool()
+def _operation_error(exc: CapacityUnavailable | RouteDeadlineExceeded) -> dict:
+    if isinstance(exc, CapacityUnavailable):
+        return {
+            "error": "capacity_unavailable",
+            "status_code": 429,
+            "route": exc.route,
+            "retry_after_s": exc.retry_after_s,
+        }
+    return {
+        "error": exc.reason,
+        "status_code": 504,
+        "route": exc.route,
+    }
+
+
+def _request_limit_error(payload: dict, deps) -> dict | None:
+    size = len(
+        json.dumps(payload, ensure_ascii=True, separators=(",", ":")).encode("utf-8")
+    )
+    max_bytes = deps.resource_policy.max_request_body_bytes
+    if size <= max_bytes:
+        return None
+    return {
+        "error": "request_body_too_large",
+        "status_code": 413,
+        "max_bytes": max_bytes,
+    }
+
+
+def _bounded_response(response, deps) -> dict:
+    if (
+        len(response.model_dump_json().encode("utf-8"))
+        > deps.resource_policy.max_response_body_bytes
+    ):
+        return {"error": "response_body_too_large", "status_code": 500}
+    return response.model_dump()
+
+
+@mcp.tool(description=SEARCH_TOOL_DESCRIPTION)
 async def web_search(
     query: str,
     search_profile: Literal["quick", "research", "deep"] | None = None,
@@ -61,48 +102,12 @@ async def web_search(
     max_passages: int | None = None,
     include_raw_markdown: bool | None = None,
 ) -> dict:
-    """Search the live web for evidence-bearing passages.
+    """Search the live web and return source-cited evidence passages.
 
-    Use this when an agent needs current web evidence with citations rather
-    than a prose summary. The tool is a thin twin of REST `POST /v1/search`:
-    defaults are resolved by the shared pipeline, and the returned envelope is
-    the same `SearchResponse` shape.
-
-    Args:
-        query: The user's original information need. Reranking always scores
-            against this query, not any discovery sub-query.
-        search_profile: Optional default profile. `quick` is for narrow factual
-            lookup, `research` broadens URL/passages/token defaults for normal
-            investigation, and `deep` uses the largest bounded defaults.
-        token_budget: Optional maximum returned passage budget. If omitted,
-            the profile or server default is used. This controls assembly, not
-            crawling.
-        max_urls: Optional cap on selected URLs before crawl. If omitted, the
-            profile or server default is used.
-        freshness: Optional discovery freshness hint: day, week, month, year.
-        domains: Optional domain allowlist for this call.
-        exclude_domains: Optional domain blocklist for this call.
-        decompose: Whether to let the optional query planner split/expand the
-            query. If omitted, the REST default is used.
-        max_passages: Optional returned chunk/passage count cap after token
-            budgeting. It is not a page count.
-        include_raw_markdown: Include raw markdown for returned citations when
-            the caller needs source-preserving evidence.
-
-    Returns:
-        A versioned response envelope with `query`, `passages`, `citations`,
-        `stats`, optional `raw_markdown`, and `schema_version`. Each passage has
-        `text`, `score`, `score_components`, `token_count`,
-        `citation_id`, exact span fields, `document_id`, and `evidence_id`
-        when `verbatim=true`. Citations include
-        source-document identity, evidence spans, and bounded source-attributed
-        metadata with conflicts preserved;
-        `stats.subquery_diagnostics`, `stats.engine_contributions`,
-        `stats.discovery_status`, and `stats.unresponsive_engines` report
-        search behavior and degradation. Bounded URL diagnostics expose
-        contributor and selection provenance with omission counts;
-        evidence-quality and output-envelope counters disclose dropped content.
-        `stats.reason` is a closed enum when the call returns an empty 200 response.
+    Use for current or external information that requires verification.
+    search_profile selects quick, research, or deep bounded search. decompose
+    controls query expansion. include_raw_markdown adds source Markdown when
+    exact source context is needed.
     """
     request_data = {
         "query": query,
@@ -116,9 +121,53 @@ async def web_search(
         "max_passages": max_passages,
         "include_raw_markdown": include_raw_markdown,
     }
-    request = SearchRequest(**{key: value for key, value in request_data.items() if value is not None})
-    response = await run_search(request, _get_deps())
-    return response.model_dump()
+    request_data = {key: value for key, value in request_data.items() if value is not None}
+    deps = _get_deps()
+    if error := _request_limit_error(request_data, deps):
+        return error
+    request = SearchRequest(**request_data)
+    try:
+        response = await run_search(request, deps)
+    except (CapacityUnavailable, RouteDeadlineExceeded) as exc:
+        return _operation_error(exc)
+    return _bounded_response(response, deps)
+
+
+@mcp.tool(description=FETCH_TOOL_DESCRIPTION)
+async def web_fetch(
+    urls: list[str],
+    capabilities: list[FetchCapability] | None = None,
+) -> dict:
+    """Fetch evidence from one to four known URLs.
+
+    Use this when an agent already knows the target URLs. Each URL returns a
+    typed terminal outcome, retryability, final URL, status, content type,
+    bounded metadata and links, and untrusted provenance. Raw HTML is returned
+    only when explicitly requested. Server-configured shared byte limits,
+    route and stage deadlines, process-wide admission slots, per-host crawl
+    limits, and internal fan-out caps apply.
+
+    Args:
+        urls: Unique HTTP or HTTPS targets to fetch.
+        capabilities: Required output capabilities. Omit for Markdown,
+            JavaScript rendering, links, and metadata. Unsupported capability
+            combinations fail closed per URL.
+
+    Returns:
+        The versioned `thorondor.fetch.v1` envelope with bounded per-URL
+        results and aggregate terminal-outcome counts.
+    """
+    request_data = {"urls": urls, "capabilities": capabilities}
+    request_data = {key: value for key, value in request_data.items() if value is not None}
+    deps = _get_deps()
+    if error := _request_limit_error(request_data, deps):
+        return error
+    request = FetchRequest(**request_data)
+    try:
+        response = await run_fetch(request, deps)
+    except (CapacityUnavailable, RouteDeadlineExceeded) as exc:
+        return _operation_error(exc)
+    return _bounded_response(response, deps)
 
 
 mcp_http_app = mcp.streamable_http_app(

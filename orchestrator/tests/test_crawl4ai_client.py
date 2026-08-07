@@ -1,7 +1,9 @@
 import anyio
+import asyncio
 import httpx
 import ipaddress
 import json
+from pathlib import Path
 import time
 import pytest
 
@@ -17,7 +19,11 @@ from orchestrator.clients.crawl4ai_client import (
     Crawl4aiExtractor,
 )
 from orchestrator.observability import reset_request_id, set_request_id
+from orchestrator.outcome_codes import FetchOutcomeCode
 from orchestrator.url_safety import UrlSafetyPolicy, is_safe_crawl_url
+
+
+FIXTURE_ROOT = Path(__file__).parent / "fixtures" / "web_intelligence"
 
 
 def _extractor(**kwargs) -> Crawl4aiExtractor:
@@ -954,3 +960,452 @@ def test_per_host_concurrency_is_bounded(monkeypatch):
     )
 
     assert peak_by_host["a.test"] == 1
+
+
+def test_fetch_returns_typed_content_outcome(monkeypatch):
+    def handler(req):
+        url = json.loads(req.content)["urls"][0]
+        return httpx.Response(
+            200,
+            json={
+                "results": [
+                    {
+                        "success": True,
+                        "url": url,
+                        "redirected_url": "https://a.test/final",
+                        "status_code": 203,
+                        "response_headers": {
+                            "Content-Type": "text/html",
+                            "ETag": '"v1"',
+                            "Set-Cookie": "secret",
+                        },
+                        "metadata": {"title": "Final", "language": "en"},
+                        "links": {"internal": [{"href": "/next"}]},
+                        "markdown": {"raw_markdown": "# Final\n\nBody."},
+                        "cleaned_html": "<article>Body.</article>",
+                    }
+                ]
+            },
+        )
+
+    transport = httpx.MockTransport(handler)
+    client = httpx.AsyncClient(transport=transport)
+    extractor = _extractor(client=client, url_safety=lambda _url: True)
+
+    outcomes = anyio.run(
+        extractor.fetch,
+        ["https://a.test/start"],
+        frozenset({"markdown", "links", "metadata", "raw_html"}),
+        True,
+    )
+
+    assert len(outcomes) == 1
+    outcome = outcomes[0]
+    assert outcome.code == FetchOutcomeCode.CONTENT
+    assert outcome.requested_url == "https://a.test/start"
+    assert outcome.final_url == "https://a.test/final"
+    assert outcome.status_code == 203
+    assert outcome.content_type == "text/html"
+    assert outcome.etag == '"v1"'
+    assert outcome.last_modified is None
+    assert outcome.links == {"internal": [{"href": "/next"}]}
+    assert outcome.metadata == {"language": "en", "title": "Final"}
+    assert outcome.page is not None
+    assert outcome.page.markdown == "# Final\n\nBody."
+    assert outcome.page.html == "<article>Body.</article>"
+
+    anyio.run(client.aclose)
+
+
+@pytest.mark.parametrize(
+    ("response", "expected"),
+    [
+        (httpx.Response(200, text="not json"), FetchOutcomeCode.MALFORMED_UPSTREAM_RESPONSE),
+        (httpx.Response(429, json={}), FetchOutcomeCode.RATE_LIMITED),
+        (httpx.Response(503, json={}), FetchOutcomeCode.UPSTREAM_FAILURE),
+    ],
+)
+def test_fetch_maps_upstream_failures_to_closed_outcomes(monkeypatch, response, expected):
+    transport = httpx.MockTransport(lambda _req: response)
+    client = httpx.AsyncClient(transport=transport)
+    extractor = _extractor(client=client)
+
+    outcomes = anyio.run(
+        extractor.fetch,
+        ["https://a.test"],
+        frozenset({"markdown"}),
+        False,
+    )
+
+    assert outcomes[0].code == expected
+    anyio.run(client.aclose)
+
+
+def test_fetch_maps_transport_timeout_to_closed_outcome():
+    def handler(req):
+        raise httpx.ReadTimeout("slow", request=req)
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    extractor = _extractor(client=client)
+
+    outcomes = anyio.run(
+        extractor.fetch,
+        ["https://a.test"],
+        frozenset({"markdown"}),
+        False,
+    )
+
+    assert outcomes[0].code == FetchOutcomeCode.UPSTREAM_TIMEOUT
+    anyio.run(client.aclose)
+
+
+@pytest.mark.parametrize(
+    ("item", "expected"),
+    [
+        (
+            {
+                "success": False,
+                "status_code": 403,
+                "metadata": {"robots_denied": True},
+            },
+            FetchOutcomeCode.ROBOTS_REFUSED,
+        ),
+        (
+            {
+                "success": True,
+                "status_code": 403,
+                "markdown": "Verify you are human with this CAPTCHA",
+            },
+            FetchOutcomeCode.CHALLENGE,
+        ),
+        (
+            {
+                "success": True,
+                "status_code": 200,
+                "markdown": "",
+                "html": "<html><script>window.app = true</script></html>",
+            },
+            FetchOutcomeCode.EMPTY_SHELL,
+        ),
+        (
+            {
+                "success": True,
+                "status_code": 200,
+                "markdown": "",
+                "html": "",
+            },
+            FetchOutcomeCode.EXTRACTION_EMPTY,
+        ),
+    ],
+)
+def test_fetch_classifies_non_content_outcomes(item, expected):
+    client = httpx.AsyncClient(
+        transport=httpx.MockTransport(
+            lambda _req: httpx.Response(200, json={"results": [item]})
+        )
+    )
+    extractor = _extractor(client=client)
+
+    outcomes = anyio.run(
+        extractor.fetch,
+        ["https://a.test"],
+        frozenset({"markdown", "javascript"}),
+        False,
+    )
+
+    assert outcomes[0].code == expected
+    anyio.run(client.aclose)
+
+
+@pytest.mark.parametrize(
+    ("fixture_name", "expected"),
+    [
+        ("challenge-shell.html", FetchOutcomeCode.CHALLENGE),
+        ("javascript-shell.html", FetchOutcomeCode.EMPTY_SHELL),
+    ],
+)
+def test_fetch_classifies_checked_in_shell_fixtures(fixture_name, expected):
+    html = (FIXTURE_ROOT / fixture_name).read_text(encoding="utf-8")
+    client = httpx.AsyncClient(
+        transport=httpx.MockTransport(
+            lambda _req: httpx.Response(
+                200,
+                json={
+                    "results": [
+                        {
+                            "success": True,
+                            "status_code": 200,
+                            "html": html,
+                            "markdown": "",
+                        }
+                    ]
+                },
+            )
+        )
+    )
+    extractor = _extractor(client=client)
+
+    outcomes = anyio.run(
+        extractor.fetch,
+        ["https://fixtures.thorondor.test/page"],
+        frozenset({"markdown", "javascript"}),
+        False,
+    )
+
+    assert outcomes[0].code == expected
+    anyio.run(client.aclose)
+
+
+@pytest.mark.parametrize(
+    ("content_type", "capabilities", "expected"),
+    [
+        (
+            "application/pdf",
+            frozenset({"markdown"}),
+            FetchOutcomeCode.UNSUPPORTED_CAPABILITY,
+        ),
+        (
+            "application/pdf",
+            frozenset({"markdown", "pdf"}),
+            FetchOutcomeCode.CONTENT,
+        ),
+        (
+            "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            frozenset({"markdown", "document"}),
+            FetchOutcomeCode.CONTENT,
+        ),
+        (
+            "image/png",
+            frozenset({"markdown"}),
+            FetchOutcomeCode.UNSUPPORTED_CONTENT,
+        ),
+    ],
+)
+def test_fetch_enforces_document_capabilities(content_type, capabilities, expected):
+    client = httpx.AsyncClient(
+        transport=httpx.MockTransport(
+            lambda _req: httpx.Response(
+                200,
+                json={
+                    "results": [
+                        {
+                            "success": True,
+                            "response_headers": {"Content-Type": content_type},
+                            "markdown": "extracted document text",
+                        }
+                    ]
+                },
+            )
+        )
+    )
+    extractor = _extractor(client=client)
+
+    outcomes = anyio.run(
+        extractor.fetch,
+        ["https://a.test/document"],
+        capabilities,
+        False,
+    )
+
+    assert outcomes[0].code == expected
+    anyio.run(client.aclose)
+
+
+def test_unsafe_redirect_takes_precedence_over_page_classification():
+    client = httpx.AsyncClient(
+        transport=httpx.MockTransport(
+            lambda _req: httpx.Response(
+                200,
+                json={
+                    "results": [
+                        {
+                            "success": True,
+                            "redirected_url": "http://127.0.0.1/admin",
+                            "markdown": "Verify you are human with this CAPTCHA",
+                        }
+                    ]
+                },
+            )
+        )
+    )
+    extractor = _extractor(client=client, url_safety=lambda _url: False)
+
+    outcomes = anyio.run(
+        extractor.fetch,
+        ["https://a.test/start"],
+        frozenset({"markdown"}),
+        False,
+    )
+
+    assert outcomes[0].code == FetchOutcomeCode.UNSAFE_REDIRECT
+    anyio.run(client.aclose)
+
+
+def test_fetch_rejects_content_over_shared_byte_limit():
+    client = httpx.AsyncClient(
+        transport=httpx.MockTransport(
+            lambda _req: httpx.Response(
+                200,
+                json={
+                    "results": [
+                        {
+                            "success": True,
+                            "markdown": "x" * 65,
+                        }
+                    ]
+                },
+            )
+        )
+    )
+    extractor = _extractor(client=client, max_content_bytes=64)
+
+    outcomes = anyio.run(
+        extractor.fetch,
+        ["https://a.test"],
+        frozenset({"markdown"}),
+        False,
+    )
+
+    assert outcomes[0].code == FetchOutcomeCode.CONTENT_TOO_LARGE
+    anyio.run(client.aclose)
+
+
+def test_fetch_stops_reading_upstream_response_at_shared_byte_limit():
+    class ChunkedBody(httpx.AsyncByteStream):
+        def __init__(self):
+            self.yielded = 0
+
+        async def __aiter__(self):
+            for chunk in (b"x" * 40, b"y" * 40, b"z" * 40):
+                self.yielded += 1
+                yield chunk
+
+    stream = ChunkedBody()
+    client = httpx.AsyncClient(
+        transport=httpx.MockTransport(
+            lambda _req: httpx.Response(200, stream=stream)
+        )
+    )
+    extractor = _extractor(
+        client=client,
+        max_content_bytes=32,
+        max_response_body_bytes=64,
+    )
+
+    outcomes = anyio.run(
+        extractor.fetch,
+        ["https://a.test"],
+        frozenset({"markdown"}),
+        False,
+    )
+
+    assert outcomes[0].code == FetchOutcomeCode.CONTENT_TOO_LARGE
+    assert stream.yielded == 2
+    anyio.run(client.aclose)
+
+
+@pytest.mark.parametrize(
+    ("concurrency", "per_host_concurrency", "second_url"),
+    [
+        (1, 2, "https://b.test/2"),
+        (2, 1, "https://a.test/2"),
+    ],
+    ids=("process", "per_host"),
+)
+def test_fetch_rejects_when_process_or_host_capacity_is_full(
+    concurrency,
+    per_host_concurrency,
+    second_url,
+):
+    entered = asyncio.Event()
+    release = asyncio.Event()
+
+    async def handler(req):
+        entered.set()
+        await release.wait()
+        url = json.loads(req.content)["urls"][0]
+        return httpx.Response(200, json={"markdown": "content", "url": url})
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    extractor = _extractor(
+        client=client,
+        concurrency=concurrency,
+        per_host_concurrency=per_host_concurrency,
+        admission_wait_s=0,
+    )
+
+    async def exercise():
+        first_task = asyncio.create_task(
+            extractor.fetch(
+                ["https://a.test/1"],
+                frozenset({"markdown"}),
+                False,
+            )
+        )
+        await entered.wait()
+        second = await extractor.fetch(
+            [second_url],
+            frozenset({"markdown"}),
+            False,
+        )
+        release.set()
+        first = await first_task
+        return first, second
+
+    first, second = anyio.run(exercise)
+
+    assert first[0].code == FetchOutcomeCode.CONTENT
+    assert second[0].code == FetchOutcomeCode.CAPACITY_UNAVAILABLE
+    anyio.run(client.aclose)
+
+
+def test_fetch_maps_unexpected_local_processing_failure_per_url():
+    client = httpx.AsyncClient(
+        transport=httpx.MockTransport(
+            lambda _req: httpx.Response(200, json={"markdown": "content"})
+        )
+    )
+    extractor = _extractor(client=client)
+
+    async def fail(*_args):
+        raise TypeError("broken parser")
+
+    extractor._outcome_from_payload = fail
+
+    outcomes = anyio.run(
+        extractor.fetch,
+        ["https://a.test"],
+        frozenset({"markdown"}),
+        False,
+    )
+
+    assert outcomes[0].code == FetchOutcomeCode.LOCAL_PROCESSING_FAILURE
+    anyio.run(client.aclose)
+
+
+def test_process_owned_concurrency_is_shared_across_extract_calls(monkeypatch):
+    active = 0
+    peak = 0
+
+    async def handler(req):
+        nonlocal active, peak
+        active += 1
+        peak = max(peak, active)
+        await anyio.sleep(0.02)
+        active -= 1
+        url = json.loads(req.content)["urls"][0]
+        return httpx.Response(200, json={"markdown": "content", "url": url})
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    extractor = _extractor(client=client, concurrency=1)
+
+    async def exercise():
+        await asyncio.gather(
+            extractor.extract(["https://a.test/1"]),
+            extractor.extract(["https://b.test/1"]),
+        )
+
+    anyio.run(exercise)
+
+    assert peak == 1
+    anyio.run(client.aclose)

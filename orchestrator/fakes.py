@@ -6,9 +6,11 @@ from .clients.chunker_client import ChunkerUnavailable
 from .clients.reranker_client import RerankerUnavailable
 from .clients.searxng_client import DiscoveryUnavailable
 from .markdown_cleaner import MarkdownCleanerImpl
+from .outcome_codes import FetchOutcomeCode
 from .pipeline import PipelineDeps
 from .prefilter import CandidatePrefilterImpl
 from .selection import SelectionPolicyImpl
+from .resource_policy import ResourcePolicy, RuntimeAdmission
 from .types import (
     AssembledCitation,
     AssembledPassage,
@@ -16,6 +18,7 @@ from .types import (
     DiscoveryEngineFailure,
     DiscoveryOutcome,
     DiscoveryResult,
+    FetchStageOutcome,
     Page,
     PrefilteredChunks,
     RerankerTelemetry,
@@ -161,9 +164,32 @@ class DownSelector:
 
 
 class FakeExtractor:
+    supported_capabilities = frozenset(
+        {"markdown", "javascript", "links", "metadata", "raw_html", "pdf", "document"}
+    )
+
     async def extract(self, urls: list[str]) -> list[Page]:
         await _async_boundary()
         return [Page(url, url.split("//", 1)[-1], f"Markdown for {url}") for url in urls]
+
+    async def fetch(self, urls, _capabilities, _include_raw_html):
+        pages = await self.extract(urls)
+        return [
+            FetchStageOutcome(
+                requested_url=page.url,
+                final_url=page.url,
+                code=FetchOutcomeCode.CONTENT,
+                retrieval_method="fake_browser",
+                elapsed_ms=0,
+                status_code=200,
+                content_type="text/html",
+                title=page.title,
+                links=page.links,
+                metadata=page.metadata,
+                page=page,
+            )
+            for page in pages
+        ]
 
 
 class EmptyExtractor:
@@ -385,6 +411,7 @@ class DownAssembler:
 
 
 def deps(**overrides) -> PipelineDeps:
+    resource_policy = overrides.pop("resource_policy", ResourcePolicy())
     values = {
         "planner": FakePlanner(),
         "discovery": FakeDiscovery(),
@@ -417,6 +444,9 @@ def deps(**overrides) -> PipelineDeps:
         "domain_allowlist": set(),
         "allowlist_only": False,
         "url_safety": list,
+        "crawl_url_safety": lambda _url: True,
+        "resource_policy": resource_policy,
+        "admission": RuntimeAdmission(resource_policy),
     }
     values.update(overrides)
     return PipelineDeps(**values)

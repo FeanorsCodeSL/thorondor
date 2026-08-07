@@ -31,6 +31,24 @@ All environment variables must be present in `.env` (and `.env.llamacpp` or `.en
 | `HEALTHCHECK_MAX_CONNECTIONS` | Required / `8` | int (≥ 1) | Max connections in the healthcheck HTTP client pool. | `HEALTHCHECK_MAX_KEEPALIVE_CONNECTIONS` |
 | `HEALTHCHECK_MAX_KEEPALIVE_CONNECTIONS` | Required / `4` | int (≥ 1) | Max keepalive connections in the healthcheck client pool. | `HEALTHCHECK_MAX_CONNECTIONS` |
 
+### Resource Envelope
+
+| Variable | Required / Default | Type | Description | Related |
+|---|---|---|---|---|
+| `MAX_REQUEST_BODY_BYTES` | Required / `32768` | int (≥ 1) | Maximum REST or in-process MCP request payload. Oversize HTTP requests return 413. | `MAX_RESPONSE_BODY_BYTES` |
+| `MAX_RESPONSE_BODY_BYTES` | Required / `2097152` | int (≥ 1) | Maximum serialized response and Crawl4AI or stdio-proxy response body. | `MAX_CONTENT_BYTES` |
+| `SEARCH_ROUTE_DEADLINE_S` | Required / `120` | float (> 0) | End-to-end search deadline; expiry returns a closed 504 error. | `MAX_INFLIGHT_SEARCHES` |
+| `FETCH_ROUTE_DEADLINE_S` | Required / `60` | float (> 0) | End-to-end known-URL fetch deadline; expiry returns a closed 504 error. | `MAX_INFLIGHT_FETCHES` |
+| `DISCOVERY_TIMEOUT_S` | Required / `20` | float (> 0) | Query-planning and per-subquery discovery stage deadline. | `MAX_SUBQUERIES` |
+| `CHUNK_TIMEOUT_S` | Required / `45` | float (> 0) | Total chunking stage deadline. | `CHUNK_CONCURRENCY` |
+| `MAX_INFLIGHT_SEARCHES` | Required / `4` | int (≥ 1) | Process-wide search admission slots. | `ADMISSION_WAIT_S` |
+| `MAX_INFLIGHT_FETCHES` | Required / `8` | int (≥ 1) | Process-wide known-URL fetch admission slots. | `ADMISSION_WAIT_S` |
+| `ADMISSION_WAIT_S` | Required / `0.05` | float (≥ 0) | Maximum wait for route or crawler capacity before rejection. | `ADMISSION_RETRY_AFTER_S` |
+| `ADMISSION_RETRY_AFTER_S` | Required / `1` | int (≥ 1) | `Retry-After` seconds returned with capacity HTTP 429 responses. | `ADMISSION_WAIT_S` |
+| `MAX_INTERNAL_FANOUT` | Required / `20` | int (≥ 1) | Shared cap that must cover URL, subquery, crawl, chunk, and profile limits. | `MAX_URLS`, `MAX_SUBQUERIES` |
+| `MAX_CONTENT_BYTES` | Required / `262144` | int (≥ 1) | Maximum combined Markdown and HTML bytes retained per fetched page. Must not exceed `MAX_RESPONSE_BODY_BYTES`. | `MAX_RESPONSE_BODY_BYTES` |
+| `CHUNK_CONCURRENCY` | Required / `4` | int (≥ 1) | Process-owned concurrent chunk-service requests. | `CHUNK_TIMEOUT_S` |
+
 ### Search Profiles
 
 | Variable | Required / Default | Type | Description | Related |

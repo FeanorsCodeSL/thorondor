@@ -115,7 +115,7 @@ The orchestrator's port `ORCHESTRATOR_PORT` is the only published port; all othe
 Thorondor provides SSRF protection, log sanitization, and network isolation. The following are operator responsibilities:
 
 - **TLS termination** — the orchestrator does not serve HTTPS. A reverse proxy with a valid TLS certificate must be placed in front.
-- **Access control** — there is no authentication on `POST /v1/search`, `POST /search`, or the MCP endpoint. Restrict access at the network or reverse-proxy layer.
+- **Access control** — there is no authentication on `POST /v1/search`, `POST /search`, `POST /v1/fetch`, or the MCP endpoint. Restrict access at the network or reverse-proxy layer.
 - **Host binding and firewall** — keep `ORCHESTRATOR_HOST=127.0.0.1` for personal/local deployments. Use `ORCHESTRATOR_HOST=0.0.0.0` only behind firewall, TLS, authentication, and rate limiting.
 - **Secret hygiene** — `.env` contains sensitive values. Do not commit it to version control. Inject secrets from a secrets manager at deploy time.
 - **`ALLOWLIST_ONLY=false` responsibility** — with the default setting, the service will crawl any URL that passes the IP safety filter. Set `ALLOWLIST_ONLY=true` and populate `DOMAIN_ALLOWLIST` in high-risk environments.
@@ -123,8 +123,8 @@ Thorondor provides SSRF protection, log sanitization, and network isolation. The
 
 ## 9. Known Limitations
 
-- **No authentication on orchestrator endpoints** — `POST /v1/search` and the MCP endpoint accept any request without authentication. This is by design for development convenience; operators must add auth at the reverse-proxy layer.
-- **No rate limiting** — the service does not enforce per-client rate limits. A high-volume client can exhaust SearXNG or Crawl4AI capacity.
+- **No authentication on orchestrator endpoints** — search, fetch, and MCP accept any request without authentication. This is by design for development convenience; operators must add auth at the reverse-proxy layer.
+- **No per-client quota** — process-wide admission rejects excess search or fetch work with bounded HTTP 429 responses, but it does not identify callers or allocate fair per-client quotas. Operators exposing the service to multiple clients must add authenticated rate limiting at the reverse proxy.
 - **Crawled content is untrusted but not sandboxed** — page text is tagged `trust: "untrusted"` in the response, but it is not executed, sandboxed at the OS level, or scanned for malicious patterns. Prompt injection via crawled content is a risk that agents consuming the passages must mitigate.
 - **SearXNG has no per-request auth by default** — `SEARXNG_API_KEY` is optional. Without it, the SearXNG `/search` endpoint is accessible to any service on the internal Docker network.
 - **Pinned egress enforcement depends on Compose topology** — custom deployments must preserve Crawl4AI's isolated control network, dedicated egress network, disabled internal-target escape hatch, and absence of external proxy overrides. The release guard checks the first-party local, CLI, and production Compose configurations.

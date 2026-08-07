@@ -6,7 +6,7 @@ A self-hosted, data-sovereign semantic web-search service for agents — discove
 
 ## What It Is
 
-Thorondor is a local semantic web-search stack designed to replace hosted search-for-agents APIs (Exa, Tavily, and equivalents) with an on-premises, operator-controlled pipeline. It uses SearXNG for multi-engine URL discovery, Crawl4AI for JavaScript-capable page crawling, a first-party `ClusterSemanticChunker` backed by BGE-M3 embeddings for globally-optimal chunk boundaries, and BGE-reranker-v2-m3 to score passages against the original query before assembly. The orchestrator exposes both `POST /v1/search` (REST) and an MCP `web_search` tool; both surfaces return the same versioned `SearchResponse` envelope with `passages`, `citations`, and `stats`. No persistent corpus, vector store, or implemented cache exists — all content is fetched live, processed, returned, and discarded.
+Thorondor is a local semantic web-search stack designed to replace hosted search-for-agents APIs (Exa, Tavily, and equivalents) with an on-premises, operator-controlled pipeline. It uses SearXNG for multi-engine URL discovery, Crawl4AI for JavaScript-capable page crawling, a first-party `ClusterSemanticChunker` backed by BGE-M3 embeddings for globally-optimal chunk boundaries, and BGE-reranker-v2-m3 to score passages against the original query before assembly. The orchestrator exposes versioned search and known-URL fetch contracts through REST and MCP. No persistent corpus, vector store, or implemented cache exists — all content is fetched live, processed, returned, and discarded.
 
 ## Architecture Overview
 
@@ -104,9 +104,9 @@ and `scripts/deploy-llamacpp.sh` so a fresh clone can deploy the llamacpp
 profile with no manual file placement.
 
 `thorondor doctor` is the non-interactive status path. `thorondor-mcp` is a
-native stdio MCP proxy that forwards `web_search` to the running
-`POST /v1/search` endpoint. The Dockerized HTTP MCP surface remains available at
-`http://localhost:8080/mcp`.
+native stdio MCP proxy that forwards `web_search` and `web_fetch` to the running
+`POST /v1/search` and `POST /v1/fetch` endpoints. The Dockerized HTTP MCP surface
+remains available at `http://localhost:8080/mcp`.
 
 `thorondor uninstall` stops the managed stack, removes `~/.thorondor`, and then
 removes the installed `thorondor` tool. Use `thorondor uninstall --keep-tool`
@@ -404,6 +404,12 @@ For `verbatim=true`, `start_index` and `end_index` are Unicode code-point offset
 
 `POST /search` is a backwards-compatible alias for `POST /v1/search`.
 
+### POST /v1/fetch
+
+Use `POST /v1/fetch` when the agent already knows one to four target URLs. The response is a `thorondor.fetch.v1` envelope with one bounded result per URL, aggregate terminal-outcome counts, retryability, final URL, status, content type, allowlisted validators, metadata, and links. Markdown, JavaScript rendering, links, and metadata are requested by default; PDF, document, and raw HTML capabilities are explicit. Raw HTML is size-capped and never appears in ordinary search responses.
+
+Terminal outcomes distinguish content from challenge or empty shells, robots refusal, timeout, rate limiting, unsafe redirects or targets, unsupported content or capabilities, oversized content, malformed upstream data, and local processing failures. Returned web content is always marked `provenance: "external_web"` and `trust: "untrusted"`.
+
 ## MCP
 
 Mount the MCP endpoint in your agent's configuration:
@@ -414,7 +420,7 @@ http://localhost:8080/mcp
 
 Transport: streamable HTTP (`stateless_http=True`). The server ID is `thorondor`.
 
-The single exposed tool is `web_search`. Its parameters mirror the REST request exactly. Returns the same `SearchResponse` dict shape as the REST endpoint, serialised by `model_dump()`.
+The exposed tools are `web_search` and `web_fetch`. `web_search` mirrors the search request and returns the versioned search envelope. `web_fetch` accepts one to four known URLs plus optional required capabilities and returns the same typed fetch envelope as `POST /v1/fetch`.
 
 Example MCP tool call (Claude SDK style):
 
@@ -522,6 +528,24 @@ All keys must be present in `.env` (leave optional keys blank rather than deleti
 | `HEALTHCHECK_TIMEOUT_S` | `2.0` | Per-dependency probe timeout in seconds. |
 | `HEALTHCHECK_MAX_CONNECTIONS` | `8` | Max connections in the healthcheck HTTP client pool. |
 | `HEALTHCHECK_MAX_KEEPALIVE_CONNECTIONS` | `4` | Max keepalive connections in the healthcheck client pool. |
+
+### Resource Envelope
+
+| Variable | Default | Description |
+|---|---|---|
+| `MAX_REQUEST_BODY_BYTES` | `32768` | Maximum REST or in-process MCP request payload. |
+| `MAX_RESPONSE_BODY_BYTES` | `2097152` | Maximum serialized REST, MCP, Crawl4AI, or stdio-proxy response payload. |
+| `SEARCH_ROUTE_DEADLINE_S` | `120` | End-to-end search deadline. |
+| `FETCH_ROUTE_DEADLINE_S` | `60` | End-to-end known-URL fetch deadline. |
+| `DISCOVERY_TIMEOUT_S` | `20` | Query-planning and per-subquery discovery stage deadline. |
+| `CHUNK_TIMEOUT_S` | `45` | Total chunking stage deadline. |
+| `MAX_INFLIGHT_SEARCHES` | `4` | Process-wide search admission slots. |
+| `MAX_INFLIGHT_FETCHES` | `8` | Process-wide fetch admission slots. |
+| `ADMISSION_WAIT_S` | `0.05` | Maximum wait for a route or crawler slot before rejection. |
+| `ADMISSION_RETRY_AFTER_S` | `1` | Bounded `Retry-After` value returned with HTTP 429. |
+| `MAX_INTERNAL_FANOUT` | `20` | Shared cap covering URL, subquery, crawl, chunk, and profile fan-out. |
+| `MAX_CONTENT_BYTES` | `262144` | Maximum combined Markdown and HTML bytes retained per fetched page. |
+| `CHUNK_CONCURRENCY` | `4` | Process-owned concurrent chunk-service requests. |
 
 ### Search Profiles
 

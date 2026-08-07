@@ -4,6 +4,7 @@ from types import SimpleNamespace
 from fastapi.testclient import TestClient
 import httpx
 import ipaddress
+import pytest
 import time
 
 import orchestrator.app as appmod
@@ -310,3 +311,185 @@ def test_health_check_rejects_timeout(monkeypatch):
     name, ok = anyio.run(appmod._check_url, "searxng", "http://searxng:8080/healthz")
 
     assert (name, ok) == ("searxng", False)
+
+
+def test_v1_fetch_returns_typed_outcome(monkeypatch):
+    monkeypatch.setattr(appmod, "deps", fakes.deps())
+
+    response = TestClient(appmod.app).post(
+        "/v1/fetch",
+        json={"urls": ["https://a.test/article"]},
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["schema_version"] == "thorondor.fetch.v1"
+    assert body["results"][0]["outcome"] == "content"
+    assert body["results"][0]["trust"] == "untrusted"
+    assert body["stats"] == {
+        "requested": 1,
+        "succeeded": 1,
+        "failed": 0,
+        "outcomes": [{"outcome": "content", "count": 1}],
+        "elapsed_ms": body["stats"]["elapsed_ms"],
+    }
+
+
+def test_oversized_request_body_returns_413_before_validation(monkeypatch):
+    deps = fakes.deps()
+    deps.resource_policy = appmod.ResourcePolicy(
+        **(deps.resource_policy.__dict__ | {"max_request_body_bytes": 32})
+    )
+    deps.admission = appmod.RuntimeAdmission(deps.resource_policy)
+    monkeypatch.setattr(appmod, "deps", deps)
+
+    response = TestClient(appmod.app).post(
+        "/v1/search",
+        content=b'{"query":"' + (b"x" * 64) + b'"}',
+        headers={"Content-Type": "application/json"},
+    )
+
+    assert response.status_code == 413
+    assert response.json()["detail"] == {
+        "reason": "request_body_too_large",
+        "max_bytes": 32,
+    }
+
+
+def test_capacity_returns_429_with_retry_after_and_livez_remains_available(monkeypatch):
+    deps = fakes.deps(
+        resource_policy=appmod.ResourcePolicy(
+            max_inflight_searches=1,
+            admission_wait_s=0.001,
+        )
+    )
+    monkeypatch.setattr(appmod, "deps", deps)
+
+    async def exercise():
+        async with deps.admission.search_slot():
+            async with httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=appmod.app),
+                base_url="http://testserver",
+            ) as client:
+                rejected = await client.post("/v1/search", json={"query": "x"})
+                live = await client.get("/livez")
+        return rejected, live
+
+    rejected, live = anyio.run(exercise)
+
+    assert rejected.status_code == 429
+    assert rejected.headers["Retry-After"] == "1"
+    assert rejected.json()["detail"] == {
+        "reason": "capacity_unavailable",
+        "route": "search",
+    }
+    assert live.status_code == 200
+    assert live.json() == {"status": "ok"}
+
+
+def test_search_route_deadline_returns_closed_504(monkeypatch):
+    class BlockingPlanner:
+        async def plan(self, _query):
+            await asyncio.Event().wait()
+
+    policy = appmod.ResourcePolicy(search_route_deadline_s=0.01)
+    monkeypatch.setattr(
+        appmod,
+        "deps",
+        fakes.deps(planner=BlockingPlanner(), resource_policy=policy),
+    )
+
+    response = TestClient(appmod.app).post("/v1/search", json={"query": "x"})
+
+    assert response.status_code == 504
+    assert response.json()["detail"] == {
+        "reason": "deadline_cancelled",
+        "route": "search",
+    }
+
+
+def test_caller_cancellation_stops_underlying_operation():
+    started = asyncio.Event()
+    cancelled = asyncio.Event()
+
+    class ConnectedRequest:
+        async def is_disconnected(self):
+            await asyncio.sleep(0)
+            return False
+
+    async def operation():
+        started.set()
+        try:
+            await asyncio.Event().wait()
+        finally:
+            cancelled.set()
+
+    async def exercise():
+        task = asyncio.create_task(
+            appmod._run_http_operation(ConnectedRequest(), operation(), appmod.SearchResponse)
+        )
+        await started.wait()
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        assert cancelled.is_set()
+
+    anyio.run(exercise)
+
+
+def test_client_disconnect_stops_underlying_operation():
+    started = asyncio.Event()
+    cancelled = asyncio.Event()
+
+    class DisconnectedRequest:
+        async def is_disconnected(self):
+            await started.wait()
+            return True
+
+    async def operation():
+        started.set()
+        try:
+            await asyncio.Event().wait()
+        finally:
+            cancelled.set()
+
+    async def exercise():
+        with pytest.raises(appmod.HTTPException) as exc_info:
+            await appmod._run_http_operation(
+                DisconnectedRequest(),
+                operation(),
+                appmod.SearchResponse,
+            )
+        assert exc_info.value.status_code == 499
+        assert exc_info.value.detail == {"reason": "client_disconnected"}
+        assert cancelled.is_set()
+
+    anyio.run(exercise)
+
+
+def test_response_body_limit_returns_closed_error(monkeypatch):
+    policy = appmod.ResourcePolicy(
+        max_response_body_bytes=128,
+        max_content_bytes=128,
+    )
+    monkeypatch.setattr(
+        appmod,
+        "deps",
+        fakes.deps(resource_policy=policy),
+    )
+
+    response = TestClient(appmod.app).post("/v1/search", json={"query": "x"})
+
+    assert response.status_code == 500
+    assert response.json()["detail"] == {"reason": "response_body_too_large"}
+
+
+def test_openapi_documents_shared_transport_errors_and_fetch_contract(monkeypatch):
+    monkeypatch.setattr(appmod, "deps", fakes.deps())
+
+    schema = TestClient(appmod.app).get("/openapi.json").json()
+
+    assert "/v1/fetch" in schema["paths"]
+    for path in ("/v1/search", "/v1/fetch"):
+        responses = schema["paths"][path]["post"]["responses"]
+        assert {"413", "429", "500", "504"}.issubset(responses)

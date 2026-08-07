@@ -25,6 +25,7 @@ EXPECTED_CODES = {
         ("MALFORMED_UPSTREAM_RESPONSE", "malformed_upstream_response"),
         ("UPSTREAM_FAILURE", "upstream_failure"),
         ("RATE_LIMITED", "rate_limited"),
+        ("CAPACITY_UNAVAILABLE", "capacity_unavailable"),
         ("UNSAFE_TARGET", "unsafe_target"),
         ("LOCAL_PROCESSING_FAILURE", "local_processing_failure"),
     ),

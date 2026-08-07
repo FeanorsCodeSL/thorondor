@@ -186,9 +186,9 @@ sub-screen discards in-progress edits.
 `thorondor doctor` is the plain-text status command for shells and automation.
 `thorondor uninstall` stops the managed stack, removes `~/.thorondor`, and
 uninstalls the local tool unless `--keep-tool` is passed. `thorondor-mcp` is the
-native stdio MCP proxy. It forwards `web_search` to the running stack's
-`POST /v1/search`; the Dockerized streamable HTTP MCP endpoint continues to be
-served at `/mcp`.
+native stdio MCP proxy. It forwards `web_search` and `web_fetch` to the running
+stack's `POST /v1/search` and `POST /v1/fetch` endpoints; the Dockerized
+streamable HTTP MCP endpoint continues to be served at `/mcp`.
 
 ### External and host model endpoints
 

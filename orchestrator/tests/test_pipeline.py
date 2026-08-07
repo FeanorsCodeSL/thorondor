@@ -21,6 +21,7 @@ from orchestrator.models import (
 )
 from orchestrator.pipeline import SearchDependencyUnavailable, run_search
 from orchestrator.prefilter import CandidatePrefilterImpl
+from orchestrator.resource_policy import ResourcePolicy
 from orchestrator.types import (
     Chunk,
     DiscoveryContribution,
@@ -28,10 +29,12 @@ from orchestrator.types import (
     DiscoveryOutcome,
     DiscoveryResult,
     Page,
+    FetchStageOutcome,
     RerankerTelemetry,
     RerankOutcome,
     ScoredChunk,
 )
+from orchestrator.outcome_codes import FetchOutcomeCode
 from orchestrator.url_safety import UrlSafetyPolicy, filter_safe_discovery_results
 from orchestrator.url_identity import build_document_identity, evidence_id_for
 
@@ -89,6 +92,142 @@ class _OutcomeDiscovery:
 class _ManyPlanner:
     async def plan(self, query: str) -> list[str]:
         return [f"q{index}" for index in range(50)]
+
+
+def test_shared_fanout_caps_subqueries_and_selected_urls():
+    discovery = _CountingDiscovery()
+    extractor = _RecordingExtractor()
+    deps = fakes.deps(
+        planner=_ManyPlanner(),
+        discovery=discovery,
+        extractor=extractor,
+        max_subqueries=8,
+        resource_policy=ResourcePolicy(max_internal_fanout=2),
+    )
+
+    anyio.run(run_search, SearchRequest(query="x", max_urls=20), deps)
+
+    assert discovery.queries == ["q0", "q1"]
+    assert len(extractor.attempted_urls) == 2
+
+
+def test_planner_stage_timeout_falls_back_to_original_query_and_cancels_work():
+    cancelled = asyncio.Event()
+    discovery = _CountingDiscovery()
+
+    class BlockingPlanner:
+        async def plan(self, _query):
+            try:
+                await asyncio.Event().wait()
+            finally:
+                cancelled.set()
+
+    deps = fakes.deps(
+        planner=BlockingPlanner(),
+        discovery=discovery,
+        resource_policy=ResourcePolicy(discovery_stage_deadline_s=0.01),
+    )
+
+    response = anyio.run(run_search, SearchRequest(query="x"), deps)
+
+    assert response.passages
+    assert discovery.queries == ["x"]
+    assert cancelled.is_set()
+
+
+def test_discovery_stage_timeout_is_attributed_and_cancels_work():
+    cancelled = asyncio.Event()
+
+    class BlockingDiscovery:
+        async def search(self, _subquery, _freshness=None):
+            try:
+                await asyncio.Event().wait()
+            finally:
+                cancelled.set()
+
+    deps = fakes.deps(
+        discovery=BlockingDiscovery(),
+        resource_policy=ResourcePolicy(discovery_stage_deadline_s=0.01),
+    )
+
+    with pytest.raises(SearchDependencyUnavailable) as exc_info:
+        anyio.run(run_search, SearchRequest(query="x"), deps)
+
+    assert exc_info.value.dependency == "searxng"
+    assert exc_info.value.reason == "searxng_unavailable"
+    assert cancelled.is_set()
+
+
+def test_crawl_stage_timeout_returns_per_url_deadline_outcome_and_cancels_work():
+    cancelled = asyncio.Event()
+
+    class BlockingFetcher:
+        async def fetch(self, _urls, _capabilities, _include_raw_html):
+            try:
+                await asyncio.Event().wait()
+            finally:
+                cancelled.set()
+
+    deps = fakes.deps(
+        discovery=_StaticDiscovery(["https://a.test/article"]),
+        extractor=BlockingFetcher(),
+        resource_policy=ResourcePolicy(crawl_stage_deadline_s=0.01),
+    )
+
+    response = anyio.run(run_search, SearchRequest(query="x"), deps)
+
+    assert response.stats.reason == "all_crawls_failed"
+    assert response.stats.fetch_outcomes[0].outcome == "deadline_cancelled"
+    assert response.stats.fetch_outcomes[0].retryable is True
+    assert cancelled.is_set()
+
+
+def test_chunk_stage_timeout_is_attributed_and_cancels_work():
+    cancelled = asyncio.Event()
+
+    class BlockingChunker:
+        async def chunk(self, _pages):
+            try:
+                await asyncio.Event().wait()
+            finally:
+                cancelled.set()
+
+    deps = fakes.deps(
+        discovery=_StaticDiscovery(["https://a.test/article"]),
+        chunker=BlockingChunker(),
+        resource_policy=ResourcePolicy(chunk_stage_deadline_s=0.01),
+    )
+
+    with pytest.raises(SearchDependencyUnavailable) as exc_info:
+        anyio.run(run_search, SearchRequest(query="x"), deps)
+
+    assert exc_info.value.dependency == "chunker"
+    assert exc_info.value.reason == "chunker_timeout"
+    assert cancelled.is_set()
+
+
+def test_rerank_stage_timeout_uses_position_fallback_and_cancels_work():
+    cancelled = asyncio.Event()
+
+    class BlockingReranker:
+        async def rerank(self, _query, _chunks):
+            try:
+                await asyncio.Event().wait()
+            finally:
+                cancelled.set()
+
+    deps = fakes.deps(
+        discovery=_StaticDiscovery(["https://a.test/article"]),
+        reranker=BlockingReranker(),
+        resource_policy=ResourcePolicy(rerank_stage_deadline_s=0.01),
+    )
+
+    response = anyio.run(run_search, SearchRequest(query="x"), deps)
+
+    assert response.passages
+    assert response.stats.reranked is False
+    assert response.passages[0].score_components[0].name == "position_fallback"
+    assert cancelled.is_set()
 
 
 class _LongUnicodePlanner:
@@ -1240,3 +1379,58 @@ def test_chunker_unavailable_raises_dependency_error():
     with pytest.raises(SearchDependencyUnavailable) as exc:
         anyio.run(run_search, SearchRequest(query="x"), fakes.deps(chunker=_ChunkerDown()))
     assert exc.value.dependency == "chunker"
+
+
+def test_search_exposes_bounded_per_url_fetch_outcomes():
+    class MixedOutcomeExtractor:
+        supported_capabilities = frozenset({"markdown", "javascript", "links", "metadata"})
+
+        async def extract(self, _urls):
+            raise AssertionError("search must consume typed fetch outcomes")
+
+        async def fetch(self, urls, capabilities, include_raw_html):
+            assert capabilities == frozenset({"markdown", "javascript", "links", "metadata"})
+            assert include_raw_html is False
+            return [
+                FetchStageOutcome(
+                    requested_url=urls[0],
+                    final_url=urls[0],
+                    code=FetchOutcomeCode.CONTENT,
+                    retrieval_method="crawl4ai_browser",
+                    elapsed_ms=7,
+                    status_code=200,
+                    content_type="text/html",
+                    title="A",
+                    page=Page(urls[0], "A", "Useful evidence."),
+                ),
+                FetchStageOutcome(
+                    requested_url=urls[1],
+                    final_url=None,
+                    code=FetchOutcomeCode.UPSTREAM_TIMEOUT,
+                    retrieval_method="crawl4ai_browser",
+                    elapsed_ms=30,
+                ),
+            ]
+
+    response = anyio.run(
+        run_search,
+        SearchRequest(query="x", max_urls=2),
+        fakes.deps(
+            discovery=_StaticDiscovery(
+                ["https://a.test/article", "https://b.test/article"]
+            ),
+            extractor=MixedOutcomeExtractor(),
+        ),
+    )
+
+    assert response.passages
+    assert response.stats.urls_crawled_ok == 1
+    assert response.stats.urls_crawled_failed == 1
+    assert [item.outcome for item in response.stats.fetch_outcomes] == [
+        "content",
+        "upstream_timeout",
+    ]
+    assert response.stats.fetch_outcome_counts[0].outcome == "content"
+    assert response.stats.fetch_outcome_counts[0].count == 1
+    assert response.stats.fetch_outcome_counts[1].outcome == "upstream_timeout"
+    assert response.stats.fetch_outcomes[1].retryable is True

@@ -1,3 +1,5 @@
+import pytest
+
 from orchestrator.markdown_cleaner import MarkdownCleanerImpl
 from orchestrator.types import Page
 
@@ -61,6 +63,36 @@ def test_markdown_only_pages_are_passed_through_without_site_rules():
     assert cleaned.page.markdown == page.markdown
     assert cleaned.page.original_markdown == page.markdown
     assert calls == []
+    assert cleaned.blocks_dropped == 0
+
+
+@pytest.mark.parametrize("failure", (None, RuntimeError("extract failed")))
+def test_cleaner_falls_back_to_crawl4ai_markdown_when_html_extraction_fails(failure):
+    def extract(_html, **_kwargs):
+        if failure is not None:
+            raise failure
+        return None
+
+    cleaner = MarkdownCleanerImpl(
+        extractor=extract,
+        extractor_name="trafilatura",
+        extractor_version="2.2.0",
+        favor_recall=True,
+        include_comments=False,
+        include_tables=True,
+        deduplicate=True,
+    )
+    page = Page(
+        "https://example.test/article",
+        "Article",
+        "# Crawl4AI fallback\n\nUseful body.",
+        html="<article>Useful body.</article>",
+    )
+
+    cleaned = cleaner.clean(page)
+
+    assert cleaned.page.markdown == page.markdown
+    assert cleaned.page.original_markdown == page.markdown
     assert cleaned.blocks_dropped == 0
 
 

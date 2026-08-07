@@ -8,6 +8,7 @@ COPY orchestrator/requirements.lock ./requirements.lock
 RUN pip install --no-cache-dir -r requirements.lock \
     && useradd --create-home --uid 10001 --shell /usr/sbin/nologin appuser
 COPY --chown=appuser:appuser orchestrator/ ./orchestrator/
+COPY --chown=appuser:appuser thorondor_contracts.py ./thorondor_contracts.py
 
 EXPOSE 8080
 HEALTHCHECK --interval=30s --timeout=5s --retries=3 \

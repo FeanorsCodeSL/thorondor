@@ -1,7 +1,17 @@
 """Pydantic wire models for the Thorondor orchestrator."""
-from typing import Literal
+from typing import Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
+
+from thorondor_contracts import (
+    DEFAULT_FETCH_CAPABILITIES,
+    FETCH_CAPABILITIES,
+    FetchCapability,
+    MAX_FETCH_URL_BYTES,
+    MAX_FETCH_URLS,
+    RESOURCE_POLICY_SUMMARY,
+)
+
 
 MAX_QUERY_CHARS = 500
 MAX_TOKEN_BUDGET = 16_000
@@ -56,6 +66,25 @@ MetadataSource = Literal[
     "fetch_title",
 ]
 MetadataConfidence = Literal["high", "medium", "low"]
+FetchOutcomeReason = Literal[
+    "content",
+    "empty_shell",
+    "challenge",
+    "robots_refused",
+    "upstream_timeout",
+    "deadline_cancelled",
+    "unsafe_redirect",
+    "unsupported_content",
+    "unsupported_capability",
+    "content_too_large",
+    "extraction_empty",
+    "malformed_upstream_response",
+    "upstream_failure",
+    "rate_limited",
+    "capacity_unavailable",
+    "unsafe_target",
+    "local_processing_failure",
+]
 
 
 class Passage(BaseModel):
@@ -209,6 +238,23 @@ class EvidenceQualityDrop(BaseModel):
     count: int = Field(ge=1)
 
 
+class FetchOutcomeCount(BaseModel):
+    outcome: FetchOutcomeReason
+    count: int = Field(ge=1)
+
+
+class FetchDiagnostic(BaseModel):
+    requested_url: str
+    final_url: str | None = None
+    outcome: FetchOutcomeReason
+    retryable: bool
+    status_code: int | None = Field(default=None, ge=100, le=599)
+    content_type: str | None = None
+    title: str | None = None
+    retrieval_method: str | None = None
+    elapsed_ms: int = Field(ge=0)
+
+
 class SearchStats(BaseModel):
     model_config = ConfigDict(validate_assignment=True)
 
@@ -226,6 +272,8 @@ class SearchStats(BaseModel):
     url_diagnostics_omitted: list[DiagnosticOmission] = Field(default_factory=list, max_length=16)
     urls_crawled_ok: int = 0
     urls_crawled_failed: int = 0
+    fetch_outcomes: list[FetchDiagnostic] = Field(default_factory=list, max_length=MAX_SELECTED_URLS)
+    fetch_outcome_counts: list[FetchOutcomeCount] = Field(default_factory=list, max_length=16)
     pages_after_dedup: int = 0
     pages_deduped: int = 0
     pages_cleaned: int = 0
@@ -258,6 +306,8 @@ class SearchStats(BaseModel):
 
 
 class SearchRequest(BaseModel):
+    model_config = ConfigDict(json_schema_extra={"x-resource-policy": RESOURCE_POLICY_SUMMARY})
+
     query: str = Field(min_length=1, max_length=MAX_QUERY_CHARS)
     search_profile: SearchProfile | None = None
     token_budget: int | None = Field(default=None, ge=1, le=MAX_TOKEN_BUDGET)
@@ -277,3 +327,61 @@ class SearchResponse(BaseModel):
     stats: SearchStats
     raw_markdown: list[RawMarkdown] | None = None
     schema_version: Literal["thorondor.search.v1"] = "thorondor.search.v1"
+
+
+class FetchRequest(BaseModel):
+    model_config = ConfigDict(json_schema_extra={"x-resource-policy": RESOURCE_POLICY_SUMMARY})
+
+    urls: list[Annotated[str, Field(min_length=1, max_length=MAX_FETCH_URL_BYTES)]] = Field(
+        min_length=1,
+        max_length=MAX_FETCH_URLS,
+    )
+    capabilities: list[FetchCapability] = Field(
+        default_factory=lambda: list(DEFAULT_FETCH_CAPABILITIES),
+        min_length=1,
+        max_length=len(FETCH_CAPABILITIES),
+    )
+
+    @model_validator(mode="after")
+    def validate_unique_values(self) -> "FetchRequest":
+        if len(self.urls) != len(set(self.urls)):
+            raise ValueError("urls must not contain duplicates")
+        if len(self.capabilities) != len(set(self.capabilities)):
+            raise ValueError("capabilities must not contain duplicates")
+        return self
+
+
+class FetchResult(BaseModel):
+    requested_url: str
+    final_url: str | None = None
+    outcome: FetchOutcomeReason
+    retryable: bool
+    status_code: int | None = Field(default=None, ge=100, le=599)
+    content_type: str | None = None
+    title: str | None = None
+    retrieval_method: str | None = None
+    elapsed_ms: int = Field(ge=0)
+    capabilities: list[FetchCapability] = Field(default_factory=list)
+    markdown: str | None = None
+    raw_html: str | None = None
+    links: dict[str, object] = Field(default_factory=dict)
+    metadata: dict[str, object] = Field(default_factory=dict)
+    response_headers: dict[Literal["content-type", "etag", "last-modified"], str] = Field(
+        default_factory=dict
+    )
+    provenance: Literal["external_web"] = "external_web"
+    trust: Literal["untrusted"] = "untrusted"
+
+
+class FetchStats(BaseModel):
+    requested: int = Field(ge=0)
+    succeeded: int = Field(ge=0)
+    failed: int = Field(ge=0)
+    outcomes: list[FetchOutcomeCount]
+    elapsed_ms: int = Field(ge=0)
+
+
+class FetchResponse(BaseModel):
+    results: list[FetchResult]
+    stats: FetchStats
+    schema_version: Literal["thorondor.fetch.v1"] = "thorondor.fetch.v1"

@@ -1,5 +1,6 @@
 """Semantic chunking service client."""
 from bisect import bisect_left
+import asyncio
 import re
 
 import httpx
@@ -14,7 +15,9 @@ MAX_SECTION_HEADING_BYTES = 512
 
 
 class ChunkerUnavailable(Exception):
-    pass
+    def __init__(self, reason: str):
+        super().__init__(reason)
+        self.reason = reason
 
 
 def _exact_span(item: dict, document: str) -> tuple[int, int] | None:
@@ -73,12 +76,28 @@ def _nearest_section_heading(
 
 
 class ChunkerClient:
-    def __init__(self, base_url: str, client: httpx.AsyncClient | None = None, api_key: str | None = None):
+    def __init__(
+        self,
+        base_url: str,
+        client: httpx.AsyncClient | None = None,
+        api_key: str | None = None,
+        concurrency: int = 4,
+        timeout_s: float = 45.0,
+    ):
+        if concurrency < 1:
+            raise ValueError("concurrency must be >= 1")
+        if timeout_s <= 0:
+            raise ValueError("timeout_s must be > 0")
         self.base_url = base_url.rstrip("/")
         self.api_key = api_key
+        self.timeout_s = timeout_s
+        self._semaphore = asyncio.Semaphore(concurrency)
         self._client = client or httpx.AsyncClient(
-            timeout=60.0,
-            limits=httpx.Limits(max_connections=10, max_keepalive_connections=5),
+            timeout=timeout_s,
+            limits=httpx.Limits(
+                max_connections=concurrency,
+                max_keepalive_connections=concurrency,
+            ),
         )
         self._owns_client = client is None
 
@@ -87,86 +106,104 @@ class ChunkerClient:
             await self._client.aclose()
 
     async def chunk(self, pages: list[Page]) -> list[Chunk]:
-        chunks: list[Chunk] = []
-        rejected_statuses = []
-        successful_responses = 0
         headers = {"Authorization": f"Bearer {self.api_key}"} if self.api_key else None
         headers = request_id_headers(headers)
         try:
-            for page in pages:
-                final_url = page.final_url or page.url
-                document_identity = build_document_identity(final_url, page.markdown)
-                response = await self._client.post(
-                    f"{self.base_url}/chunk",
-                    headers=headers,
-                    json={
-                        "text": page.markdown,
-                        "source_type": "ORCHESTRATOR_MARKDOWN",
-                        "metadata": {
-                            "source_url": final_url,
-                            "title": page.title,
-                            "source_id": page.source_id,
-                            "document_id": document_identity.document_id,
-                            "cleaned_markdown_sha256": document_identity.cleaned_markdown_sha256,
-                        },
-                    },
+            async with asyncio.timeout(self.timeout_s):
+                results = await asyncio.gather(
+                    *(self._chunk_page(page, headers) for page in pages)
                 )
-                if response.status_code != 200:
-                    if 400 <= response.status_code < 500:
-                        rejected_statuses.append(response.status_code)
-                        continue
-                    raise ChunkerUnavailable(f"status {response.status_code}")
-                successful_responses += 1
-                payload = response.json()
-                chunk_strategy = payload.get("chunk_strategy") or payload.get("strategy_version")
-                embedding_degraded = bool(payload.get("embedding_degraded", False))
-                section_headings = _section_headings(page.markdown)
-                for item in payload.get("chunks", []):
-                    metadata = item.get("metadata", {})
-                    item_strategy = metadata.get("chunk_strategy", chunk_strategy)
-                    item_degraded = bool(metadata.get("embedding_degraded", embedding_degraded))
-                    span = _exact_span(item, page.markdown)
-                    start_index, end_index = span if span is not None else (None, None)
-                    evidence_id = (
-                        evidence_id_for(
-                            document_identity.final_url,
-                            document_identity.cleaned_markdown_sha256,
-                            start_index,
-                            end_index,
-                        )
-                        if start_index is not None and end_index is not None
-                        else None
-                    )
-                    chunks.append(
-                        Chunk(
-                            text=item["text"],
-                            token_count=int(item["token_count"]),
-                            source_url=final_url,
-                            title=page.title,
-                            position=int(item.get("position", 0)),
-                            source_id=page.source_id,
-                            chunk_strategy=item_strategy,
-                            embedding_degraded=item_degraded,
-                            start_index=start_index,
-                            end_index=end_index,
-                            verbatim=span is not None,
-                            document_id=document_identity.document_id,
-                            evidence_id=evidence_id,
-                            final_url=document_identity.final_url,
-                            cleaned_markdown_sha256=document_identity.cleaned_markdown_sha256,
-                            section_heading=(
-                                _nearest_section_heading(section_headings, start_index)
-                                if start_index is not None
-                                else None
-                            ),
-                            evidence_metadata=page.evidence_metadata,
-                        )
-                    )
+            chunks = [chunk for page_chunks, _status in results for chunk in page_chunks]
+            rejected_statuses = [status for _chunks, status in results if status is not None]
+            successful_responses = sum(status is None for _chunks, status in results)
             if pages and successful_responses == 0 and rejected_statuses:
                 statuses = ",".join(str(status) for status in sorted(set(rejected_statuses)))
                 raise ChunkerUnavailable(f"all pages rejected with status {statuses}")
+            return chunks
+        except TimeoutError as exc:
+            raise ChunkerUnavailable("timeout") from exc
         except ChunkerUnavailable:
             raise
         except Exception as exc:
             raise ChunkerUnavailable(str(exc)) from exc
-        return chunks
+
+    async def _chunk_page(
+        self,
+        page: Page,
+        headers: dict[str, str] | None,
+    ) -> tuple[list[Chunk], int | None]:
+        final_url = page.final_url or page.url
+        document_identity = build_document_identity(final_url, page.markdown)
+        async with self._semaphore:
+            response = await self._client.post(
+                f"{self.base_url}/chunk",
+                headers=headers,
+                json={
+                    "text": page.markdown,
+                    "source_type": "ORCHESTRATOR_MARKDOWN",
+                    "metadata": {
+                        "source_url": final_url,
+                        "title": page.title,
+                        "source_id": page.source_id,
+                        "document_id": document_identity.document_id,
+                        "cleaned_markdown_sha256": document_identity.cleaned_markdown_sha256,
+                    },
+                },
+            )
+        if response.status_code != 200:
+            if 400 <= response.status_code < 500:
+                return [], response.status_code
+            raise ChunkerUnavailable(f"status {response.status_code}")
+        payload = response.json()
+        if not isinstance(payload, dict) or not isinstance(payload.get("chunks", []), list):
+            raise ChunkerUnavailable("malformed_response")
+        chunk_strategy = payload.get("chunk_strategy") or payload.get("strategy_version")
+        embedding_degraded = bool(payload.get("embedding_degraded", False))
+        section_headings = _section_headings(page.markdown)
+        chunks = []
+        for item in payload.get("chunks", []):
+            if not isinstance(item, dict):
+                raise ChunkerUnavailable("malformed_response")
+            metadata = item.get("metadata", {})
+            if not isinstance(metadata, dict):
+                metadata = {}
+            item_strategy = metadata.get("chunk_strategy", chunk_strategy)
+            item_degraded = bool(metadata.get("embedding_degraded", embedding_degraded))
+            span = _exact_span(item, page.markdown)
+            start_index, end_index = span if span is not None else (None, None)
+            evidence_id = (
+                evidence_id_for(
+                    document_identity.final_url,
+                    document_identity.cleaned_markdown_sha256,
+                    start_index,
+                    end_index,
+                )
+                if start_index is not None and end_index is not None
+                else None
+            )
+            chunks.append(
+                Chunk(
+                    text=item["text"],
+                    token_count=int(item["token_count"]),
+                    source_url=final_url,
+                    title=page.title,
+                    position=int(item.get("position", 0)),
+                    source_id=page.source_id,
+                    chunk_strategy=item_strategy,
+                    embedding_degraded=item_degraded,
+                    start_index=start_index,
+                    end_index=end_index,
+                    verbatim=span is not None,
+                    document_id=document_identity.document_id,
+                    evidence_id=evidence_id,
+                    final_url=document_identity.final_url,
+                    cleaned_markdown_sha256=document_identity.cleaned_markdown_sha256,
+                    section_heading=(
+                        _nearest_section_heading(section_headings, start_index)
+                        if start_index is not None
+                        else None
+                    ),
+                    evidence_metadata=page.evidence_metadata,
+                )
+            )
+        return chunks, None
