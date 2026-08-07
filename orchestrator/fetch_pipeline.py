@@ -37,7 +37,7 @@ async def _is_safe(deps, url: str) -> bool:
         return False
 
 
-def _wire_result(
+def wire_fetch_result(
     outcome: FetchStageOutcome,
     capabilities: frozenset[str],
     cleaner,
@@ -63,6 +63,8 @@ def _wire_result(
         headers["etag"] = outcome.etag
     if outcome.last_modified:
         headers["last-modified"] = outcome.last_modified
+    if outcome.retry_after:
+        headers["retry-after"] = outcome.retry_after
     return FetchResult(
         requested_url=outcome.requested_url,
         final_url=outcome.final_url,
@@ -137,7 +139,7 @@ async def _run_fetch(req: FetchRequest, deps) -> FetchResponse:
     order = {url: index for index, url in enumerate(req.urls)}
     outcomes.sort(key=lambda item: order[item.requested_url])
     results = [
-        _wire_result(outcome, capabilities, deps.markdown_cleaner)
+        wire_fetch_result(outcome, capabilities, deps.markdown_cleaner)
         for outcome in outcomes
     ]
     counts = Counter(item.outcome for item in results)

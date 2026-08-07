@@ -2,16 +2,14 @@
 from typing import Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
-
 from thorondor_contracts import (
     DEFAULT_FETCH_CAPABILITIES,
     FETCH_CAPABILITIES,
-    FetchCapability,
     MAX_FETCH_URL_BYTES,
     MAX_FETCH_URLS,
     RESOURCE_POLICY_SUMMARY,
+    FetchCapability,
 )
-
 
 MAX_QUERY_CHARS = 500
 MAX_TOKEN_BUDGET = 16_000
@@ -25,6 +23,14 @@ MAX_EVIDENCE_BYTES = 262_144
 MAX_RAW_MARKDOWN_ITEMS = 20
 MAX_RAW_MARKDOWN_ITEM_BYTES = 262_144
 MAX_RAW_MARKDOWN_BYTES = 524_288
+MAX_SITE_URL_BYTES = 8192
+MAX_SITE_DEPTH = 5
+MAX_SITE_DISCOVERED_URLS = 500
+MAX_SITE_PAGES = 20
+MAX_SITE_PATTERNS = 32
+MAX_SITE_PATTERN_CHARS = 256
+MAX_SITE_EXTENSIONS = 16
+DEFAULT_SITE_EXTENSIONS = ("", ".htm", ".html", ".pdf")
 
 SearchProfile = Literal["quick", "research", "deep"]
 ReasonCode = Literal[
@@ -366,7 +372,10 @@ class FetchResult(BaseModel):
     raw_html: str | None = None
     links: dict[str, object] = Field(default_factory=dict)
     metadata: dict[str, object] = Field(default_factory=dict)
-    response_headers: dict[Literal["content-type", "etag", "last-modified"], str] = Field(
+    response_headers: dict[
+        Literal["content-type", "etag", "last-modified", "retry-after"],
+        str,
+    ] = Field(
         default_factory=dict
     )
     provenance: Literal["external_web"] = "external_web"
@@ -385,3 +394,178 @@ class FetchResponse(BaseModel):
     results: list[FetchResult]
     stats: FetchStats
     schema_version: Literal["thorondor.fetch.v1"] = "thorondor.fetch.v1"
+
+
+SiteSource = Literal["seed", "sitemap", "link", "search"]
+SiteState = Literal[
+    "discovered",
+    "admitted",
+    "queued",
+    "fetched",
+    "filtered",
+    "failed",
+    "cancelled",
+]
+SiteOutcomeReason = Literal[
+    "completed",
+    "partial",
+    "cancelled",
+    "unsafe_seed",
+    "unsafe_redirect",
+    "robots_refused",
+    "limit_reached",
+    "upstream_timeout",
+    "deadline_cancelled",
+    "malformed_upstream_response",
+    "upstream_failure",
+    "rate_limited",
+    "unsafe_target",
+    "local_processing_failure",
+    "no_admitted_urls",
+]
+
+
+class SiteRequest(BaseModel):
+    model_config = ConfigDict(json_schema_extra={"x-resource-policy": RESOURCE_POLICY_SUMMARY})
+
+    url: str = Field(min_length=1, max_length=MAX_SITE_URL_BYTES)
+    sitemap: Literal["include", "only", "skip"] = "include"
+    max_depth: int = Field(default=2, ge=0, le=MAX_SITE_DEPTH)
+    max_pages: int = Field(default=10, ge=1, le=MAX_SITE_PAGES)
+    max_discovered_urls: int = Field(
+        default=200,
+        ge=1,
+        le=MAX_SITE_DISCOVERED_URLS,
+    )
+    include_parent_paths: bool = False
+    include_subdomains: bool = False
+    include_paths: list[
+        Annotated[str, Field(min_length=1, max_length=MAX_SITE_PATTERN_CHARS)]
+    ] = Field(
+        default_factory=list,
+        max_length=MAX_SITE_PATTERNS,
+    )
+    exclude_paths: list[
+        Annotated[str, Field(min_length=1, max_length=MAX_SITE_PATTERN_CHARS)]
+    ] = Field(
+        default_factory=list,
+        max_length=MAX_SITE_PATTERNS,
+    )
+    query_parameters: Literal["preserve", "strip", "exclude"] = "preserve"
+    allowed_file_extensions: list[str] = Field(
+        default_factory=lambda: list(DEFAULT_SITE_EXTENSIONS),
+        min_length=1,
+        max_length=MAX_SITE_EXTENSIONS,
+    )
+    include_search: bool = False
+
+    @model_validator(mode="after")
+    def validate_site_policy(self) -> "SiteRequest":
+        try:
+            url_bytes = len(self.url.encode("utf-8"))
+        except UnicodeError as exc:
+            raise ValueError("url must be valid UTF-8") from exc
+        if url_bytes > MAX_SITE_URL_BYTES:
+            raise ValueError(f"url must not exceed {MAX_SITE_URL_BYTES} UTF-8 bytes")
+        if len(self.include_paths) != len(set(self.include_paths)):
+            raise ValueError("include_paths must not contain duplicates")
+        if len(self.exclude_paths) != len(set(self.exclude_paths)):
+            raise ValueError("exclude_paths must not contain duplicates")
+        if any(not pattern.startswith("/") for pattern in self.include_paths + self.exclude_paths):
+            raise ValueError("path patterns must start with /")
+        normalized = [value.casefold() for value in self.allowed_file_extensions]
+        if len(normalized) != len(set(normalized)):
+            raise ValueError("allowed_file_extensions must not contain duplicates")
+        if any(
+            value != "" and (not value.startswith(".") or len(value) > 16)
+            for value in normalized
+        ):
+            raise ValueError("file extensions must be empty or start with .")
+        return self
+
+
+class MapRequest(SiteRequest):
+    pass
+
+
+class CrawlRequest(SiteRequest):
+    capabilities: list[FetchCapability] = Field(
+        default_factory=lambda: list(DEFAULT_FETCH_CAPABILITIES),
+        min_length=1,
+        max_length=len(FETCH_CAPABILITIES),
+    )
+
+    @model_validator(mode="after")
+    def validate_crawl_capabilities(self) -> "CrawlRequest":
+        if len(self.capabilities) != len(set(self.capabilities)):
+            raise ValueError("capabilities must not contain duplicates")
+        return self
+
+
+class SiteUrlRecord(BaseModel):
+    url: str
+    depth: int = Field(ge=0)
+    sources: list[SiteSource] = Field(min_length=1, max_length=4)
+    states: list[SiteState] = Field(min_length=1, max_length=7)
+    reason: str | None = Field(default=None, max_length=64)
+    modified_at: str | None = Field(default=None, max_length=128)
+    priority: float | None = Field(default=None, ge=0, le=1)
+    provenance: Literal["external_web"] = "external_web"
+    trust: Literal["untrusted"] = "untrusted"
+
+
+class SiteSourceCount(BaseModel):
+    source: SiteSource
+    count: int = Field(ge=1)
+
+
+class SiteStats(BaseModel):
+    discovered: int = Field(ge=0)
+    admitted: int = Field(ge=0)
+    queued: int = Field(ge=0)
+    fetched: int = Field(ge=0)
+    filtered: int = Field(ge=0)
+    failed: int = Field(ge=0)
+    cancelled: int = Field(ge=0)
+    omitted: int = Field(ge=0)
+    discovery_limit_omitted: int = Field(default=0, ge=0)
+    response_budget_omitted: int = Field(default=0, ge=0)
+    results_omitted: int = Field(ge=0)
+    pages_succeeded: int = Field(ge=0)
+    pages_failed: int = Field(ge=0)
+    sitemap_documents_attempted: int = Field(ge=0)
+    sitemap_documents: int = Field(ge=0)
+    sitemap_entries: int = Field(ge=0)
+    sitemap_truncated: int = Field(ge=0)
+    robots_documents_attempted: int = Field(default=0, ge=0)
+    non_http_urls_skipped: int = Field(default=0, ge=0)
+    robots_state: Literal["available", "unavailable", "unreachable"] | None = None
+    robots_source: Literal["network", "cache"] | None = None
+    source_counts: list[SiteSourceCount] = Field(default_factory=list, max_length=4)
+    fetch_outcomes: list[FetchOutcomeCount] = Field(default_factory=list, max_length=17)
+    elapsed_ms: int = Field(ge=0)
+
+
+class MapResponse(BaseModel):
+    requested_url: str
+    effective_url: str | None = None
+    requested_origin: str | None = None
+    effective_origin: str | None = None
+    outcome: SiteOutcomeReason
+    urls: list[SiteUrlRecord]
+    stats: SiteStats
+    warnings: list[str] = Field(default_factory=list, max_length=32)
+    schema_version: Literal["thorondor.map.v1"] = "thorondor.map.v1"
+
+
+class CrawlResponse(BaseModel):
+    requested_url: str
+    effective_url: str | None = None
+    requested_origin: str | None = None
+    effective_origin: str | None = None
+    outcome: SiteOutcomeReason
+    urls: list[SiteUrlRecord]
+    results: list[FetchResult]
+    stats: SiteStats
+    warnings: list[str] = Field(default_factory=list, max_length=32)
+    schema_version: Literal["thorondor.crawl.v1"] = "thorondor.crawl.v1"

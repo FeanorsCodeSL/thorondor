@@ -4,7 +4,6 @@ import pytest
 
 from orchestrator.settings import load_settings
 
-
 REQUIRED = [
     "LOG_LEVEL",
     "SEARXNG_URL",
@@ -49,15 +48,27 @@ REQUIRED = [
     "MAX_RESPONSE_BODY_BYTES",
     "SEARCH_ROUTE_DEADLINE_S",
     "FETCH_ROUTE_DEADLINE_S",
+    "MAP_ROUTE_DEADLINE_S",
+    "SITE_CRAWL_ROUTE_DEADLINE_S",
     "DISCOVERY_TIMEOUT_S",
     "CHUNK_TIMEOUT_S",
     "MAX_INFLIGHT_SEARCHES",
     "MAX_INFLIGHT_FETCHES",
+    "MAX_INFLIGHT_MAPS",
+    "MAX_INFLIGHT_CRAWLS",
     "ADMISSION_WAIT_S",
     "ADMISSION_RETRY_AFTER_S",
     "MAX_INTERNAL_FANOUT",
     "MAX_CONTENT_BYTES",
     "CHUNK_CONCURRENCY",
+    "SITE_DEFAULT_DELAY_S",
+    "SITE_MAX_JITTER_S",
+    "SITE_MAX_COOLDOWN_S",
+    "ROBOTS_CACHE_TTL_S",
+    "MAX_ROBOTS_BYTES",
+    "MAX_SITEMAP_BYTES",
+    "MAX_SITEMAP_ENTRIES",
+    "MAX_SITEMAP_DOCUMENTS",
     "SEARCH_PROFILE_QUICK_TOKEN_BUDGET",
     "SEARCH_PROFILE_QUICK_MAX_URLS",
     "SEARCH_PROFILE_QUICK_MAX_PASSAGES",
@@ -120,15 +131,27 @@ def set_required_env(monkeypatch):
         "MAX_RESPONSE_BODY_BYTES": "2097152",
         "SEARCH_ROUTE_DEADLINE_S": "120",
         "FETCH_ROUTE_DEADLINE_S": "60",
+        "MAP_ROUTE_DEADLINE_S": "90",
+        "SITE_CRAWL_ROUTE_DEADLINE_S": "120",
         "DISCOVERY_TIMEOUT_S": "20",
         "CHUNK_TIMEOUT_S": "45",
         "MAX_INFLIGHT_SEARCHES": "4",
         "MAX_INFLIGHT_FETCHES": "8",
+        "MAX_INFLIGHT_MAPS": "4",
+        "MAX_INFLIGHT_CRAWLS": "2",
         "ADMISSION_WAIT_S": "0.05",
         "ADMISSION_RETRY_AFTER_S": "1",
         "MAX_INTERNAL_FANOUT": "20",
         "MAX_CONTENT_BYTES": "262144",
         "CHUNK_CONCURRENCY": "4",
+        "SITE_DEFAULT_DELAY_S": "0.5",
+        "SITE_MAX_JITTER_S": "0.25",
+        "SITE_MAX_COOLDOWN_S": "300",
+        "ROBOTS_CACHE_TTL_S": "86400",
+        "MAX_ROBOTS_BYTES": "262144",
+        "MAX_SITEMAP_BYTES": "262144",
+        "MAX_SITEMAP_ENTRIES": "500",
+        "MAX_SITEMAP_DOCUMENTS": "16",
         "SEARCH_PROFILE_QUICK_TOKEN_BUDGET": "2000",
         "SEARCH_PROFILE_QUICK_MAX_URLS": "5",
         "SEARCH_PROFILE_QUICK_MAX_PASSAGES": "5",
@@ -203,15 +226,27 @@ def test_domain_blocklist_parses_explicit_configuration(monkeypatch):
     assert settings.max_response_body_bytes == 2097152
     assert settings.search_route_deadline_s == 120
     assert settings.fetch_route_deadline_s == 60
+    assert settings.map_route_deadline_s == 90
+    assert settings.site_crawl_route_deadline_s == 120
     assert settings.discovery_timeout_s == 20
     assert settings.chunk_timeout_s == 45
     assert settings.max_inflight_searches == 4
     assert settings.max_inflight_fetches == 8
+    assert settings.max_inflight_maps == 4
+    assert settings.max_inflight_crawls == 2
     assert settings.admission_wait_s == 0.05
     assert settings.admission_retry_after_s == 1
     assert settings.max_internal_fanout == 20
     assert settings.max_content_bytes == 262144
     assert settings.chunk_concurrency == 4
+    assert settings.site_default_delay_s == 0.5
+    assert settings.site_max_jitter_s == 0.25
+    assert settings.site_max_cooldown_s == 300
+    assert settings.robots_cache_ttl_s == 86400
+    assert settings.max_robots_bytes == 262144
+    assert settings.max_sitemap_bytes == 262144
+    assert settings.max_sitemap_entries == 500
+    assert settings.max_sitemap_documents == 16
     assert settings.search_profiles["quick"].token_budget == 2000
     assert settings.search_profiles["research"].max_urls == 12
     assert settings.search_profiles["deep"].max_passages == 40
@@ -291,15 +326,27 @@ def test_compose_manifests_forward_resource_policy(path):
         "MAX_RESPONSE_BODY_BYTES",
         "SEARCH_ROUTE_DEADLINE_S",
         "FETCH_ROUTE_DEADLINE_S",
+        "MAP_ROUTE_DEADLINE_S",
+        "SITE_CRAWL_ROUTE_DEADLINE_S",
         "DISCOVERY_TIMEOUT_S",
         "CHUNK_TIMEOUT_S",
         "MAX_INFLIGHT_SEARCHES",
         "MAX_INFLIGHT_FETCHES",
+        "MAX_INFLIGHT_MAPS",
+        "MAX_INFLIGHT_CRAWLS",
         "ADMISSION_WAIT_S",
         "ADMISSION_RETRY_AFTER_S",
         "MAX_INTERNAL_FANOUT",
         "MAX_CONTENT_BYTES",
         "CHUNK_CONCURRENCY",
+        "SITE_DEFAULT_DELAY_S",
+        "SITE_MAX_JITTER_S",
+        "SITE_MAX_COOLDOWN_S",
+        "ROBOTS_CACHE_TTL_S",
+        "MAX_ROBOTS_BYTES",
+        "MAX_SITEMAP_BYTES",
+        "MAX_SITEMAP_ENTRIES",
+        "MAX_SITEMAP_DOCUMENTS",
     ):
         assert f'{name}: "${{{name}}}"' in manifest
 
@@ -312,6 +359,14 @@ def test_compose_manifests_forward_resource_policy(path):
         ("ADMISSION_WAIT_S", "-1", "admission_wait_s"),
         ("MAX_CONTENT_BYTES", "3000000", "max_content_bytes"),
         ("MAX_INTERNAL_FANOUT", "5", "MAX_INTERNAL_FANOUT"),
+        ("SITE_DEFAULT_DELAY_S", "-1", "SITE_DEFAULT_DELAY_S"),
+        ("SITE_MAX_JITTER_S", "-1", "SITE_MAX_JITTER_S"),
+        ("SITE_MAX_COOLDOWN_S", "0", "SITE_MAX_COOLDOWN_S"),
+        ("ROBOTS_CACHE_TTL_S", "86401", "ROBOTS_CACHE_TTL_S"),
+        ("MAX_ROBOTS_BYTES", "262145", "MAX_ROBOTS_BYTES"),
+        ("MAX_SITEMAP_BYTES", "262145", "MAX_SITEMAP_BYTES"),
+        ("MAX_SITEMAP_ENTRIES", "501", "MAX_SITEMAP_ENTRIES"),
+        ("MAX_SITEMAP_DOCUMENTS", "21", "MAX_SITEMAP_DOCUMENTS"),
         ("MAX_URLS", "21", "MAX_URLS must be between 1 and 20"),
         (
             "SEARCH_PROFILE_DEEP_MAX_URLS",

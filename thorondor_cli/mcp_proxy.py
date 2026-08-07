@@ -7,12 +7,16 @@ from typing import Literal
 import httpx
 from mcp.server.mcpserver import MCPServer
 from thorondor_contracts import (
+    CRAWL_TOOL_DESCRIPTION,
     DEFAULT_FETCH_ROUTE_DEADLINE_S,
+    DEFAULT_MAP_ROUTE_DEADLINE_S,
     DEFAULT_MAX_RESPONSE_BODY_BYTES,
     DEFAULT_SEARCH_ROUTE_DEADLINE_S,
+    DEFAULT_SITE_CRAWL_ROUTE_DEADLINE_S,
     FETCH_TOOL_DESCRIPTION,
-    FetchCapability,
+    MAP_TOOL_DESCRIPTION,
     SEARCH_TOOL_DESCRIPTION,
+    FetchCapability,
 )
 
 mcp = MCPServer("thorondor")
@@ -152,6 +156,86 @@ async def web_fetch(
         payload,
         "fetch",
         DEFAULT_FETCH_ROUTE_DEADLINE_S,
+    )
+
+
+@mcp.tool(description=MAP_TOOL_DESCRIPTION)
+async def web_map(
+    url: str,
+    sitemap: Literal["include", "only", "skip"] | None = None,
+    max_depth: int | None = None,
+    max_pages: int | None = None,
+    max_discovered_urls: int | None = None,
+    include_parent_paths: bool | None = None,
+    include_subdomains: bool | None = None,
+    include_paths: list[str] | None = None,
+    exclude_paths: list[str] | None = None,
+    query_parameters: Literal["preserve", "strip", "exclude"] | None = None,
+    allowed_file_extensions: list[str] | None = None,
+    include_search: bool | None = None,
+) -> dict:
+    """Discover a bounded, robots-aware URL map for one site."""
+    request_data = {
+        "url": url,
+        "sitemap": sitemap,
+        "max_depth": max_depth,
+        "max_pages": max_pages,
+        "max_discovered_urls": max_discovered_urls,
+        "include_parent_paths": include_parent_paths,
+        "include_subdomains": include_subdomains,
+        "include_paths": include_paths,
+        "exclude_paths": exclude_paths,
+        "query_parameters": query_parameters,
+        "allowed_file_extensions": allowed_file_extensions,
+        "include_search": include_search,
+    }
+    payload = {key: value for key, value in request_data.items() if value is not None}
+    return await _post(
+        "/v1/map",
+        payload,
+        "map",
+        DEFAULT_MAP_ROUTE_DEADLINE_S,
+    )
+
+
+@mcp.tool(description=CRAWL_TOOL_DESCRIPTION)
+async def web_crawl(
+    url: str,
+    sitemap: Literal["include", "only", "skip"] | None = None,
+    max_depth: int | None = None,
+    max_pages: int | None = None,
+    max_discovered_urls: int | None = None,
+    include_parent_paths: bool | None = None,
+    include_subdomains: bool | None = None,
+    include_paths: list[str] | None = None,
+    exclude_paths: list[str] | None = None,
+    query_parameters: Literal["preserve", "strip", "exclude"] | None = None,
+    allowed_file_extensions: list[str] | None = None,
+    include_search: bool | None = None,
+    capabilities: list[FetchCapability] | None = None,
+) -> dict:
+    """Crawl a small, bounded part of one site and return typed evidence."""
+    request_data = {
+        "url": url,
+        "sitemap": sitemap,
+        "max_depth": max_depth,
+        "max_pages": max_pages,
+        "max_discovered_urls": max_discovered_urls,
+        "include_parent_paths": include_parent_paths,
+        "include_subdomains": include_subdomains,
+        "include_paths": include_paths,
+        "exclude_paths": exclude_paths,
+        "query_parameters": query_parameters,
+        "allowed_file_extensions": allowed_file_extensions,
+        "include_search": include_search,
+        "capabilities": capabilities,
+    }
+    payload = {key: value for key, value in request_data.items() if value is not None}
+    return await _post(
+        "/v1/crawl",
+        payload,
+        "crawl",
+        DEFAULT_SITE_CRAWL_ROUTE_DEADLINE_S,
     )
 
 

@@ -4,7 +4,20 @@ from pathlib import Path
 import pytest
 from pydantic import ValidationError
 
-from orchestrator.models import MAX_QUERY_CHARS, MAX_SELECTED_URLS, MAX_TOKEN_BUDGET, Passage, SearchRequest, SearchResponse, SearchStats
+from orchestrator.models import (
+    MAX_QUERY_CHARS,
+    MAX_SELECTED_URLS,
+    MAX_SITE_URL_BYTES,
+    MAX_TOKEN_BUDGET,
+    FetchOutcomeCount,
+    MapRequest,
+    Passage,
+    SearchRequest,
+    SearchResponse,
+    SearchStats,
+    SiteStats,
+)
+from orchestrator.outcome_codes import FetchOutcomeCode
 
 
 def test_search_request_defaults():
@@ -45,6 +58,48 @@ def test_invalid_search_profile_rejected():
 def test_search_request_bounds_reject_invalid_values(kwargs):
     with pytest.raises(ValidationError):
         SearchRequest(**kwargs)
+
+
+def test_site_request_enforces_utf8_url_byte_limit():
+    prefix = "https://example.com/"
+    within_limit = prefix + "x" * (MAX_SITE_URL_BYTES - len(prefix))
+    over_limit = prefix + "é" * ((MAX_SITE_URL_BYTES - len(prefix)) // 2 + 1)
+
+    assert len(within_limit.encode("utf-8")) == MAX_SITE_URL_BYTES
+    assert MapRequest(url=within_limit).url == within_limit
+    with pytest.raises(ValidationError, match="UTF-8 bytes"):
+        MapRequest(url=over_limit)
+
+
+def test_site_stats_accepts_every_closed_fetch_outcome():
+    outcomes = [
+        FetchOutcomeCount(outcome=outcome.value, count=1)
+        for outcome in FetchOutcomeCode
+    ]
+
+    stats = SiteStats(
+        discovered=0,
+        admitted=0,
+        queued=0,
+        fetched=0,
+        filtered=0,
+        failed=0,
+        cancelled=0,
+        omitted=0,
+        results_omitted=0,
+        pages_succeeded=0,
+        pages_failed=0,
+        sitemap_documents_attempted=0,
+        sitemap_documents=0,
+        sitemap_entries=0,
+        sitemap_truncated=0,
+        robots_documents_attempted=0,
+        non_http_urls_skipped=0,
+        fetch_outcomes=outcomes,
+        elapsed_ms=0,
+    )
+
+    assert len(stats.fetch_outcomes) == len(FetchOutcomeCode)
 
 
 def test_search_stats_defaults():

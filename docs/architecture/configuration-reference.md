@@ -39,10 +39,14 @@ All environment variables must be present in `.env` (and `.env.llamacpp` or `.en
 | `MAX_RESPONSE_BODY_BYTES` | Required / `2097152` | int (≥ 1) | Maximum serialized response and Crawl4AI or stdio-proxy response body. | `MAX_CONTENT_BYTES` |
 | `SEARCH_ROUTE_DEADLINE_S` | Required / `120` | float (> 0) | End-to-end search deadline; expiry returns a closed 504 error. | `MAX_INFLIGHT_SEARCHES` |
 | `FETCH_ROUTE_DEADLINE_S` | Required / `60` | float (> 0) | End-to-end known-URL fetch deadline; expiry returns a closed 504 error. | `MAX_INFLIGHT_FETCHES` |
+| `MAP_ROUTE_DEADLINE_S` | Required / `90` | float (> 0) | End-to-end site-map deadline; expiry returns a closed 504 error. | `MAX_INFLIGHT_MAPS` |
+| `SITE_CRAWL_ROUTE_DEADLINE_S` | Required / `120` | float (> 0) | End-to-end bounded site-crawl deadline; expiry returns a closed 504 error. | `MAX_INFLIGHT_CRAWLS` |
 | `DISCOVERY_TIMEOUT_S` | Required / `20` | float (> 0) | Query-planning and per-subquery discovery stage deadline. | `MAX_SUBQUERIES` |
 | `CHUNK_TIMEOUT_S` | Required / `45` | float (> 0) | Total chunking stage deadline. | `CHUNK_CONCURRENCY` |
 | `MAX_INFLIGHT_SEARCHES` | Required / `4` | int (≥ 1) | Process-wide search admission slots. | `ADMISSION_WAIT_S` |
 | `MAX_INFLIGHT_FETCHES` | Required / `8` | int (≥ 1) | Process-wide known-URL fetch admission slots. | `ADMISSION_WAIT_S` |
+| `MAX_INFLIGHT_MAPS` | Required / `4` | int (≥ 1) | Process-wide site-map admission slots. | `ADMISSION_WAIT_S` |
+| `MAX_INFLIGHT_CRAWLS` | Required / `2` | int (≥ 1) | Process-wide bounded site-crawl admission slots. | `ADMISSION_WAIT_S` |
 | `ADMISSION_WAIT_S` | Required / `0.05` | float (≥ 0) | Maximum wait for route or crawler capacity before rejection. | `ADMISSION_RETRY_AFTER_S` |
 | `ADMISSION_RETRY_AFTER_S` | Required / `1` | int (≥ 1) | `Retry-After` seconds returned with capacity HTTP 429 responses. | `ADMISSION_WAIT_S` |
 | `MAX_INTERNAL_FANOUT` | Required / `20` | int (≥ 1) | Shared cap that must cover URL, subquery, crawl, chunk, and profile limits. | `MAX_URLS`, `MAX_SUBQUERIES` |
@@ -76,6 +80,14 @@ All environment variables must be present in `.env` (and `.env.llamacpp` or `.en
 | `CRAWL_RESPECT_ROBOTS_TXT` | Required / `true` | bool | Pass `check_robots_txt` to Crawl4AI. | — |
 | `CRAWLER_USER_AGENT` | Required / `ThorondorBot/1.0 (+https://github.com/FeanorsCodeSL/thorondor)` | string | Stable outbound Crawl4AI browser identity. Must contain an HTTP(S) contact URL and no newline characters. | `CRAWLER_ROBOTS_USER_AGENT` |
 | `CRAWLER_ROBOTS_USER_AGENT` | Required / `ThorondorBot` | token | Stable robots matching token. Must use letters, digits, `.`, `_`, or `-` and appear in `CRAWLER_USER_AGENT`. | `CRAWLER_USER_AGENT` |
+| `SITE_DEFAULT_DELAY_S` | Required / `0.5` | float (≥ 0) | Minimum spacing between map/crawl target requests to one host. | `SITE_MAX_JITTER_S` |
+| `SITE_MAX_JITTER_S` | Required / `0.25` | float (≥ 0) | Maximum deterministic per-host spacing jitter. | `SITE_DEFAULT_DELAY_S` |
+| `SITE_MAX_COOLDOWN_S` | Required / `300` | int (≥ 1) | Maximum adaptive 403/429 and parsed `Retry-After` cooldown in seconds. | — |
+| `ROBOTS_CACHE_TTL_S` | Required / `86400` | int (1–86400) | Absolute process-local robots snapshot TTL in seconds. Reads do not extend it. | `MAX_ROBOTS_BYTES` |
+| `MAX_ROBOTS_BYTES` | Required / `262144` | int (≥ 1) | Maximum robots body parsed per origin. Must not exceed `MAX_CONTENT_BYTES`. | `ROBOTS_CACHE_TTL_S` |
+| `MAX_SITEMAP_BYTES` | Required / `262144` | int (≥ 1) | Maximum body parsed for one sitemap document. Must not exceed `MAX_CONTENT_BYTES`. | `MAX_SITEMAP_ENTRIES` |
+| `MAX_SITEMAP_ENTRIES` | Required / `500` | int (1–500) | Maximum entries retained from one sitemap document. | `MAX_SITEMAP_DOCUMENTS` |
+| `MAX_SITEMAP_DOCUMENTS` | Required / `16` | int (1–`MAX_INTERNAL_FANOUT`) | Maximum sitemap documents fetched by one map or crawl operation. | `MAX_SITEMAP_ENTRIES` |
 
 ### Markdown Extraction
 

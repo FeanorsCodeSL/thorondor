@@ -54,9 +54,12 @@ from .models import (
     UnresponsiveEngine,
     UrlDiagnostic,
 )
+from .normalize import canonical_host, host_for
 from .observability import query_hash
 from .outcome_codes import FetchOutcomeCode
+from .politeness import HostPoliteness
 from .resource_policy import ResourcePolicy, RouteDeadlineExceeded, RuntimeAdmission
+from .robots_policy import RobotsCache
 from .selection import SelectionDecision
 from .types import (
     DiscoveryOutcome,
@@ -125,6 +128,14 @@ class PipelineDeps:
     resource_policy: ResourcePolicy
     admission: RuntimeAdmission
     crawl_url_safety: Callable[[str], bool | Awaitable[bool]]
+    crawler_robots_user_agent: str
+    robots_cache: RobotsCache
+    site_politeness: HostPoliteness
+    site_max_cooldown_s: int
+    max_robots_bytes: int
+    max_sitemap_bytes: int
+    max_sitemap_entries: int
+    max_sitemap_documents: int
 
     async def aclose(self) -> None:
         for component in (self.planner, self.discovery, self.extractor, self.chunker, self.reranker):
@@ -320,6 +331,19 @@ def _selection_filters(req: SearchRequest, deps: PipelineDeps) -> tuple[set[str]
         operator_allowlist = set(deps.domain_allowlist or set())
         allowlist = operator_allowlist if allowlist is None else allowlist & operator_allowlist
     return blocklist, allowlist
+
+
+def _operator_domain_allows(url: str, settings) -> bool:
+    host = host_for(url)
+    if not host:
+        return False
+    blocked = {canonical_host(value) for value in settings.domain_blocklist}
+    if any(host == value or host.endswith(f".{value}") for value in blocked if value):
+        return False
+    if not settings.allowlist_only:
+        return True
+    allowed = {canonical_host(value) for value in settings.domain_allowlist}
+    return any(host == value or host.endswith(f".{value}") for value in allowed if value)
 
 
 async def _safe_candidates(deps: PipelineDeps, candidates: list[DiscoveryResult]) -> list[DiscoveryResult]:
@@ -1012,6 +1036,8 @@ def build_deps_from_settings(settings) -> PipelineDeps:
         )
 
     async def crawl_url_safety(url: str) -> bool:
+        if not _operator_domain_allows(url, settings):
+            return False
         return await is_safe_crawl_url_async(url, settings.url_safety_policy)
 
     resource_policy = ResourcePolicy(
@@ -1019,12 +1045,16 @@ def build_deps_from_settings(settings) -> PipelineDeps:
         max_response_body_bytes=settings.max_response_body_bytes,
         search_route_deadline_s=settings.search_route_deadline_s,
         fetch_route_deadline_s=settings.fetch_route_deadline_s,
+        map_route_deadline_s=settings.map_route_deadline_s,
+        site_crawl_route_deadline_s=settings.site_crawl_route_deadline_s,
         discovery_stage_deadline_s=settings.discovery_timeout_s,
         crawl_stage_deadline_s=settings.crawl_timeout_s,
         chunk_stage_deadline_s=settings.chunk_timeout_s,
         rerank_stage_deadline_s=settings.reranker_timeout_s,
         max_inflight_searches=settings.max_inflight_searches,
         max_inflight_fetches=settings.max_inflight_fetches,
+        max_inflight_maps=settings.max_inflight_maps,
+        max_inflight_crawls=settings.max_inflight_crawls,
         admission_wait_s=settings.admission_wait_s,
         admission_retry_after_s=settings.admission_retry_after_s,
         max_internal_fanout=settings.max_internal_fanout,
@@ -1097,4 +1127,16 @@ def build_deps_from_settings(settings) -> PipelineDeps:
         crawl_url_safety=crawl_url_safety,
         resource_policy=resource_policy,
         admission=RuntimeAdmission(resource_policy),
+        crawler_robots_user_agent=settings.crawler_robots_user_agent,
+        robots_cache=RobotsCache(settings.robots_cache_ttl_s),
+        site_politeness=HostPoliteness(
+            default_delay_s=settings.site_default_delay_s,
+            max_jitter_s=settings.site_max_jitter_s,
+            max_cooldown_s=settings.site_max_cooldown_s,
+        ),
+        site_max_cooldown_s=settings.site_max_cooldown_s,
+        max_robots_bytes=settings.max_robots_bytes,
+        max_sitemap_bytes=settings.max_sitemap_bytes,
+        max_sitemap_entries=settings.max_sitemap_entries,
+        max_sitemap_documents=settings.max_sitemap_documents,
     )

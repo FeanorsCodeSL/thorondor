@@ -6,7 +6,7 @@ A self-hosted, data-sovereign semantic web-search service for agents — discove
 
 ## What It Is
 
-Thorondor is a local semantic web-search stack designed to replace hosted search-for-agents APIs (Exa, Tavily, and equivalents) with an on-premises, operator-controlled pipeline. It uses SearXNG for multi-engine URL discovery, Crawl4AI for JavaScript-capable page crawling, a first-party `ClusterSemanticChunker` backed by BGE-M3 embeddings for globally-optimal chunk boundaries, and BGE-reranker-v2-m3 to score passages against the original query before assembly. The orchestrator exposes versioned search and known-URL fetch contracts through REST and MCP. No persistent corpus, vector store, or implemented cache exists — all content is fetched live, processed, returned, and discarded.
+Thorondor is a local semantic web-search stack designed to replace hosted search-for-agents APIs (Exa, Tavily, and equivalents) with an on-premises, operator-controlled pipeline. It uses SearXNG for multi-engine URL discovery, Crawl4AI for JavaScript-capable page crawling, a first-party `ClusterSemanticChunker` backed by BGE-M3 embeddings for globally-optimal chunk boundaries, and BGE-reranker-v2-m3 to score passages against the original query before assembly. The orchestrator exposes versioned search, known-URL fetch, site-map, and bounded site-crawl contracts through REST and MCP. No persistent corpus, vector store, or implemented cache exists — all content is fetched live, processed, returned, and discarded.
 
 ## Architecture Overview
 
@@ -32,7 +32,7 @@ All inter-service traffic travels over internal Compose networks. Crawl4AI's out
 
 | Path | Type | Description |
 |---|---|---|
-| `orchestrator/` | service | FastAPI app: `/v1/search`, `/search` (compat), `/livez`, `/healthz`, MCP `/mcp` |
+| `orchestrator/` | service | FastAPI app: `/v1/search`, `/search` (compat), `/v1/fetch`, `/v1/map`, `/v1/crawl`, `/livez`, `/healthz`, MCP `/mcp` |
 | `semantic-chunking-service/` | service | FastAPI chunker: `/chunk`, `/healthz` — ClusterSemanticChunker + OpenAI-compatible embedding client |
 | `thorondor_cli/` | tool | Textual configurator, env/deploy helpers, native `thorondor-mcp` proxy, and harness writers |
 | `ssrf-proxy/` | service | Minimal async HTTP CONNECT proxy that blocks RFC-1918 and embedded-IPv4 IPv6 targets |
@@ -104,9 +104,9 @@ and `scripts/deploy-llamacpp.sh` so a fresh clone can deploy the llamacpp
 profile with no manual file placement.
 
 `thorondor doctor` is the non-interactive status path. `thorondor-mcp` is a
-native stdio MCP proxy that forwards `web_search` and `web_fetch` to the running
-`POST /v1/search` and `POST /v1/fetch` endpoints. The Dockerized HTTP MCP surface
-remains available at `http://localhost:8080/mcp`.
+native stdio MCP proxy that forwards `web_search`, `web_fetch`, `web_map`, and
+`web_crawl` to their matching versioned REST endpoints. The Dockerized HTTP MCP
+surface remains available at `http://localhost:8080/mcp`.
 
 `thorondor uninstall` stops the managed stack, removes `~/.thorondor`, and then
 removes the installed `thorondor` tool. Use `thorondor uninstall --keep-tool`
@@ -410,6 +410,12 @@ Use `POST /v1/fetch` when the agent already knows one to four target URLs. The r
 
 Terminal outcomes distinguish content from challenge or empty shells, robots refusal, timeout, rate limiting, unsafe redirects or targets, unsupported content or capabilities, oversized content, malformed upstream data, and local processing failures. Returned web content is always marked `provenance: "external_web"` and `trust: "untrusted"`.
 
+### POST /v1/map and POST /v1/crawl
+
+Use `POST /v1/map` to discover a deterministic, robots-aware URL set for one site. Use `POST /v1/crawl` for the same bounded traversal plus typed page results. Both resolve the seed first, scope the operation to its effective origin and seed directory by default, combine declared and common sitemaps with bounded breadth-first link traversal, and optionally add SearXNG `site:` discovery. Parent paths and subdomains require explicit opt-in; arbitrary external-origin crawling is not supported.
+
+The shared request policy supports `sitemap` modes `include`, `only`, and `skip`; path include/exclude globs; query preservation, stripping, or exclusion; file-extension allowlists; and explicit depth, page, and discovered-URL limits. Responses report every retained URL's sources, state transitions, terminal reason, untrusted sitemap modification metadata, aggregate fetch outcomes, robots state and network/cache source, warnings, and omissions. These operations are synchronous and intentionally limited to small site slices.
+
 ## MCP
 
 Mount the MCP endpoint in your agent's configuration:
@@ -420,7 +426,7 @@ http://localhost:8080/mcp
 
 Transport: streamable HTTP (`stateless_http=True`). The server ID is `thorondor`.
 
-The exposed tools are `web_search` and `web_fetch`. `web_search` mirrors the search request and returns the versioned search envelope. `web_fetch` accepts one to four known URLs plus optional required capabilities and returns the same typed fetch envelope as `POST /v1/fetch`.
+The exposed tools are `web_search`, `web_fetch`, `web_map`, and `web_crawl`. Each mirrors its versioned REST request and response contract. `web_map` returns URL-only discovery outcomes; `web_crawl` adds typed page evidence for the bounded site slice.
 
 Example MCP tool call (Claude SDK style):
 
@@ -537,10 +543,14 @@ All keys must be present in `.env` (leave optional keys blank rather than deleti
 | `MAX_RESPONSE_BODY_BYTES` | `2097152` | Maximum serialized REST, MCP, Crawl4AI, or stdio-proxy response payload. |
 | `SEARCH_ROUTE_DEADLINE_S` | `120` | End-to-end search deadline. |
 | `FETCH_ROUTE_DEADLINE_S` | `60` | End-to-end known-URL fetch deadline. |
+| `MAP_ROUTE_DEADLINE_S` | `90` | End-to-end site-map deadline. |
+| `SITE_CRAWL_ROUTE_DEADLINE_S` | `120` | End-to-end bounded site-crawl deadline. |
 | `DISCOVERY_TIMEOUT_S` | `20` | Query-planning and per-subquery discovery stage deadline. |
 | `CHUNK_TIMEOUT_S` | `45` | Total chunking stage deadline. |
 | `MAX_INFLIGHT_SEARCHES` | `4` | Process-wide search admission slots. |
 | `MAX_INFLIGHT_FETCHES` | `8` | Process-wide fetch admission slots. |
+| `MAX_INFLIGHT_MAPS` | `4` | Process-wide site-map admission slots. |
+| `MAX_INFLIGHT_CRAWLS` | `2` | Process-wide bounded site-crawl admission slots. |
 | `ADMISSION_WAIT_S` | `0.05` | Maximum wait for a route or crawler slot before rejection. |
 | `ADMISSION_RETRY_AFTER_S` | `1` | Bounded `Retry-After` value returned with HTTP 429. |
 | `MAX_INTERNAL_FANOUT` | `20` | Shared cap covering URL, subquery, crawl, chunk, and profile fan-out. |
@@ -574,6 +584,14 @@ All keys must be present in `.env` (leave optional keys blank rather than deleti
 | `CRAWL_RESPECT_ROBOTS_TXT` | `true` | Whether Crawl4AI observes robots.txt. |
 | `CRAWLER_USER_AGENT` | `ThorondorBot/1.0 (+https://github.com/FeanorsCodeSL/thorondor)` | Honest outbound crawler identity with a contact URL. |
 | `CRAWLER_ROBOTS_USER_AGENT` | `ThorondorBot` | Token reserved for robots policy matching and required to appear in the outbound identity. |
+| `SITE_DEFAULT_DELAY_S` | `0.5` | Minimum spacing between target requests to one host. |
+| `SITE_MAX_JITTER_S` | `0.25` | Maximum deterministic per-host spacing jitter. |
+| `SITE_MAX_COOLDOWN_S` | `300` | Maximum adaptive or `Retry-After` cooldown in seconds. |
+| `ROBOTS_CACHE_TTL_S` | `86400` | Absolute in-memory robots snapshot TTL, capped at 24 hours. |
+| `MAX_ROBOTS_BYTES` | `262144` | Maximum robots response bytes parsed by map/crawl. |
+| `MAX_SITEMAP_BYTES` | `262144` | Maximum bytes parsed from one sitemap document. |
+| `MAX_SITEMAP_ENTRIES` | `500` | Maximum retained entries per sitemap document. |
+| `MAX_SITEMAP_DOCUMENTS` | `16` | Maximum sitemap documents fetched per operation. |
 
 ### Markdown Extraction
 

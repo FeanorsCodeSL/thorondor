@@ -9,7 +9,16 @@ import httpx
 
 from .clients.searxng_client import SEARXNG_INTERNAL_HEADERS
 from .fetch_pipeline import run_fetch
-from .models import FetchRequest, FetchResponse, SearchRequest, SearchResponse
+from .models import (
+    CrawlRequest,
+    CrawlResponse,
+    FetchRequest,
+    FetchResponse,
+    MapRequest,
+    MapResponse,
+    SearchRequest,
+    SearchResponse,
+)
 from .mcp_server import mcp, mcp_http_app
 from .observability import configure_json_logging, new_request_id, reset_request_id, set_request_id
 from .pipeline import SearchDependencyUnavailable, build_deps_from_settings, run_search
@@ -20,6 +29,7 @@ from .resource_policy import (
     RuntimeAdmission,
 )
 from .settings import load_settings
+from .site_pipeline import run_crawl, run_map
 
 
 @asynccontextmanager
@@ -215,6 +225,24 @@ async def fetch(req: FetchRequest, request: Request) -> FetchResponse:
         request,
         run_fetch(req, get_deps()),
         FetchResponse,
+    )
+
+
+@app.post("/v1/map", responses=TRANSPORT_ERROR_RESPONSES)
+async def map_site(req: MapRequest, request: Request) -> MapResponse:
+    return await _run_http_operation(
+        request,
+        run_map(req, get_deps()),
+        MapResponse,
+    )
+
+
+@app.post("/v1/crawl", responses=TRANSPORT_ERROR_RESPONSES)
+async def crawl_site(req: CrawlRequest, request: Request) -> CrawlResponse:
+    return await _run_http_operation(
+        request,
+        run_crawl(req, get_deps()),
+        CrawlResponse,
     )
 
 

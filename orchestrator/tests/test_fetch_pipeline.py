@@ -120,6 +120,24 @@ def test_fetch_falls_back_to_crawl4ai_markdown_when_html_cleaning_is_empty():
     assert response.results[0].markdown == "# Article\n\nUseful body."
 
 
+def test_fetch_exposes_only_the_allowlisted_retry_after_header():
+    outcome = replace(_content_outcome(), retry_after="120")
+    fetcher = RecordingFetcher([outcome])
+    deps = fakes.deps(extractor=fetcher)
+    deps.crawl_url_safety = lambda _url: True
+
+    response = anyio.run(
+        run_fetch,
+        FetchRequest(urls=["https://a.test/article"]),
+        deps,
+    )
+
+    assert response.results[0].response_headers == {
+        "content-type": "text/html; charset=utf-8",
+        "retry-after": "120",
+    }
+
+
 def test_fetch_rejects_unsafe_targets_without_dispatch():
     fetcher = RecordingFetcher([])
     deps = fakes.deps(extractor=fetcher)

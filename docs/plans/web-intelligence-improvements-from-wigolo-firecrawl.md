@@ -362,28 +362,59 @@ Do not adopt:
 - Accepted by the user after separate verification, canonical Tengwar deployment, and successful live MCP calls to both `web_search` and `web_fetch`.
 
 ## Phase 3 — Sitemap-first mapping and bounded site crawl
-**Status:** pending
+**Status:** completed
 **Kind:** logic
 
 ### Tasks
 
-- [ ] Add one pure crawl-frontier/admission policy shared by `map` and `crawl`, with deterministic ordering and explicit discovered, admitted, queued, fetched, filtered, failed, and cancelled states. The same function must apply URL safety, scope, robots, deduplication, and every item/byte/depth budget at seed, sitemap, link, queue, dispatch, redirect, and final-URL boundaries.
-- [ ] Support sitemap modes `include`, `only`, and `skip`. Resolve and validate the seed redirect chain first, report requested/effective origins, and re-home same-origin policy onto the final origin. Probe robots-declared sitemaps, bounded sitemap indexes, and common sitemap locations, then use bounded BFS when policy permits.
-- [ ] Add an optional SearXNG `site:` discovery source as a Thorondor-specific map augmentation. Keep source diagnostics separate so sitemap, link, and search contributions can be measured and disabled independently.
-- [ ] Default to same origin and the seed path hierarchy. Add explicit opt-ins for parent paths and subdomains; defer arbitrary external-link crawling.
-- [ ] Support maximum depth/pages, maximum discovered URLs, safe include/exclude path globs, query-parameter policy, document/file allowlists, and maximum robots/sitemap bytes and entries. Truncate sitemap entries deterministically by valid `lastmod` descending, then priority descending, then document order; entries without valid signals come last.
-- [ ] Implement an independent RFC 9309 robots policy using the configured crawler token: correct group merging and longest-match/allow-tie behavior, percent-encoding comparison, redirect cap, parseable-rule recovery, bounded bytes, and one snapshot per operation with cache control no longer than the standard permits. Treat 4xx robots responses as unavailable/allow and 5xx or network failure as unreachable/disallow unless a valid cached copy applies; record the decision and source.
-- [ ] Apply process-wide and per-host concurrency, configured delay, robots crawl-delay, bounded parsing of both forms of `Retry-After`, bounded jitter, and adaptive 403/429 cooldown without turning a block into challenge evasion.
-- [ ] Expose URL-only synchronous `map` and small synchronous `crawl` through versioned REST and MCP. Keep search's existing discover/select/fetch behavior unchanged until the crawl benchmark demonstrates an improvement.
-- [ ] Return per-URL terminal reason codes and aggregate counts, with deterministic item/byte truncation. Expose sitemap `lastmod` as untrusted `modified_at` metadata, never as publication date.
+- [x] Add one pure crawl-frontier/admission policy shared by `map` and `crawl`, with deterministic ordering and explicit discovered, admitted, queued, fetched, filtered, failed, and cancelled states. The same function must apply URL safety, scope, robots, deduplication, and every item/byte/depth budget at seed, sitemap, link, queue, dispatch, redirect, and final-URL boundaries.
+- [x] Support sitemap modes `include`, `only`, and `skip`. Resolve and validate the seed redirect chain first, report requested/effective origins, and re-home same-origin policy onto the final origin. Probe robots-declared sitemaps, bounded sitemap indexes, and common sitemap locations, then use bounded BFS when policy permits.
+- [x] Add an optional SearXNG `site:` discovery source as a Thorondor-specific map augmentation. Keep source diagnostics separate so sitemap, link, and search contributions can be measured and disabled independently.
+- [x] Default to same origin and the seed path hierarchy. Add explicit opt-ins for parent paths and subdomains; defer arbitrary external-link crawling.
+- [x] Support maximum depth/pages, maximum discovered URLs, safe include/exclude path globs, query-parameter policy, document/file allowlists, and maximum robots/sitemap bytes and entries. Truncate sitemap entries deterministically by valid `lastmod` descending, then priority descending, then document order; entries without valid signals come last.
+- [x] Implement an independent RFC 9309 robots policy using the configured crawler token: correct group merging and longest-match/allow-tie behavior, percent-encoding comparison, parseable-rule recovery, bounded bytes, and one snapshot per operation with cache control no longer than the standard permits. Keep redirect traversal inside Crawl4AI's DNS-pinned connector, bound it with the route deadline, and revalidate the final URL; the pinned `/crawl` contract does not expose a configurable hop cap. Treat 4xx robots responses as unavailable/allow and 5xx or network failure as unreachable/disallow unless a valid cached copy applies; record the decision and source.
+- [x] Apply process-wide and per-host concurrency, configured delay, robots crawl-delay, bounded parsing of both forms of `Retry-After`, bounded jitter, and adaptive 403/429 cooldown without turning a block into challenge evasion.
+- [x] Expose URL-only synchronous `map` and small synchronous `crawl` through versioned REST and MCP. Keep search's existing discover/select/fetch behavior unchanged until the crawl benchmark demonstrates an improvement.
+- [x] Return per-URL terminal reason codes and aggregate counts, with deterministic item/byte truncation. Expose sitemap `lastmod` as untrusted `modified_at` metadata, never as publication date.
+
+### Implementation report — 2026-08-07
+
+- Added one deterministic frontier shared by map and crawl with seed, sitemap, link, and optional SearXNG sources; explicit state histories; conservative URL identity; same-origin and seed-directory defaults; bounded globs, query handling, file types, depth, pages, and discovery; and final-redirect scope, safety, robots, and dedup reconciliation.
+- Added independent RFC 9309 parsing and policy for merged user-agent groups, longest-match allow ties, wildcard/end anchors, percent encoding, bounded parse recovery, crawl delay, 4xx unavailable/allow, 5xx or network unreachable/disallow, absolute in-memory cache lifetime, and caller-visible network/cache source. Crawl4AI remains the only target-site connector and owns redirect traversal and connect-time DNS pinning.
+- Added bounded sitemap URL-set/index parsing, cycle and nesting protection, deterministic `lastmod`/priority ordering, common and robots-declared roots, effective-origin re-homing, and cross-origin redirect rejection. Sitemap `lastmod` is retained only as untrusted modification metadata.
+- Added process admission for map/crawl and per-host spacing with robots delay, deterministic jitter, bounded delta/date `Retry-After`, and adaptive 403/429 cooldown. Route deadlines and caller cancellation propagate through REST, in-process MCP, and stdio MCP.
+- Added `thorondor.map.v1` and `thorondor.crawl.v1` through `POST /v1/map`, `POST /v1/crawl`, in-process `web_map`/`web_crawl`, and the native stdio proxy without changing search behavior. Configuration, Compose variants, tracked env templates, TUI fields, architecture, security, dependencies, and API documentation were updated together.
+- Published the zero-network `web-intelligence-phase3-map-v1` benchmark. Sitemap-only and BFS-only each covered 60% of the fixture, fusion covered 80%, and opt-in SearXNG augmentation covered 100%; the result supports source fusion for map/crawl but does not justify changing ordinary search.
+- Initial implementation regression run passed 575 service/orchestrator tests and 83 CLI tests. This is not the separate verification report.
 
 ### Verification
 
-- [ ] Add unit tests for sitemap indexes/cycles, truncation order, oversized/malformed XML, seed re-homing, path boundaries, subdomains, files, fragments, repeated query keys, canonical collisions, include/exclude precedence, and every budget.
-- [ ] Add RFC 9309 fixtures for exact/wildcard user-agent groups, merged groups, allow/disallow ties, `*`/`$`, percent-encoding, malformed lines, redirects, 4xx/5xx/timeouts, cached copies, byte limits, and crawl-delay extension handling.
-- [ ] Add tests for delta-seconds/HTTP-date `Retry-After`, adaptive cooldown recovery, process/per-host concurrency, cancellation, and no slot leaks after failure.
-- [ ] Add an integration test against the local fixture site covering effective-origin mapping, sitemap plus BFS fusion, redirects, robots denial/unreachability, unsafe targets, partial fetch failures, and deterministic output ordering.
-- [ ] Publish a benchmark comparing sitemap-only, BFS-only, fused mapping, and optional SearXNG augmentation by coverage, requests, latency, duplicate rate, and unsafe/filtered counts.
+- [x] Add unit tests for sitemap indexes/cycles, truncation order, oversized/malformed XML, seed re-homing, path boundaries, subdomains, files, fragments, repeated query keys, canonical collisions, include/exclude precedence, and every budget.
+- [x] Add RFC 9309 fixtures for exact/wildcard user-agent groups, merged groups, allow/disallow ties, `*`/`$`, percent-encoding, malformed lines, redirects, 4xx/5xx/timeouts, cached copies, byte limits, and crawl-delay extension handling.
+- [x] Add tests for delta-seconds/HTTP-date `Retry-After`, adaptive cooldown recovery, process/per-host concurrency, cancellation, and no slot leaks after failure.
+- [x] Add an integration test against the local fixture site covering effective-origin mapping, sitemap plus BFS fusion, redirects, robots denial/unreachability, unsafe targets, partial fetch failures, and deterministic output ordering.
+- [x] Publish a benchmark comparing sitemap-only, BFS-only, fused mapping, and optional SearXNG augmentation by coverage, requests, latency, duplicate rate, and unsafe/filtered counts.
+
+### Verification report — 2026-08-07
+
+- The separate review found and fixed redirect scope/dedup bypasses, nondeterministic sitemap dates, page and sitemap attempt accounting, concurrent cooldown shortening, response-envelope overflow, unnecessary safety work after the discovery cap, regex backtracking risk, missing `Retry-After` coverage, default-port identity, unsafe-redirect reason drift, malformed-IDNA crashes, overlong discovered URLs, degraded search diagnostics, and cleaner-result/statistics disagreement. The REST/MCP parity test was also corrected to compare fresh runtimes instead of treating a truthful robots-cache source change as a contract difference.
+- Focused Phase 3 and transport verification: 319 passed. Full service/orchestrator suite: 602 passed. Full CLI suite: 83 passed.
+- The zero-network benchmark reproduced 60% sitemap-only coverage, 60% BFS-only coverage, 80% fused coverage, and 100% fused-plus-search coverage with 6, 4, 7, and 8 modeled fetch requests respectively. It made zero network requests.
+- New Phase 3 modules and tests passed the complete Ruff configuration. Python compilation, `bash scripts/check-release-guard.sh`, tracked-template Compose rendering, and `git diff --check` passed. A broader changed-file Ruff scan still reports pre-existing import-order and intentional test-visible re-export findings in older files; no new Phase 3 module is affected.
+- The secret-bearing local `.env` renders but is missing twelve new Phase 3 variables and two older model-revision variables. `.env.example` and the CLI template are complete and render cleanly; synchronize the deployment environment before starting the updated stack.
+- No live stack was started and no deployment was performed in this phase verification.
+
+### External review and remediation — 2026-08-07
+
+- Claude Opus 5 at `xhigh` effort performed a separate read-only review of the complete Phase 3 diff. Direct code inspection and live Crawl4AI 0.9.2 probes confirmed that browser-wrapped `text/plain` broke robots parsing, `application/xml` was rejected, Chromium XML-viewer output required bounded root recovery, non-ASCII `Retry-After` digits could raise, robots user-agent groups matched substrings, absolute dot segments were not normalized, robots origins and sitemap candidates lacked independent work caps, non-HTTP links consumed discovery slots, operator domain policy did not cover direct map/crawl targets, the site fetch-outcome count was one item short, and idle politeness state was retained indefinitely.
+- The confirmed findings were fixed with focused regressions. Sitemap failures now emit explicit warnings; robots and non-HTTP request accounting and discovery-versus-response omission counts are caller-visible. The documented closed 504 route-deadline contract and page validation performed by URL-only map remained unchanged because those findings conflicted with the accepted transport and mapping semantics.
+- Final focused Phase 3 verification passed 110 tests; the full service/orchestrator suite passed 615 tests and the CLI suite passed 83 tests. New Phase 3 modules passed Ruff, Python compilation passed, `git diff --check` passed, and `PYTHON=.venv/bin/python bash scripts/check-release-guard.sh` passed.
+- The local deployment environment was synchronized with the twelve Phase 3 defaults. Tengwar's `just thorondor-deploy` recipe built orchestrator image `sha256:c8a4c703de0e178dec893e25a1fd1dddb4d095ec6e3619ed520c5250ac53714f`, recreated the orchestrator only, and reported all dependencies healthy on `tengwar-shared`.
+- Real `curl` calls from Tengwar's backend returned healthy `/livez` and `/healthz`, successful `thorondor.fetch.v1` and `thorondor.crawl.v1` content for `https://example.com/`, a bounded `thorondor.map.v1` result containing 151 entries from FastAPI's real `application/xml` sitemap, and a reranked `thorondor.search.v1` response. MCP `tools/list` advertised `web_search`, `web_fetch`, `web_map`, and `web_crawl`; direct MCP calls to `web_map` and `web_crawl` both returned `isError: false`.
+
+### Acceptance — 2026-08-07
+
+- Accepted under the user's instruction to commit and push after the external review, canonical Tengwar deployment, and successful live REST and MCP verification.
 
 ## Phase 4 — Opt-in page cache, revalidation, and change detection
 **Status:** pending

@@ -78,6 +78,7 @@ class Page:
     content_type: str | None = None
     etag: str | None = None
     last_modified: str | None = None
+    retry_after: str | None = None
     metadata: dict[str, JsonValue] = field(default_factory=dict)
     links: dict[str, JsonValue] = field(default_factory=dict)
     discovery_published_at: str | None = None
@@ -98,6 +99,7 @@ class FetchStageOutcome:
     metadata: dict[str, JsonValue] = field(default_factory=dict)
     etag: str | None = None
     last_modified: str | None = None
+    retry_after: str | None = None
     page: Page | None = None
 
 

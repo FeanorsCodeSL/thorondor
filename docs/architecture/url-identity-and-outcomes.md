@@ -4,7 +4,7 @@
 
 This contract is used internally, exposed through additive fields on the existing REST and MCP `thorondor.search.v1` response, and returned directly by the bounded REST/MCP `thorondor.fetch.v1` contract. It adds no cache implementation or ingress enforcement.
 
-Document and exact-evidence identities are carried through passages, citations, REST, and MCP. URL and cache identities are not yet wired into persistence. The internal `Page` boundary and Crawl4AI client capture requested and final URLs, status, content type, allowlisted validators, links, and bounded metadata. The known-URL fetch surface exposes these values through typed, bounded per-URL outcomes; future map, crawl, cache, and job work must reuse the same identities and codes.
+Document and exact-evidence identities are carried through passages, citations, REST, and MCP. URL and cache identities are not yet wired into persistence. The internal `Page` boundary and Crawl4AI client capture requested and final URLs, status, content type, allowlisted validators, links, and bounded metadata. Known-URL fetch and bounded site crawl expose these values through typed per-URL outcomes. Map and crawl use the same conservative dedup key in their shared frontier while preserving requested/effective URLs and untrusted sitemap metadata. Future cache and job work must reuse the same identities and codes.
 
 ## URL roles
 
@@ -76,6 +76,6 @@ The internal `str` enums in `orchestrator/outcome_codes.py` are the only control
 
 ## Endpoint access and egress decisions
 
-New endpoints must remain deployment-internal behind an operator-supplied protected ingress/access layer until a future approved first-party-auth design broadens exposure. A loopback default is not evidence that a proxy or protected ingress exists. The fetch endpoint preserves this access decision and does not add first-party ingress authentication.
+New endpoints must remain deployment-internal behind an operator-supplied protected ingress/access layer until a future approved first-party-auth design broadens exposure. A loopback default is not evidence that a proxy or protected ingress exists. Fetch, map, and crawl preserve this access decision and do not add first-party ingress authentication.
 
 The first-party Compose configurations attach Crawl4AI to an isolated internal control network and a dedicated outbound network. Crawl4AI's built-in proxy owns connect-time DNS pinning and rejects non-global targets; the orchestrator performs non-blocking safety checks before dispatch and revalidates every changed final URL before accepting content. The identity models do not themselves authorize dispatch or bypass either enforcement layer.

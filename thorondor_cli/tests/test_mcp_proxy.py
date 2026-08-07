@@ -134,6 +134,54 @@ def test_web_fetch_signature_matches_orchestrator():
     assert inspect.signature(mcp_proxy.web_fetch) == inspect.signature(mcp_server.web_fetch)
 
 
+@respx.mock
+@pytest.mark.parametrize(
+    ("tool", "path", "schema_version"),
+    [
+        (mcp_proxy.web_map, "/v1/map", "thorondor.map.v1"),
+        (mcp_proxy.web_crawl, "/v1/crawl", "thorondor.crawl.v1"),
+    ],
+)
+def test_site_tools_forward_non_none_policy(monkeypatch, tool, path, schema_version):
+    monkeypatch.setenv("THORONDOR_BASE_URL", "http://thorondor.test")
+    route = respx.post(f"http://thorondor.test{path}").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "requested_url": "https://a.test/article",
+                "outcome": "completed",
+                "urls": [],
+                "results": [],
+                "stats": {},
+                "warnings": [],
+                "schema_version": schema_version,
+            },
+        )
+    )
+
+    result = asyncio.run(
+        tool(
+            "https://a.test/article",
+            sitemap="skip",
+            max_pages=2,
+            include_subdomains=None,
+        )
+    )
+
+    assert result["schema_version"] == schema_version
+    assert route.calls.last.request.read() == (
+        b'{"url":"https://a.test/article","sitemap":"skip","max_pages":2}'
+    )
+
+
+def test_site_tool_signatures_match_orchestrator():
+    pytest.importorskip("orchestrator.mcp_server")
+    from orchestrator import mcp_server
+
+    assert inspect.signature(mcp_proxy.web_map) == inspect.signature(mcp_server.web_map)
+    assert inspect.signature(mcp_proxy.web_crawl) == inspect.signature(mcp_server.web_crawl)
+
+
 def test_web_search_advertises_the_shared_concise_description():
     async def advertised_tool():
         return next(

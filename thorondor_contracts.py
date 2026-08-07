@@ -26,12 +26,16 @@ DEFAULT_MAX_REQUEST_BODY_BYTES = 32768
 DEFAULT_MAX_RESPONSE_BODY_BYTES = 2097152
 DEFAULT_SEARCH_ROUTE_DEADLINE_S = 120.0
 DEFAULT_FETCH_ROUTE_DEADLINE_S = 60.0
+DEFAULT_MAP_ROUTE_DEADLINE_S = 90.0
+DEFAULT_SITE_CRAWL_ROUTE_DEADLINE_S = 120.0
 DEFAULT_DISCOVERY_STAGE_DEADLINE_S = 20.0
 DEFAULT_CRAWL_STAGE_DEADLINE_S = 45.0
 DEFAULT_CHUNK_STAGE_DEADLINE_S = 45.0
 DEFAULT_RERANK_STAGE_DEADLINE_S = 30.0
 DEFAULT_MAX_INFLIGHT_SEARCHES = 4
 DEFAULT_MAX_INFLIGHT_FETCHES = 8
+DEFAULT_MAX_INFLIGHT_MAPS = 4
+DEFAULT_MAX_INFLIGHT_CRAWLS = 2
 DEFAULT_ADMISSION_WAIT_S = 0.05
 DEFAULT_ADMISSION_RETRY_AFTER_S = 1
 DEFAULT_MAX_INTERNAL_FANOUT = 20
@@ -50,4 +54,12 @@ SEARCH_TOOL_DESCRIPTION = (
 FETCH_TOOL_DESCRIPTION = (
     "Fetch bounded evidence from known URLs with per-URL terminal outcomes. "
     f"{RESOURCE_POLICY_SUMMARY}"
+)
+MAP_TOOL_DESCRIPTION = (
+    "Discover a bounded, robots-aware URL map for one site. Uses sitemaps first and "
+    "link traversal when enabled; returns explicit per-URL admission outcomes."
+)
+CRAWL_TOOL_DESCRIPTION = (
+    "Crawl a small, bounded part of one site and return typed page evidence. Uses the "
+    "same robots, scope, sitemap, safety, deadline, and politeness policy as web_map."
 )

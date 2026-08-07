@@ -61,6 +61,12 @@ sequenceDiagram
 
 `POST /v1/fetch` and MCP `web_fetch` skip discovery, chunking, embedding, and reranking. They validate one to four URLs, acquire the shared process and per-host capacity, call Crawl4AI with the requested capability set, validate changed final URLs, clean successful content, and return one bounded typed outcome per input URL. Request, response, content, and route-deadline limits are shared across the REST and MCP surfaces; timeout or caller cancellation cancels pending work.
 
+### Site map and crawl path
+
+`POST /v1/map` / MCP `web_map` and `POST /v1/crawl` / MCP `web_crawl` share `run_map`, `run_crawl`, and one crawl-frontier policy. The seed is URL-safety checked and fetched through Crawl4AI before scope is re-homed to its validated effective origin. Thorondor then obtains an origin robots snapshot, processes declared and common sitemaps within byte, entry, document, and nesting bounds, optionally adds SearXNG `site:` candidates, and traverses links breadth-first unless `sitemap=only`.
+
+Every candidate passes deterministic URL normalization, same-origin and seed-directory scope, include/exclude globs, query and file policy, URL safety, robots, deduplication, depth, discovery, and page limits. Requests to one host honor configured spacing, robots crawl delay, bounded jitter, parsed `Retry-After`, and adaptive 403/429 cooldown. `map` returns URL state histories and source diagnostics; `crawl` adds the same typed fetch results as known-URL fetch. The route deadline and caller cancellation cancel pending traversal rather than leaving background work running.
+
 ## 2. Orchestrator Internal State Machine
 
 This diagram shows the sequential stages inside `run_search` in `orchestrator/pipeline.py`, including the early-exit branches that produce empty 200 responses.
@@ -210,7 +216,7 @@ sequenceDiagram
 
 ## 5. MCP Tool Invocation Flow
 
-The MCP `web_search` tool is a thin wrapper over the same `run_search` pipeline. MCP `web_fetch` similarly wraps the same `run_fetch` pipeline used by `POST /v1/fetch`. No separate production pipeline exists between the REST and MCP surfaces.
+The MCP tools are thin wrappers over the same `run_search`, `run_fetch`, `run_map`, and `run_crawl` pipelines used by their REST endpoints. No separate production pipeline exists between the REST and MCP surfaces, and the native stdio proxy preserves the same request signatures and response JSON.
 
 ```mermaid
 sequenceDiagram

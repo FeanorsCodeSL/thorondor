@@ -1,11 +1,11 @@
 """Environment-driven configuration for the orchestrator."""
-from dataclasses import dataclass
 import ipaddress
 import os
 import re
+from dataclasses import dataclass
 from urllib.parse import urlparse
 
-from .models import MAX_SELECTED_URLS, MAX_SUBQUERY_COUNT
+from .models import MAX_SELECTED_URLS, MAX_SITE_DISCOVERED_URLS, MAX_SUBQUERY_COUNT
 from .resource_policy import ResourcePolicy
 from .url_safety import UrlSafetyPolicy
 
@@ -136,15 +136,27 @@ class Settings:
     max_response_body_bytes: int
     search_route_deadline_s: float
     fetch_route_deadline_s: float
+    map_route_deadline_s: float
+    site_crawl_route_deadline_s: float
     discovery_timeout_s: float
     chunk_timeout_s: float
     max_inflight_searches: int
     max_inflight_fetches: int
+    max_inflight_maps: int
+    max_inflight_crawls: int
     admission_wait_s: float
     admission_retry_after_s: int
     max_internal_fanout: int
     max_content_bytes: int
     chunk_concurrency: int
+    site_default_delay_s: float
+    site_max_jitter_s: float
+    site_max_cooldown_s: int
+    robots_cache_ttl_s: int
+    max_robots_bytes: int
+    max_sitemap_bytes: int
+    max_sitemap_entries: int
+    max_sitemap_documents: int
     search_profiles: dict[str, SearchProfileDefaults]
     url_safety_policy: UrlSafetyPolicy
 
@@ -187,12 +199,16 @@ class Settings:
                 max_response_body_bytes=self.max_response_body_bytes,
                 search_route_deadline_s=self.search_route_deadline_s,
                 fetch_route_deadline_s=self.fetch_route_deadline_s,
+                map_route_deadline_s=self.map_route_deadline_s,
+                site_crawl_route_deadline_s=self.site_crawl_route_deadline_s,
                 discovery_stage_deadline_s=self.discovery_timeout_s,
                 crawl_stage_deadline_s=self.crawl_timeout_s,
                 chunk_stage_deadline_s=self.chunk_timeout_s,
                 rerank_stage_deadline_s=self.reranker_timeout_s,
                 max_inflight_searches=self.max_inflight_searches,
                 max_inflight_fetches=self.max_inflight_fetches,
+                max_inflight_maps=self.max_inflight_maps,
+                max_inflight_crawls=self.max_inflight_crawls,
                 admission_wait_s=self.admission_wait_s,
                 admission_retry_after_s=self.admission_retry_after_s,
                 max_internal_fanout=self.max_internal_fanout,
@@ -211,6 +227,34 @@ class Settings:
         if self.max_internal_fanout < required_fanout:
             raise RuntimeError(
                 "MAX_INTERNAL_FANOUT must cover URL, subquery, crawl, chunk, and profile limits"
+            )
+        if self.site_default_delay_s < 0:
+            raise RuntimeError("SITE_DEFAULT_DELAY_S must be >= 0")
+        if self.site_max_jitter_s < 0:
+            raise RuntimeError("SITE_MAX_JITTER_S must be >= 0")
+        if self.site_max_cooldown_s < 1:
+            raise RuntimeError("SITE_MAX_COOLDOWN_S must be >= 1")
+        if not 1 <= self.robots_cache_ttl_s <= 86400:
+            raise RuntimeError("ROBOTS_CACHE_TTL_S must be between 1 and 86400")
+        for name, value in (
+            ("MAX_ROBOTS_BYTES", self.max_robots_bytes),
+            ("MAX_SITEMAP_BYTES", self.max_sitemap_bytes),
+            ("MAX_SITEMAP_ENTRIES", self.max_sitemap_entries),
+            ("MAX_SITEMAP_DOCUMENTS", self.max_sitemap_documents),
+        ):
+            if value < 1:
+                raise RuntimeError(f"{name} must be >= 1")
+        if self.max_robots_bytes > self.max_content_bytes:
+            raise RuntimeError("MAX_ROBOTS_BYTES must not exceed MAX_CONTENT_BYTES")
+        if self.max_sitemap_bytes > self.max_content_bytes:
+            raise RuntimeError("MAX_SITEMAP_BYTES must not exceed MAX_CONTENT_BYTES")
+        if self.max_sitemap_entries > MAX_SITE_DISCOVERED_URLS:
+            raise RuntimeError(
+                f"MAX_SITEMAP_ENTRIES must not exceed {MAX_SITE_DISCOVERED_URLS}"
+            )
+        if self.max_sitemap_documents > self.max_internal_fanout:
+            raise RuntimeError(
+                "MAX_SITEMAP_DOCUMENTS must not exceed MAX_INTERNAL_FANOUT"
             )
 
 
@@ -259,15 +303,27 @@ def load_settings() -> Settings:
         max_response_body_bytes=_int_env("MAX_RESPONSE_BODY_BYTES"),
         search_route_deadline_s=_float_env("SEARCH_ROUTE_DEADLINE_S"),
         fetch_route_deadline_s=_float_env("FETCH_ROUTE_DEADLINE_S"),
+        map_route_deadline_s=_float_env("MAP_ROUTE_DEADLINE_S"),
+        site_crawl_route_deadline_s=_float_env("SITE_CRAWL_ROUTE_DEADLINE_S"),
         discovery_timeout_s=_float_env("DISCOVERY_TIMEOUT_S"),
         chunk_timeout_s=_float_env("CHUNK_TIMEOUT_S"),
         max_inflight_searches=_int_env("MAX_INFLIGHT_SEARCHES"),
         max_inflight_fetches=_int_env("MAX_INFLIGHT_FETCHES"),
+        max_inflight_maps=_int_env("MAX_INFLIGHT_MAPS"),
+        max_inflight_crawls=_int_env("MAX_INFLIGHT_CRAWLS"),
         admission_wait_s=_float_env("ADMISSION_WAIT_S"),
         admission_retry_after_s=_int_env("ADMISSION_RETRY_AFTER_S"),
         max_internal_fanout=_int_env("MAX_INTERNAL_FANOUT"),
         max_content_bytes=_int_env("MAX_CONTENT_BYTES"),
         chunk_concurrency=_int_env("CHUNK_CONCURRENCY"),
+        site_default_delay_s=_float_env("SITE_DEFAULT_DELAY_S"),
+        site_max_jitter_s=_float_env("SITE_MAX_JITTER_S"),
+        site_max_cooldown_s=_int_env("SITE_MAX_COOLDOWN_S"),
+        robots_cache_ttl_s=_int_env("ROBOTS_CACHE_TTL_S"),
+        max_robots_bytes=_int_env("MAX_ROBOTS_BYTES"),
+        max_sitemap_bytes=_int_env("MAX_SITEMAP_BYTES"),
+        max_sitemap_entries=_int_env("MAX_SITEMAP_ENTRIES"),
+        max_sitemap_documents=_int_env("MAX_SITEMAP_DOCUMENTS"),
         search_profiles={
             profile: SearchProfileDefaults(
                 token_budget=_int_env(f"SEARCH_PROFILE_{profile.upper()}_TOKEN_BUDGET"),

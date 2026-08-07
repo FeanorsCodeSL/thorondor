@@ -386,6 +386,7 @@ def test_final_url_that_cannot_be_encoded_as_utf8_does_not_return_a_page():
         ("Content-Type", "content_type"),
         ("ETag", "etag"),
         ("Last-Modified", "last_modified"),
+        ("Retry-After", "retry_after"),
     ],
 )
 def test_allowlisted_response_headers_accept_exact_utf8_byte_limit(header_name, attribute):
@@ -415,6 +416,7 @@ def test_allowlisted_response_headers_accept_exact_utf8_byte_limit(header_name, 
         ("Content-Type", "content_type"),
         ("ETag", "etag"),
         ("Last-Modified", "last_modified"),
+        ("Retry-After", "retry_after"),
     ],
 )
 def test_allowlisted_response_headers_omit_utf8_overflow(header_name, attribute):
@@ -444,6 +446,7 @@ def test_allowlisted_response_headers_omit_utf8_overflow(header_name, attribute)
         ("CONTENT-TYPE", "content-type", "content_type"),
         ("ETAG", "etag", "etag"),
         ("LAST-MODIFIED", "last-modified", "last_modified"),
+        ("RETRY-AFTER", "retry-after", "retry_after"),
     ],
 )
 @pytest.mark.parametrize(
@@ -494,6 +497,7 @@ def test_allowlisted_response_headers_reject_unicode_casefold_lookalike():
     assert page.content_type is None
     assert page.etag is None
     assert page.last_modified is None
+    assert page.retry_after is None
 
 
 def test_allowlisted_response_headers_select_lexicographically_first_case_variant():
@@ -514,6 +518,9 @@ def test_allowlisted_response_headers_select_lexicographically_first_case_varian
                     "last-modified": "lower-last-modified",
                     "Last-Modified": "title-last-modified",
                     "LAST-MODIFIED": "upper-last-modified",
+                    "retry-after": "lower-retry-after",
+                    "Retry-After": "title-retry-after",
+                    "RETRY-AFTER": "upper-retry-after",
                     "set-cookie": "secret-cookie",
                     "x-internal-token": "secret-token",
                 },
@@ -529,6 +536,7 @@ def test_allowlisted_response_headers_select_lexicographically_first_case_varian
     assert page.content_type == "upper-content-type"
     assert page.etag == "upper-etag"
     assert page.last_modified == "upper-last-modified"
+    assert page.retry_after == "upper-retry-after"
     assert not hasattr(page, "response_headers")
     assert "secret-cookie" not in page.__dict__.values()
     assert "secret-token" not in page.__dict__.values()
@@ -1175,6 +1183,11 @@ def test_fetch_classifies_checked_in_shell_fixtures(fixture_name, expected):
             FetchOutcomeCode.CONTENT,
         ),
         (
+            "application/xml",
+            frozenset({"markdown", "raw_html"}),
+            FetchOutcomeCode.CONTENT,
+        ),
+        (
             "image/png",
             frozenset({"markdown"}),
             FetchOutcomeCode.UNSUPPORTED_CONTENT,
@@ -1209,6 +1222,32 @@ def test_fetch_enforces_document_capabilities(content_type, capabilities, expect
 
     assert outcomes[0].code == expected
     anyio.run(client.aclose)
+
+
+def test_xml_page_prefers_well_formed_raw_html_over_cleaned_html():
+    raw_html = (
+        '<html xmlns="http://www.w3.org/1999/xhtml"><body>'
+        '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">'
+        "<url><loc>https://example.com/page</loc></url>"
+        "</urlset></body></html>"
+    )
+    page = _extractor(url_safety=lambda _url: True)._page_from_payload(
+        "https://example.com/sitemap.xml",
+        {
+            "results": [
+                {
+                    "success": True,
+                    "response_headers": {"Content-Type": "application/xml"},
+                    "markdown": {"raw_markdown": "https://example.com/page"},
+                    "cleaned_html": "<html><body><urlset></body></html>",
+                    "html": raw_html,
+                }
+            ]
+        },
+    )
+
+    assert page is not None
+    assert page.html == raw_html
 
 
 def test_unsafe_redirect_takes_precedence_over_page_classification():

@@ -519,6 +519,8 @@ class Crawl4aiExtractor:
         if media_type in document_types:
             return None if "document" in capabilities else FetchOutcomeCode.UNSUPPORTED_CAPABILITY
         if media_type.startswith("text/") or media_type in {
+            "application/xml",
+            "application/rss+xml",
             "application/xhtml+xml",
             "application/json",
         }:
@@ -552,7 +554,12 @@ class Crawl4aiExtractor:
         metadata = _bounded_json_mapping(raw_metadata, MAX_METADATA_ITEMS, MAX_METADATA_BYTES)
         links = _bounded_json_mapping(item.get("links"), MAX_LINK_ITEMS, MAX_LINK_BYTES)
         title = self._title_from_result(item, raw_metadata, source_url)
-        content_type, etag, last_modified = self._allowlisted_response_headers(item)
+        (
+            content_type,
+            etag,
+            last_modified,
+            retry_after,
+        ) = self._allowlisted_response_headers(item)
         markdown = self._markdown_from_result(item, payload if isinstance(payload, dict) else {})
         html = self._html_from_result(item, payload if isinstance(payload, dict) else {})
         base = {
@@ -567,6 +574,7 @@ class Crawl4aiExtractor:
             "metadata": metadata,
             "etag": etag,
             "last_modified": last_modified,
+            "retry_after": retry_after,
         }
         if await self._has_unsafe_final_url(source_url, final_url):
             return FetchStageOutcome(code=FetchOutcomeCode.UNSAFE_REDIRECT, **base)
@@ -604,6 +612,7 @@ class Crawl4aiExtractor:
             content_type=content_type,
             etag=etag,
             last_modified=last_modified,
+            retry_after=retry_after,
             metadata=metadata,
             links=links,
         )
@@ -638,7 +647,16 @@ class Crawl4aiExtractor:
         return ""
 
     @staticmethod
-    def _html_from_result(item: dict, payload: dict) -> str | None:
+    def _html_from_result(
+        item: dict,
+        payload: dict,
+        content_type: str | None = None,
+    ) -> str | None:
+        media_type = (content_type or "").split(";", 1)[0].strip().casefold()
+        if media_type in {"application/xml", "application/rss+xml", "text/xml"}:
+            value = item.get("html") or payload.get("html")
+            if isinstance(value, str) and value.strip():
+                return value
         markdown = item.get("markdown") or payload.get("markdown")
         if isinstance(markdown, dict):
             value = markdown.get("fit_html")
@@ -660,12 +678,17 @@ class Crawl4aiExtractor:
             markdown = self._markdown_from_result(item, payload)
             if not markdown:
                 continue
-            html = self._html_from_result(item, payload)
             raw_metadata = item.get("metadata") if isinstance(item.get("metadata"), dict) else {}
             metadata = _bounded_json_mapping(raw_metadata, MAX_METADATA_ITEMS, MAX_METADATA_BYTES)
             links = _bounded_json_mapping(item.get("links"), MAX_LINK_ITEMS, MAX_LINK_BYTES)
             title = self._title_from_result(item, raw_metadata, source_url)
-            content_type, etag, last_modified = self._allowlisted_response_headers(item)
+            (
+                content_type,
+                etag,
+                last_modified,
+                retry_after,
+            ) = self._allowlisted_response_headers(item)
+            html = self._html_from_result(item, payload, content_type)
             return Page(
                 url=source_url,
                 title=title,
@@ -677,6 +700,7 @@ class Crawl4aiExtractor:
                 content_type=content_type,
                 etag=etag,
                 last_modified=last_modified,
+                retry_after=retry_after,
                 metadata=metadata,
                 links=links,
             )
@@ -704,10 +728,12 @@ class Crawl4aiExtractor:
         return _bounded_utf8(source_url, MAX_TITLE_BYTES)
 
     @staticmethod
-    def _allowlisted_response_headers(item: dict) -> tuple[str | None, str | None, str | None]:
+    def _allowlisted_response_headers(
+        item: dict,
+    ) -> tuple[str | None, str | None, str | None, str | None]:
         headers = item.get("response_headers")
         if not isinstance(headers, dict):
-            return None, None, None
+            return None, None, None, None
         values: dict[str, str] = {}
         entries = sorted(
             (
@@ -718,11 +744,19 @@ class Crawl4aiExtractor:
             key=lambda entry: (entry[0], entry[1]),
         )
         for name, _original_name, value in entries:
-            if name in {"content-type", "etag", "last-modified"} and name not in values:
+            if (
+                name in {"content-type", "etag", "last-modified", "retry-after"}
+                and name not in values
+            ):
                 values[name] = value
         return tuple(
             value if _is_utf8_within_limit(value, MAX_RESPONSE_HEADER_BYTES) else None
-            for value in (values.get("content-type"), values.get("etag"), values.get("last-modified"))
+            for value in (
+                values.get("content-type"),
+                values.get("etag"),
+                values.get("last-modified"),
+                values.get("retry-after"),
+            )
         )
 
     async def _has_unsafe_final_url(self, source_url: str, final_url: str) -> bool:

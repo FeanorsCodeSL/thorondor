@@ -54,7 +54,7 @@ publishes multi-arch manifests and records digest refs in the release artifact
 | httpx | 0.28.1 | BSD-3-Clause | Async HTTP client for all downstream seams |
 | idna | 3.18 | BSD-3-Clause | Non-transitional IDNA encoding for conservative URL identity |
 | Pydantic | 2.13.4 | MIT | Request/response wire models, settings validation |
-| MCP Python SDK | 2.0.0 | MIT | MCP `web_search` and `web_fetch` tool surfaces |
+| MCP Python SDK | 2.0.0 | MIT | MCP `web_search`, `web_fetch`, `web_map`, and `web_crawl` tool surfaces |
 | Trafilatura | 2.2.0 | Apache-2.0 | HTML-to-Markdown content extraction |
 
 ### Semantic Chunking Service (`semantic-chunking-service/requirements.txt`)
@@ -97,8 +97,8 @@ When using the `bundled-models` (TEI) profile, model weights are downloaded from
 
 | Destination | When called | Optional | Data sent |
 |---|---|---|---|
-| SearXNG (`SEARXNG_URL`) | Every search, for each sub-query | No (hard dependency) | Sub-query text, optional time_range, X-Request-ID, X-Real-IP header |
-| Crawl4AI (`CRAWL4AI_URL`) | Every search, for each selected URL | Degrades (no pages if unavailable) | URL, crawler/browser config (robots.txt flag and stable User-Agent), X-Request-ID |
+| SearXNG (`SEARXNG_URL`) | Every search, for each sub-query; optionally once for map/crawl augmentation | No for search; optional for map/crawl | Sub-query or bounded `site:` text, optional time_range, X-Request-ID, X-Real-IP header |
+| Crawl4AI (`CRAWL4AI_URL`) | Search/fetch page extraction and every map/crawl seed, robots, sitemap, or admitted page fetch | Degrades or terminates the affected operation | URL, crawler/browser config (robots.txt flag and stable User-Agent), X-Request-ID |
 | Chunking service (`CHUNKER_URL`) | Every search, for each crawled page | No (hard dependency) | Page markdown, source URL, title, source_id |
 | Embedding server (`EMBEDDING_ENDPOINT`) | Every chunk request with ≥1 segment | Degrades (token-based fallback) | Segment texts, model name |
 | Reranker (`RERANKER_ENDPOINT`) | Every search after chunking | Degrades (position ordering if unavailable) | Query text, chunk texts (in batches), model name |

@@ -6,12 +6,24 @@ from typing import Literal
 from mcp.server.mcpserver import MCPServer
 from mcp.server.transport_security import TransportSecuritySettings
 
-from thorondor_contracts import FETCH_TOOL_DESCRIPTION, SEARCH_TOOL_DESCRIPTION
+from thorondor_contracts import (
+    CRAWL_TOOL_DESCRIPTION,
+    FETCH_TOOL_DESCRIPTION,
+    MAP_TOOL_DESCRIPTION,
+    SEARCH_TOOL_DESCRIPTION,
+)
 
 from .fetch_pipeline import run_fetch
-from .models import FetchCapability, FetchRequest, SearchRequest
+from .models import (
+    CrawlRequest,
+    FetchCapability,
+    FetchRequest,
+    MapRequest,
+    SearchRequest,
+)
 from .pipeline import run_search
 from .resource_policy import CapacityUnavailable, RouteDeadlineExceeded
+from .site_pipeline import run_crawl, run_map
 
 DEFAULT_MCP_ALLOWED_HOSTS = (
     "127.0.0.1:*",
@@ -165,6 +177,90 @@ async def web_fetch(
     request = FetchRequest(**request_data)
     try:
         response = await run_fetch(request, deps)
+    except (CapacityUnavailable, RouteDeadlineExceeded) as exc:
+        return _operation_error(exc)
+    return _bounded_response(response, deps)
+
+
+@mcp.tool(description=MAP_TOOL_DESCRIPTION)
+async def web_map(
+    url: str,
+    sitemap: Literal["include", "only", "skip"] | None = None,
+    max_depth: int | None = None,
+    max_pages: int | None = None,
+    max_discovered_urls: int | None = None,
+    include_parent_paths: bool | None = None,
+    include_subdomains: bool | None = None,
+    include_paths: list[str] | None = None,
+    exclude_paths: list[str] | None = None,
+    query_parameters: Literal["preserve", "strip", "exclude"] | None = None,
+    allowed_file_extensions: list[str] | None = None,
+    include_search: bool | None = None,
+) -> dict:
+    """Discover a bounded, robots-aware URL map for one site."""
+    request_data = {
+        "url": url,
+        "sitemap": sitemap,
+        "max_depth": max_depth,
+        "max_pages": max_pages,
+        "max_discovered_urls": max_discovered_urls,
+        "include_parent_paths": include_parent_paths,
+        "include_subdomains": include_subdomains,
+        "include_paths": include_paths,
+        "exclude_paths": exclude_paths,
+        "query_parameters": query_parameters,
+        "allowed_file_extensions": allowed_file_extensions,
+        "include_search": include_search,
+    }
+    request_data = {key: value for key, value in request_data.items() if value is not None}
+    deps = _get_deps()
+    if error := _request_limit_error(request_data, deps):
+        return error
+    try:
+        response = await run_map(MapRequest(**request_data), deps)
+    except (CapacityUnavailable, RouteDeadlineExceeded) as exc:
+        return _operation_error(exc)
+    return _bounded_response(response, deps)
+
+
+@mcp.tool(description=CRAWL_TOOL_DESCRIPTION)
+async def web_crawl(
+    url: str,
+    sitemap: Literal["include", "only", "skip"] | None = None,
+    max_depth: int | None = None,
+    max_pages: int | None = None,
+    max_discovered_urls: int | None = None,
+    include_parent_paths: bool | None = None,
+    include_subdomains: bool | None = None,
+    include_paths: list[str] | None = None,
+    exclude_paths: list[str] | None = None,
+    query_parameters: Literal["preserve", "strip", "exclude"] | None = None,
+    allowed_file_extensions: list[str] | None = None,
+    include_search: bool | None = None,
+    capabilities: list[FetchCapability] | None = None,
+) -> dict:
+    """Crawl a small, bounded part of one site and return typed evidence."""
+    request_data = {
+        "url": url,
+        "sitemap": sitemap,
+        "max_depth": max_depth,
+        "max_pages": max_pages,
+        "max_discovered_urls": max_discovered_urls,
+        "include_parent_paths": include_parent_paths,
+        "include_subdomains": include_subdomains,
+        "include_paths": include_paths,
+        "exclude_paths": exclude_paths,
+        "query_parameters": query_parameters,
+        "allowed_file_extensions": allowed_file_extensions,
+        "include_search": include_search,
+        "capabilities": capabilities,
+    }
+    request_data = {key: value for key, value in request_data.items() if value is not None}
+    deps = _get_deps()
+    if error := _request_limit_error(request_data, deps):
+        return error
+    try:
+        response = await run_crawl(CrawlRequest(**request_data), deps)
     except (CapacityUnavailable, RouteDeadlineExceeded) as exc:
         return _operation_error(exc)
     return _bounded_response(response, deps)

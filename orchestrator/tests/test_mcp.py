@@ -1,17 +1,17 @@
 import asyncio
-
-import anyio
 import hashlib
 import json
+import sys
 from pathlib import Path
+
+import anyio
+import httpx2
 import pytest
 from fastapi.testclient import TestClient
-import httpx2
 from mcp import Client, ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 from mcp.client.streamable_http import streamable_http_client
 from pydantic import ValidationError
-import sys
 
 import orchestrator.app as appmod
 import orchestrator.mcp_server as mcpmod
@@ -188,7 +188,12 @@ def test_streamable_http_initialize_tools_list_and_call_at_public_mcp(monkeypatc
                         async with ClientSession(read_stream, write_stream) as session:
                             await session.initialize()
                             tools = await session.list_tools()
-                            assert [tool.name for tool in tools.tools] == ["web_search", "web_fetch"]
+                            assert [tool.name for tool in tools.tools] == [
+                                "web_search",
+                                "web_fetch",
+                                "web_map",
+                                "web_crawl",
+                            ]
                             result = await session.call_tool("web_search", {"query": "x"})
                             assert result.content
 
@@ -200,7 +205,12 @@ def test_streamable_http_initialize_tools_list_and_call_at_public_mcp(monkeypatc
                     ) as modern_client:
                         assert modern_client.protocol_version == "2026-07-28"
                         tools = await modern_client.list_tools()
-                        assert [tool.name for tool in tools.tools] == ["web_search", "web_fetch"]
+                        assert [tool.name for tool in tools.tools] == [
+                            "web_search",
+                            "web_fetch",
+                            "web_map",
+                            "web_crawl",
+                        ]
                         result = await modern_client.call_tool("web_search", {"query": "x"})
                         assert result.content
 
@@ -295,6 +305,49 @@ def test_fetch_rest_and_in_process_mcp_are_equivalent(monkeypatch):
     assert direct == rest
 
 
+@pytest.mark.parametrize(
+    ("path", "tool", "schema_version"),
+    [
+        ("/v1/map", mcpmod.web_map, "thorondor.map.v1"),
+        ("/v1/crawl", mcpmod.web_crawl, "thorondor.crawl.v1"),
+    ],
+)
+def test_site_rest_and_in_process_mcp_are_equivalent(
+    monkeypatch,
+    path,
+    tool,
+    schema_version,
+):
+    rest_deps = fakes.deps()
+    monkeypatch.setattr(appmod, "deps", rest_deps)
+    request_json = {
+        "url": "https://a.test/article",
+        "sitemap": "skip",
+        "max_pages": 1,
+    }
+
+    rest = TestClient(appmod.app).post(path, json=request_json).json()
+    mcpmod.set_deps(fakes.deps())
+    direct = anyio.run(lambda: tool(**request_json))
+
+    rest["stats"]["elapsed_ms"] = 0
+    direct["stats"]["elapsed_ms"] = 0
+    assert direct == rest
+    assert direct["schema_version"] == schema_version
+
+
+def test_map_and_crawl_advertise_concise_agent_oriented_descriptors():
+    async def advertised():
+        return {tool.name: tool for tool in await mcpmod.mcp.list_tools()}
+
+    tools = anyio.run(advertised)
+
+    assert "robots-aware URL map" in tools["web_map"].description
+    assert "typed page evidence" in tools["web_crawl"].description
+    assert len(tools["web_map"].description) <= 300
+    assert len(tools["web_crawl"].description) <= 300
+
+
 def test_fetch_mcp_returns_closed_capacity_error():
     deps = fakes.deps(
         resource_policy=appmod.ResourcePolicy(
@@ -314,6 +367,33 @@ def test_fetch_mcp_returns_closed_capacity_error():
         "error": "capacity_unavailable",
         "status_code": 429,
         "route": "fetch",
+        "retry_after_s": 1,
+    }
+
+
+def test_map_mcp_returns_closed_capacity_error():
+    deps = fakes.deps(
+        resource_policy=appmod.ResourcePolicy(
+            max_inflight_maps=1,
+            admission_wait_s=0,
+        )
+    )
+    mcpmod.set_deps(deps)
+
+    async def exercise():
+        async with deps.admission.map_slot():
+            return await mcpmod.web_map(
+                "https://a.test/article",
+                sitemap="skip",
+                max_pages=1,
+            )
+
+    out = anyio.run(exercise)
+
+    assert out == {
+        "error": "capacity_unavailable",
+        "status_code": 429,
+        "route": "map",
         "retry_after_s": 1,
     }
 
@@ -345,5 +425,42 @@ def test_in_process_mcp_caller_cancellation_stops_fetch_and_releases_slot():
             await task
         assert cancelled.is_set()
         assert deps.admission.active_fetches == 0
+
+    anyio.run(exercise)
+
+
+def test_in_process_mcp_caller_cancellation_stops_crawl_and_releases_slot():
+    started = asyncio.Event()
+    cancelled = asyncio.Event()
+
+    class BlockingExtractor:
+        supported_capabilities = frozenset(
+            {"markdown", "javascript", "links", "metadata", "raw_html"}
+        )
+
+        async def fetch(self, _urls, _capabilities, _include_raw_html):
+            started.set()
+            try:
+                await asyncio.Event().wait()
+            finally:
+                cancelled.set()
+
+    deps = fakes.deps(extractor=BlockingExtractor())
+    mcpmod.set_deps(deps)
+
+    async def exercise():
+        task = asyncio.create_task(
+            mcpmod.web_crawl(
+                "https://a.test/article",
+                sitemap="skip",
+                max_pages=1,
+            )
+        )
+        await started.wait()
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        assert cancelled.is_set()
+        assert deps.admission.active_crawls == 0
 
     anyio.run(exercise)

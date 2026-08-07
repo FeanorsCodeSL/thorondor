@@ -589,6 +589,19 @@ def test_operator_allowlist_only_intersects_request_domains():
     assert all("b.test" in citation.url for citation in allow.citations)
 
 
+def test_operator_domain_policy_applies_to_direct_crawl_targets():
+    settings = SimpleNamespace(
+        domain_blocklist={"blocked.test"},
+        domain_allowlist={"allowed.test"},
+        allowlist_only=True,
+    )
+
+    assert pipeline._operator_domain_allows("https://allowed.test/page", settings) is True
+    assert pipeline._operator_domain_allows("https://sub.allowed.test/page", settings) is True
+    assert pipeline._operator_domain_allows("https://blocked.test/page", settings) is False
+    assert pipeline._operator_domain_allows("https://outside.test/page", settings) is False
+
+
 def test_request_domain_filters_are_normalized_in_selector_only():
     allow = anyio.run(run_search, SearchRequest(query="x", domains=["B.TEST"]), fakes.deps())
     deny = anyio.run(run_search, SearchRequest(query="x", exclude_domains=["B.TEST"]), fakes.deps())

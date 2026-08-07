@@ -8,9 +8,11 @@ from .clients.searxng_client import DiscoveryUnavailable
 from .markdown_cleaner import MarkdownCleanerImpl
 from .outcome_codes import FetchOutcomeCode
 from .pipeline import PipelineDeps
+from .politeness import HostPoliteness
 from .prefilter import CandidatePrefilterImpl
-from .selection import SelectionPolicyImpl
 from .resource_policy import ResourcePolicy, RuntimeAdmission
+from .robots_policy import RobotsCache
+from .selection import SelectionPolicyImpl
 from .types import (
     AssembledCitation,
     AssembledPassage,
@@ -447,6 +449,18 @@ def deps(**overrides) -> PipelineDeps:
         "crawl_url_safety": lambda _url: True,
         "resource_policy": resource_policy,
         "admission": RuntimeAdmission(resource_policy),
+        "crawler_robots_user_agent": "ThorondorBot",
+        "robots_cache": RobotsCache(86400),
+        "site_politeness": HostPoliteness(
+            default_delay_s=0,
+            max_jitter_s=0,
+            max_cooldown_s=60,
+        ),
+        "site_max_cooldown_s": 60,
+        "max_robots_bytes": 262144,
+        "max_sitemap_bytes": 262144,
+        "max_sitemap_entries": 500,
+        "max_sitemap_documents": 16,
     }
     values.update(overrides)
     return PipelineDeps(**values)

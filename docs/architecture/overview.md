@@ -6,7 +6,7 @@ Thorondor is a self-hosted semantic web-search service designed for agent workfl
 
 The design is built around three hard constraints:
 
-1. **No persistent corpus** — no vector store, no web index. Every search is a fresh live request; nothing is cached between calls.
+1. **No persistent corpus** — no vector store, no web index. Every search, fetch, map, and crawl is a fresh live request; page content is not cached between calls. Robots snapshots use only a bounded in-memory policy cache.
 2. **Citations are first-class** — every passage is linked to the URL and title of its source page. Agents always know where a fact came from.
 3. **Operator-controlled data path** — the operator decides which search engines SearXNG uses, which model endpoints handle embeddings and reranking, and which domains are crawlable. No data leaves the operator's infrastructure unless the operator explicitly configures outbound endpoints.
 
@@ -14,7 +14,7 @@ The design is built around three hard constraints:
 
 ### Orchestrator (`orchestrator/`)
 
-The central FastAPI service. It exposes `POST /v1/search`, a backward-compatible `POST /search` alias, bounded `POST /v1/fetch`, and matching MCP `web_search` and `web_fetch` tools mounted at `/mcp`. Search and known-URL fetch share the same process-owned admission, byte, deadline, URL-safety, and Crawl4AI outcome policies.
+The central FastAPI service. It exposes `POST /v1/search`, a backward-compatible `POST /search` alias, `POST /v1/fetch`, `POST /v1/map`, and `POST /v1/crawl`, with matching MCP tools mounted at `/mcp`. All four operation families share process-owned admission, byte, deadline, URL-safety, and Crawl4AI outcome policies. Map and crawl additionally share one deterministic frontier, robots, sitemap, scope, and politeness policy.
 
 The orchestrator is the only service that speaks to all other components. It holds no state between requests other than shared HTTP connection pools (reused for efficiency). On startup it validates every required environment variable through a strict settings loader; missing or blank required keys raise `RuntimeError` and prevent the process from starting.
 
@@ -30,7 +30,7 @@ An unmodified upstream SearXNG Docker image, configured through `searxng/setting
 
 ### Crawl4AI
 
-The public upstream Crawl4AI 0.9.2 self-hosted Docker API (`unclecode/crawl4ai@sha256:bd36741e...`), consumed over a dedicated internal control network. The orchestrator submits authenticated `POST /crawl` requests to extract page content. Crawl4AI handles JavaScript rendering, robots.txt checking, and returns both raw HTML and Markdown forms of the page content. Thorondor never vendors or patches Crawl4AI source.
+The public upstream Crawl4AI 0.9.2 self-hosted Docker API (`unclecode/crawl4ai@sha256:bd36741e...`), consumed over a dedicated internal control network. The orchestrator submits authenticated `POST /crawl` requests to extract pages, robots files, and sitemaps. Crawl4AI handles JavaScript rendering, applies its own robots check for ordinary page requests, and returns raw HTML, Markdown, links, metadata, status, and final-URL data. Thorondor never vendors or patches Crawl4AI source.
 
 Crawl4AI has a separate outbound-only network for its built-in localhost pinning proxy. That proxy resolves each target once, rejects non-global destinations, and connects to the pinned address so Chromium cannot perform a second DNS resolution.
 
@@ -84,6 +84,8 @@ A single search request proceeds as follows:
 
 14. **Response** — `SearchResponse` is serialised with additive evidence spans, stable identities, score components, diagnostics, and quality/drop counters. Optional raw Markdown has a separate 20-item, 256-KiB-per-item, 512-KiB-total envelope, so diagnostics cannot defeat the caller's evidence budget.
 
+Map and crawl use a separate synchronous path. The seed is safety-checked and fetched through Crawl4AI, then same-origin and seed-directory scope are re-homed to its validated final URL. Thorondor obtains one RFC 9309 robots snapshot per origin, reads declared and common sitemaps within document, entry, and byte limits, optionally adds SearXNG `site:` candidates, and traverses admitted links breadth-first. Every candidate passes the same normalization, scope, file, query, safety, robots, deduplication, and depth policy before queueing. `map` returns URL records only; `crawl` adds bounded typed page results. Both report requested and effective origins, source contributions, state transitions, terminal reasons, omissions, and warnings.
+
 ## 4. Deployment Topologies
 
 ### (a) Full-local llama.cpp profile
@@ -119,7 +121,7 @@ The llama.cpp build `b10276` image is pinned to a specific SHA (`bde659bf...`) t
 ## 6. Intentionally Out of Scope
 
 - **Persistent corpus** — no web index, no vector store. The design is stateless between requests.
-- **Implemented cache** — there is no result cache. The architecture has a cache seam defined in the interface layer but it is not instantiated in the current deployment.
+- **Implemented page/result cache** — there is no page or result cache. The architecture has a cache seam defined in the interface layer but it is not instantiated in the current deployment. The robots policy cache is process-local, bounded to 24 hours, and stores no page content.
 - **Authentication on the orchestrator** — the REST and MCP endpoints have no built-in auth. Operators should place a reverse proxy with TLS and access control in front of the orchestrator port.
 - **Rate limiting** — not implemented in the service itself; add a reverse proxy if needed.
 - **Crawled content sandboxing** — beyond Crawl4AI's non-root, read-only container posture and built-in egress controls, crawled content is not sandboxed at the OS level. The orchestrator treats all crawled text as untrusted.

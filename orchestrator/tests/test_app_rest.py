@@ -335,6 +335,35 @@ def test_v1_fetch_returns_typed_outcome(monkeypatch):
     }
 
 
+@pytest.mark.parametrize(
+    ("path", "schema_version"),
+    [
+        ("/v1/map", "thorondor.map.v1"),
+        ("/v1/crawl", "thorondor.crawl.v1"),
+    ],
+)
+def test_site_routes_return_bounded_typed_contracts(monkeypatch, path, schema_version):
+    monkeypatch.setattr(appmod, "deps", fakes.deps())
+
+    response = TestClient(appmod.app).post(
+        path,
+        json={
+            "url": "https://a.test/article",
+            "sitemap": "skip",
+            "max_pages": 1,
+        },
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["schema_version"] == schema_version
+    assert body["requested_url"] == "https://a.test/article"
+    assert body["urls"][0]["states"][-1] == "fetched"
+    assert body["urls"][0]["trust"] == "untrusted"
+    if path.endswith("crawl"):
+        assert body["results"][0]["outcome"] == "content"
+
+
 def test_oversized_request_body_returns_413_before_validation(monkeypatch):
     deps = fakes.deps()
     deps.resource_policy = appmod.ResourcePolicy(
@@ -490,6 +519,8 @@ def test_openapi_documents_shared_transport_errors_and_fetch_contract(monkeypatc
     schema = TestClient(appmod.app).get("/openapi.json").json()
 
     assert "/v1/fetch" in schema["paths"]
-    for path in ("/v1/search", "/v1/fetch"):
+    assert "/v1/map" in schema["paths"]
+    assert "/v1/crawl" in schema["paths"]
+    for path in ("/v1/search", "/v1/fetch", "/v1/map", "/v1/crawl"):
         responses = schema["paths"][path]["post"]["responses"]
         assert {"413", "429", "500", "504"}.issubset(responses)
