@@ -417,31 +417,31 @@ Do not adopt:
 - Accepted under the user's instruction to commit and push after the external review, canonical Tengwar deployment, and successful live REST and MCP verification.
 
 ## Phase 4 — Opt-in page cache, revalidation, and change detection
-**Status:** in_progress
+**Status:** completed
 **Kind:** logic
 
 ### Tasks
 
-- [ ] Introduce a cache repository protocol and an orchestrator-owned, operator-enabled local persistent adapter. Keep persistence disabled by default and use an explicit volume and retention configuration when enabled.
-- [ ] Key page entries by conservative URL identity plus retrieval/extraction variant, cleaner version, and content capability. Bypass credential-bearing URLs and any capability whose output is not represented in the key. The fetch contract does not accept caller-supplied headers or cookies. Keep the page cache independent of embedding/chunker versions unless a separately designed chunk cache is added.
-- [ ] Store the minimum record: requested/final URL, cleaned Markdown, source-document hash, title/metadata/links, status, content type, retrieval method, validators, fetched/expiry timestamps, and cleaner version. Raw HTML requires a separate opt-in.
-- [ ] Do not collapse `www` into the apex host, cache challenge shells, persist robots refusals as content, or let a cache hit bypass URL safety and current request policy.
-- [ ] Add `force_refresh`, bounded stale-while-revalidate, request coalescing, and caller-visible `fresh`, `stale`, `revalidated`, and `bypass` states. Use `If-None-Match`/`If-Modified-Since` only on a backend that can send them; a `304` reuses the prior document while updating freshness metadata, while incompatible JavaScript routes perform a full bounded refetch and hash comparison.
-- [ ] Detect `new`, `same`, `changed`, and `removed` using both document hash and HTTP status. Treat transitions such as `200` to `404` as changes and ship these flags before diff summaries.
-- [ ] Add an optional bounded target-watch contract for specific changes rather than treating every page mutation as actionable. Let an agent identify one target using declarative element role/name, bounded CSS selector, or normalized text within a named section, then define expected and desired text/attribute states. Persist and compare only the normalized target snapshot for the target result, while retaining the independent whole-page change flag. Return explicit `found`, `missing`, and `ambiguous` target resolution plus `new`, `same`, `changed`, and `removed` target states and a separate `condition_met` flag. Never execute caller-provided JavaScript or regular expressions.
-- [ ] Keep off-target dynamic content such as advertisements, recommendations, timestamps, and analytics UI from satisfying a target watch. A whole-page hash may still report `changed`, but a watch condition may become true only when the uniquely resolved target transitions to its declared desired state. Fetch, extraction, missing-target, ambiguous-target, and unsupported-capability failures must fail closed and never trigger an action.
-- [ ] Add cache stats, scoped clear, deadline-driven retention cleanup, schema-version initialization and future-version rejection, corruption recovery, and observable hit/miss/bypass/stale/revalidated reasons.
-- [ ] Produce bounded section/line diff summaries only after cache, revalidation, and change flags are stable. Cap both input and algorithmic work; above the cap, return a summary-only `truncated` result instead of running unbounded quadratic comparison.
-- [ ] Defer semantic vectors and scheduled watch jobs until page-cache lifecycle, retention, and change detection are proven.
+- [x] Introduce a cache repository protocol and an orchestrator-owned, operator-enabled local persistent adapter. Keep persistence disabled by default and use an explicit volume and retention configuration when enabled.
+- [x] Key page entries by conservative URL identity plus retrieval/extraction variant, cleaner version, and content capability. Bypass credential-bearing URLs and any capability whose output is not represented in the key. The fetch contract does not accept caller-supplied headers or cookies. Keep the page cache independent of embedding/chunker versions unless a separately designed chunk cache is added.
+- [x] Store the minimum record: requested/final URL, cleaned Markdown, source-document hash, title/metadata/links, status, content type, retrieval method, validators, fetched/expiry timestamps, and cleaner version. Raw HTML requires a separate opt-in.
+- [x] Do not collapse `www` into the apex host, cache challenge shells, persist robots refusals as content, or let a cache hit bypass URL safety and current request policy.
+- [x] Add `force_refresh`, bounded stale-while-revalidate, request coalescing, and caller-visible `fresh`, `stale`, `revalidated`, and `bypass` states. Use `If-None-Match`/`If-Modified-Since` only on a backend that can send them; a `304` reuses the prior document while updating freshness metadata, while incompatible JavaScript routes perform a full bounded refetch and hash comparison.
+- [x] Detect `new`, `same`, `changed`, and `removed` using both document hash and HTTP status. Treat transitions such as `200` to `404` as changes and ship these flags before diff summaries.
+- [x] Add an optional bounded target-watch contract for specific changes rather than treating every page mutation as actionable. Let an agent identify one target using declarative element role/name, bounded CSS selector, or normalized text within a named section, then define expected and desired text/attribute states. Persist and compare only the normalized target snapshot for the target result, while retaining the independent whole-page change flag. Return explicit `found`, `missing`, and `ambiguous` target resolution plus `new`, `same`, `changed`, and `removed` target states and a separate `condition_met` flag. Never execute caller-provided JavaScript or regular expressions.
+- [x] Keep off-target dynamic content such as advertisements, recommendations, timestamps, and analytics UI from satisfying a target watch. A whole-page hash may still report `changed`, but a watch condition may become true only when the uniquely resolved target transitions to its declared desired state. Fetch, extraction, missing-target, ambiguous-target, and unsupported-capability failures must fail closed and never trigger an action.
+- [x] Add cache stats, scoped clear, deadline-driven retention cleanup, schema-version initialization and future-version rejection, corruption recovery, and observable hit/miss/bypass/stale/revalidated reasons.
+- [x] Produce bounded section/line diff summaries only after cache, revalidation, and change flags are stable. Cap both input and algorithmic work; above the cap, return a summary-only `truncated` result instead of running unbounded quadratic comparison.
+- [x] Defer semantic vectors and scheduled watch jobs until page-cache lifecycle, retention, and change detection are proven.
 
 ### Verification
 
-- [ ] Add tests for cache identity variants, credential-bearing URL bypass, page-cache independence from chunker changes, `www` separation, repeated query keys, cleaner-version changes, TTL boundaries, stale windows, force refresh, and concurrent refresh coalescing.
-- [ ] Add tests for capable/incompatible validator routes, `ETag`, `Last-Modified`, `304`, full-refetch fallback, changed validators, status-only changes, caller-visible freshness state, challenge/error non-caching, corruption, schema-version compatibility, retention, and raw-HTML opt-in.
-- [ ] Add target-watch tests where advertisements and timestamps change outside the target, the target remains unchanged, availability transitions from out-of-stock to in-stock, desired text appears without the target resolving, selectors resolve zero or multiple elements, the target disappears, mixed inline text preserves DOM order, incompatible watches cannot share history, transient resolution failures retain the last valid baseline, and fetch/extraction failures must not satisfy the condition.
-- [ ] Add diff tests for empty/new/removed content, CRLF, large documents, truncation, and complexity caps.
-- [ ] Add a restart integration test using a temporary persistent volume and verify that default search writes nothing when cache is disabled.
-- [ ] Add and verify a deployment privacy/retention checklist.
+- [x] Add tests for cache identity variants, credential-bearing URL bypass, page-cache independence from chunker changes, `www` separation, repeated query keys, cleaner-version changes, TTL boundaries, stale windows, force refresh, and concurrent refresh coalescing.
+- [x] Add tests for capable/incompatible validator routes, `ETag`, `Last-Modified`, `304`, full-refetch fallback, changed validators, status-only changes, caller-visible freshness state, challenge/error non-caching, corruption, schema-version compatibility, retention, and raw-HTML opt-in.
+- [x] Add target-watch tests where advertisements and timestamps change outside the target, the target remains unchanged, availability transitions from out-of-stock to in-stock, desired text appears without the target resolving, selectors resolve zero or multiple elements, the target disappears, mixed inline text preserves DOM order, incompatible watches cannot share history, transient resolution failures retain the last valid baseline, and fetch/extraction failures must not satisfy the condition.
+- [x] Add diff tests for empty/new/removed content, CRLF, large documents, truncation, and complexity caps.
+- [x] Add a restart integration test using a temporary persistent volume and verify that default search writes nothing when cache is disabled.
+- [x] Add and verify a deployment privacy/retention checklist.
 
 ### Implementation report — 2026-08-07
 
@@ -481,27 +481,50 @@ Do not adopt:
 - A real MCP client listed `web_search`, `web_fetch`, `web_map`, and `web_crawl`; `web_fetch` advertised the typed `TargetWatch` reference and returned `is_error=false` with the same fail-closed disabled-cache contract.
 - A real shared-network `/v1/search` request crawled three public pages, returned three citation-bearing passages across two sources, and reported `embedding_degraded=false`, `reranked=true`, and five chunks reranked by Tengwar's existing model services.
 
+### Acceptance — 2026-08-07
+
+- Accepted by the user through the explicit commit, push, and Tengwar redeployment instruction after external review remediation, complete verification, and live REST/MCP checks.
+
 ## Phase 5 — Durable asynchronous crawl jobs
-**Status:** pending
+**Status:** completed
 **Kind:** logic
 
 ### Tasks
 
-- [ ] Define a measured synchronous threshold and an explicit async mode. Ordinary search, map, and small crawls remain synchronous.
-- [ ] Reuse the approved local persistence mode for a minimal job store. Start with one orchestrator/worker process and documented single-replica semantics; require workload evidence before adding Redis or a separate queue service.
-- [ ] Implement states `queued`, `running`, `completed`, `partial`, `failed`, `cancelled`, and `expired`, with timestamps, progress counters, bounded failure summaries, and a result-retention deadline absolute from the terminal-state transition. Reads and polling must not extend retention.
-- [ ] Add create, status, byte-and-item-bounded cursor pagination, and cancel endpoints. Status and cancellation must verify the same access scope as creation.
-- [ ] Claim an idempotency key atomically with a canonical request fingerprint. Replay the existing job for an identical request, return conflict for a different request, and expire the claim with the job.
-- [ ] Make cancellation cooperative: stop admitting URLs, cancel queued/pending work, let unavoidable in-flight I/O settle under its deadline, and persist one terminal transition.
-- [ ] Add bounded retry/backoff by failure class, per-job and per-host concurrency, atomic result deduplication, and startup recovery for interrupted jobs. A restart must not duplicate a page result or lose a terminal state.
-- [ ] Return an explicit expired response after retention. Defer webhooks until polling and cancellation are stable; any later webhook target must use the same SSRF/egress protections and bounded retries.
+- [x] Define a measured synchronous threshold and an explicit async mode. Ordinary search, map, and small crawls remain synchronous.
+- [x] Reuse the approved local persistence mode for a minimal job store. Start with one orchestrator/worker process and documented single-replica semantics; require workload evidence before adding Redis or a separate queue service.
+- [x] Implement states `queued`, `running`, `completed`, `partial`, `failed`, `cancelled`, and `expired`, with timestamps, progress counters, bounded failure summaries, and a result-retention deadline absolute from the terminal-state transition. Reads and polling must not extend retention.
+- [x] Add create, status, byte-and-item-bounded cursor pagination, and cancel endpoints. Status and cancellation must verify the same access scope as creation.
+- [x] Claim an idempotency key atomically with a canonical request fingerprint. Replay the existing job for an identical request, return conflict for a different request, and expire the claim with the job.
+- [x] Make cancellation cooperative: stop admitting URLs, cancel queued/pending work, let unavoidable in-flight I/O settle under its deadline, and persist one terminal transition.
+- [x] Add bounded retry/backoff by failure class, per-job and per-host concurrency, atomic result deduplication, and startup recovery for interrupted jobs. A restart must not duplicate a page result or lose a terminal state.
+- [x] Return an explicit expired response after retention. Defer webhooks until polling and cancellation are stable; any later webhook target must use the same SSRF/egress protections and bounded retries.
+
+### Implementation report — 2026-08-07
+
+- Added an opt-in REST-only crawl-job API backed by a versioned SQLite store in the existing `/var/lib/thorondor` volume. It uses one process-owned worker and documents single-replica operation; no MCP tool, Redis service, scheduler, webhook, or queue dependency was added.
+- Scoped idempotency claims and canonical request fingerprints are atomic. Status, results, and cancellation require the same bounded scope, wrong-scope reads fail as not found, identical requests replay, different requests conflict, and absolute expiry releases the claim before a short typed tombstone period.
+- The worker streams deduplicated typed results and bounded failure summaries from the existing crawl frontier, preserving URL safety, final-target validation, robots, politeness, route deadlines, admission, and untrusted provenance. Retry, cancellation, restart recovery, partial completion, and redirect reconciliation persist without duplicating results.
+- Cursor pages enforce configured item and byte limits, reject cursors for another job or beyond retained results, and remain stable while a running job appends later ordinals. Omitted limits use the operator-configured maxima.
+- Added strict settings, all tracked environment and Compose wiring, architecture/security/deployment/API documentation, a deterministic 1/10/20-page threshold benchmark, focused API/store/state-machine tests, and an isolated no-network Compose interruption/recovery probe.
+- External review remediation added worker/store health recovery, a job-specific attempt deadline, retry-amplification prevention, raw-HTML persistence opt-in, retained-record and API-operation admission caps, accurate OpenAPI headers/statuses, committed expiry transitions, corruption quarantine, schema-shape validation, final-target failure emission, connection closure, and partial-start cleanup. Recovery deliberately repeats the bounded crawl from its seed and deduplicates persisted results instead of claiming checkpointed frontier resumption.
 
 ### Verification
 
-- [ ] Add state-machine tests for atomic duplicate submission, same-key/different-body conflict, partial completion, retry exhaustion, cancellation races, expiry, and idempotent terminal reads.
-- [ ] Add pagination tests for stable cursors, byte caps, item caps, concurrent completion, no duplicates, and expiry between pages.
-- [ ] Add a local Compose integration test with a fixture crawl, forced process interruption, startup recovery, cancellation, and retention cleanup.
-- [ ] Verify no asynchronous path bypasses access control, URL safety, robots, transport budgets, cache retention, or untrusted provenance.
+- [x] Add state-machine tests for atomic duplicate submission, same-key/different-body conflict, partial completion, retry exhaustion, cancellation races, expiry, and idempotent terminal reads.
+- [x] Add pagination tests for stable cursors, byte caps, item caps, concurrent completion, no duplicates, and expiry between pages.
+- [x] Add a local Compose integration test with a fixture crawl, forced process interruption, startup recovery, cancellation, and retention cleanup.
+- [x] Verify no asynchronous path bypasses access control, URL safety, robots, transport budgets, cache retention, or untrusted provenance.
+
+### Separate verification checkpoint — 2026-08-07
+
+- Claude Code Opus completed the requested read-only external review with high effort and did not edit files, run tests, build, deploy, or delegate. Every reported claim was checked against the repository. Confirmed runtime defects were fixed; intended single-replica startup failure for future schemas and shared crawl execution admission were retained and documented rather than weakened.
+- Final full service/orchestrator suite: 748 passed in 8.97 seconds. CLI suite: 83 passed in 10.29 seconds. Focused import-order, line-length, bugbear, and async checks passed; Python compilation, `git diff --check`, and `PYTHON=.venv/bin/python bash scripts/check-release-guard.sh` passed.
+- The Phase 5 benchmark test passed. Bundled and tracked llama.cpp Compose variants rendered successfully. The isolated no-network Compose probe forced exit 75 after the first persisted result, restarted against the same disposable volume, completed at attempt 2 with exactly two deduplicated results, persisted a separate cancellation, expired both jobs, and purged two tombstones.
+
+### Acceptance — 2026-08-07
+
+- Accepted through the user's explicit instruction to fix the externally reviewed findings, commit, push, and proceed to Phase 6.
 
 ## Phase 6 — Bounded structured extraction
 **Status:** pending

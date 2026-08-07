@@ -5,7 +5,12 @@ import re
 from dataclasses import dataclass
 from urllib.parse import urlparse
 
-from .models import MAX_SELECTED_URLS, MAX_SITE_DISCOVERED_URLS, MAX_SUBQUERY_COUNT
+from .models import (
+    MAX_SELECTED_URLS,
+    MAX_SITE_DISCOVERED_URLS,
+    MAX_SITE_PAGES,
+    MAX_SUBQUERY_COUNT,
+)
 from .resource_policy import ResourcePolicy
 from .url_safety import UrlSafetyPolicy
 
@@ -166,6 +171,19 @@ class Settings:
     page_diff_max_input_lines: int
     page_diff_max_operations: int
     page_diff_max_output_lines: int
+    crawl_jobs_enabled: bool
+    crawl_job_path: str
+    crawl_sync_max_pages: int
+    crawl_job_retention_s: int
+    crawl_job_expired_tombstone_s: int
+    crawl_job_max_attempts: int
+    crawl_job_retry_base_s: float
+    crawl_job_attempt_deadline_s: float
+    crawl_job_max_records: int
+    crawl_job_raw_html_enabled: bool
+    crawl_job_max_inflight_requests: int
+    crawl_job_result_page_max_items: int
+    crawl_job_result_page_max_bytes: int
     search_profiles: dict[str, SearchProfileDefaults]
     url_safety_policy: UrlSafetyPolicy
 
@@ -284,6 +302,45 @@ class Settings:
             )
         if self.page_diff_max_output_lines > 24:
             raise RuntimeError("PAGE_DIFF_MAX_OUTPUT_LINES must not exceed 24")
+        if not self.crawl_job_path:
+            raise RuntimeError("CRAWL_JOB_PATH must not be blank")
+        if not 1 <= self.crawl_sync_max_pages <= MAX_SITE_PAGES:
+            raise RuntimeError(
+                f"CRAWL_SYNC_MAX_PAGES must be between 1 and {MAX_SITE_PAGES}"
+            )
+        for name, value in (
+            ("CRAWL_JOB_RETENTION_S", self.crawl_job_retention_s),
+            ("CRAWL_JOB_EXPIRED_TOMBSTONE_S", self.crawl_job_expired_tombstone_s),
+            ("CRAWL_JOB_MAX_RECORDS", self.crawl_job_max_records),
+            (
+                "CRAWL_JOB_MAX_INFLIGHT_REQUESTS",
+                self.crawl_job_max_inflight_requests,
+            ),
+            ("CRAWL_JOB_RESULT_PAGE_MAX_ITEMS", self.crawl_job_result_page_max_items),
+            ("CRAWL_JOB_RESULT_PAGE_MAX_BYTES", self.crawl_job_result_page_max_bytes),
+        ):
+            if value < 1:
+                raise RuntimeError(f"{name} must be >= 1")
+        if not 1 <= self.crawl_job_max_attempts <= 5:
+            raise RuntimeError("CRAWL_JOB_MAX_ATTEMPTS must be between 1 and 5")
+        if not 0 <= self.crawl_job_retry_base_s <= 60:
+            raise RuntimeError("CRAWL_JOB_RETRY_BASE_S must be between 0 and 60")
+        if not 1 <= self.crawl_job_attempt_deadline_s <= 3600:
+            raise RuntimeError(
+                "CRAWL_JOB_ATTEMPT_DEADLINE_S must be between 1 and 3600"
+            )
+        if self.crawl_job_max_records > 10000:
+            raise RuntimeError("CRAWL_JOB_MAX_RECORDS must not exceed 10000")
+        if self.crawl_job_max_inflight_requests > 128:
+            raise RuntimeError("CRAWL_JOB_MAX_INFLIGHT_REQUESTS must not exceed 128")
+        if self.crawl_job_result_page_max_items > MAX_SITE_PAGES:
+            raise RuntimeError(
+                f"CRAWL_JOB_RESULT_PAGE_MAX_ITEMS must not exceed {MAX_SITE_PAGES}"
+            )
+        if self.crawl_job_result_page_max_bytes > self.max_response_body_bytes // 2:
+            raise RuntimeError(
+                "CRAWL_JOB_RESULT_PAGE_MAX_BYTES must not exceed half MAX_RESPONSE_BODY_BYTES"
+            )
 
 
 def load_settings() -> Settings:
@@ -361,6 +418,21 @@ def load_settings() -> Settings:
         page_diff_max_input_lines=_int_env("PAGE_DIFF_MAX_INPUT_LINES"),
         page_diff_max_operations=_int_env("PAGE_DIFF_MAX_OPERATIONS"),
         page_diff_max_output_lines=_int_env("PAGE_DIFF_MAX_OUTPUT_LINES"),
+        crawl_jobs_enabled=_bool_env("CRAWL_JOBS_ENABLED"),
+        crawl_job_path=_required("CRAWL_JOB_PATH"),
+        crawl_sync_max_pages=_int_env("CRAWL_SYNC_MAX_PAGES"),
+        crawl_job_retention_s=_int_env("CRAWL_JOB_RETENTION_S"),
+        crawl_job_expired_tombstone_s=_int_env("CRAWL_JOB_EXPIRED_TOMBSTONE_S"),
+        crawl_job_max_attempts=_int_env("CRAWL_JOB_MAX_ATTEMPTS"),
+        crawl_job_retry_base_s=_float_env("CRAWL_JOB_RETRY_BASE_S"),
+        crawl_job_attempt_deadline_s=_float_env("CRAWL_JOB_ATTEMPT_DEADLINE_S"),
+        crawl_job_max_records=_int_env("CRAWL_JOB_MAX_RECORDS"),
+        crawl_job_raw_html_enabled=_bool_env("CRAWL_JOB_RAW_HTML_ENABLED"),
+        crawl_job_max_inflight_requests=_int_env(
+            "CRAWL_JOB_MAX_INFLIGHT_REQUESTS"
+        ),
+        crawl_job_result_page_max_items=_int_env("CRAWL_JOB_RESULT_PAGE_MAX_ITEMS"),
+        crawl_job_result_page_max_bytes=_int_env("CRAWL_JOB_RESULT_PAGE_MAX_BYTES"),
         search_profiles={
             profile: SearchProfileDefaults(
                 token_budget=_int_env(f"SEARCH_PROFILE_{profile.upper()}_TOKEN_BUDGET"),

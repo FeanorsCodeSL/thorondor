@@ -14,9 +14,9 @@ The design is built around three hard constraints:
 
 ### Orchestrator (`orchestrator/`)
 
-The central FastAPI service. It exposes `POST /v1/search`, a backward-compatible `POST /search` alias, `POST /v1/fetch`, `POST /v1/map`, and `POST /v1/crawl`, with matching MCP tools mounted at `/mcp`. All four operation families share process-owned admission, byte, deadline, URL-safety, and Crawl4AI outcome policies. Map and crawl additionally share one deterministic frontier, robots, sitemap, scope, and politeness policy.
+The central FastAPI service. It exposes `POST /v1/search`, a backward-compatible `POST /search` alias, `POST /v1/fetch`, `POST /v1/map`, and `POST /v1/crawl`, with matching MCP tools mounted at `/mcp`. An opt-in REST-only `/v1/crawl/jobs` family adds durable creation, status, paginated results, and cancellation without expanding the MCP descriptor. All operation families share process-owned admission, byte, deadline, URL-safety, and Crawl4AI outcome policies. Map and crawl additionally share one deterministic frontier, robots, sitemap, scope, and politeness policy.
 
-The orchestrator is the only service that speaks to all other components. It holds shared HTTP connection pools and robots snapshots, plus an optional SQLite page cache for known-URL fetches. On startup it validates every required environment variable through a strict settings loader; missing or blank required keys raise `RuntimeError` and prevent the process from starting.
+The orchestrator is the only service that speaks to all other components. It holds shared HTTP connection pools and robots snapshots, plus an optional SQLite page cache for known-URL fetches and an independent optional SQLite crawl-job store. The job worker is intentionally single-process and single-replica. On startup it validates every required environment variable through a strict settings loader; missing or blank required keys raise `RuntimeError` and prevent the process from starting.
 
 ### Semantic Chunking Service (`semantic-chunking-service/`)
 
@@ -85,6 +85,8 @@ A single search request proceeds as follows:
 14. **Response** — `SearchResponse` is serialised with additive evidence spans, stable identities, score components, diagnostics, and quality/drop counters. Optional raw Markdown has a separate 20-item, 256-KiB-per-item, 512-KiB-total envelope, so diagnostics cannot defeat the caller's evidence budget.
 
 Map and crawl use a separate synchronous path. The seed is safety-checked and fetched through Crawl4AI, then same-origin and seed-directory scope are re-homed to its validated final URL. Thorondor obtains one RFC 9309 robots snapshot per origin, reads declared and common sitemaps within document, entry, and byte limits, optionally adds SearXNG `site:` candidates, and traverses admitted links breadth-first. Every candidate passes the same normalization, scope, file, query, safety, robots, deduplication, and depth policy before queueing. `map` returns URL records only; `crawl` adds bounded typed page results. Both report requested and effective origins, source contributions, state transitions, terminal reasons, omissions, and warnings.
+
+The durable crawl-job route invokes that same crawl function and shared admission policy. SQLite atomically claims scoped idempotency keys, caps retained records, stores deduplicated page results as they arrive, and recovers interrupted running jobs on startup by repeating the bounded crawl from its seed. Retryable job failures use bounded backoff under a separate attempt deadline; completed and partial responses are not retried. Cancellation stops new admissions and settles unavoidable in-flight work under that deadline. Terminal retention is absolute and reads do not refresh it; raw HTML persistence requires a separate operator opt-in.
 
 ## 4. Deployment Topologies
 

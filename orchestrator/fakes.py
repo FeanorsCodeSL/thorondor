@@ -5,6 +5,7 @@ from .assembly import ResultAssemblerImpl
 from .clients.chunker_client import ChunkerUnavailable
 from .clients.reranker_client import RerankerUnavailable
 from .clients.searxng_client import DiscoveryUnavailable
+from .crawl_jobs import disabled_crawl_jobs
 from .markdown_cleaner import MarkdownCleanerImpl
 from .outcome_codes import FetchOutcomeCode
 from .page_cache import DisabledPageCache, PageRefreshCoordinator
@@ -472,6 +473,7 @@ def deps(**overrides) -> PipelineDeps:
         "page_diff_max_input_lines": 2000,
         "page_diff_max_operations": 1_000_000,
         "page_diff_max_output_lines": 24,
+        "crawl_jobs": disabled_crawl_jobs(),
     }
     values.update(overrides)
     return PipelineDeps(**values)

@@ -99,7 +99,13 @@ Compose shutdown to change Thorondor versions.
 The orchestrator mounts the named `thorondor-page-cache` volume at
 `/var/lib/thorondor`; the image pre-creates that directory for its non-root
 runtime user. Persistence remains inactive while `PAGE_CACHE_ENABLED=false`.
-Before enabling it, set the TTL, stale window, absolute retention, raw-HTML
+The optional crawl-job database uses the same mounted directory but remains
+inactive while `CRAWL_JOBS_ENABLED=false`. When enabled, deploy exactly one
+orchestrator replica: the Phase 5 worker and SQLite store are deliberately
+single-process and do not require Redis or a queue service. Set the job attempt
+deadline, retained-record cap, retention windows, and raw-HTML policy before
+enabling it. One running background job consumes a shared crawl-admission slot.
+Before enabling the page cache, set the TTL, stale window, absolute retention, raw-HTML
 policy, and diff bounds in the deployment environment. Inspect or maintain the
 database without exposing an unauthenticated administration endpoint:
 
@@ -327,7 +333,10 @@ A passing run exits with code 0 and prints each request/response JSON pair. A fa
 Before upgrading an existing installation, synchronize its secret-bearing `.env`
 with the tracked environment template. Add the required `PAGE_CACHE_*` and
 `PAGE_DIFF_*` values while keeping `PAGE_CACHE_ENABLED=false` unless persistence
-is intended. Add `CRAWLER_USER_AGENT` and `CRAWLER_ROBOTS_USER_AGENT`, and remove the retired
+is intended. Add all `CRAWL_JOB_*` values plus `CRAWL_JOBS_ENABLED=false` and
+`CRAWL_SYNC_MAX_PAGES=10`; enable jobs only after accepting local result
+retention and the single-replica requirement. Add `CRAWLER_USER_AGENT` and
+`CRAWLER_ROBOTS_USER_AGENT`, and remove the retired
 `CRAWL_VALIDATE_REDIRECTS` and `CRAWL_MAX_PREFLIGHT_REDIRECTS` keys. Promote the
 orchestrator and semantic chunker images together because exact evidence uses the
 `ORCHESTRATOR_MARKDOWN` chunking contract. A mismatched older chunker now causes an

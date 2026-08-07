@@ -1,15 +1,36 @@
 """FastAPI app for Thorondor."""
 import asyncio
-from contextlib import asynccontextmanager
-from contextlib import suppress
+from contextlib import asynccontextmanager, suppress
 
-from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import JSONResponse
 import httpx
+from fastapi import FastAPI, Header, HTTPException, Query, Request
+from fastapi.responses import JSONResponse
 
 from .clients.searxng_client import SEARXNG_INTERNAL_HEADERS
+from .crawl_job_store import (
+    CrawlJobExpired,
+    CrawlJobNotFound,
+    CrawlJobQueueFull,
+    CrawlJobResultTooLarge,
+    IdempotencyConflict,
+)
+from .crawl_jobs import (
+    CrawlJobApiCapacityUnavailable,
+    CrawlJobsDisabled,
+    CrawlJobWorkerUnavailable,
+    InvalidCursor,
+    InvalidIdempotencyKey,
+    InvalidJobScope,
+    InvalidPageLimit,
+    RawHtmlPersistenceDisabled,
+)
 from .fetch_pipeline import run_fetch
+from .mcp_server import mcp, mcp_http_app
 from .models import (
+    MAX_SITE_PAGES,
+    CrawlJobCreateResponse,
+    CrawlJobResultPage,
+    CrawlJobStatus,
     CrawlRequest,
     CrawlResponse,
     FetchRequest,
@@ -19,7 +40,6 @@ from .models import (
     SearchRequest,
     SearchResponse,
 )
-from .mcp_server import mcp, mcp_http_app
 from .observability import configure_json_logging, new_request_id, reset_request_id, set_request_id
 from .pipeline import SearchDependencyUnavailable, build_deps_from_settings, run_search
 from .resource_policy import (
@@ -35,12 +55,12 @@ from .site_pipeline import run_crawl, run_map
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
     runtime_deps = get_deps()
-    await runtime_deps.start()
-    async with mcp.session_manager.run():
-        try:
+    try:
+        await runtime_deps.start()
+        async with mcp.session_manager.run():
             yield
-        finally:
-            await close_runtime_clients()
+    finally:
+        await close_runtime_clients()
 
 
 app = FastAPI(title="thorondor", lifespan=lifespan, redirect_slashes=False)
@@ -147,6 +167,13 @@ SEARCH_ERROR_RESPONSES = {
     **TRANSPORT_ERROR_RESPONSES,
     503: {"description": "Search dependency unavailable"},
 }
+JOB_LOOKUP_ERROR_RESPONSES = {
+    400: {"description": "Invalid scope, idempotency key, cursor, or page limit"},
+    404: {"description": "Job not found in the supplied scope"},
+    410: {"model": CrawlJobStatus, "description": "Job result retention expired"},
+    429: {"description": "No job-store request slot became available"},
+    503: {"description": "Durable crawl jobs are disabled or unavailable"},
+}
 
 
 async def _wait_for_disconnect(request: Request) -> None:
@@ -247,7 +274,156 @@ async def crawl_site(req: CrawlRequest, request: Request) -> CrawlResponse:
     )
 
 
-async def _check_url(name: str, url: str, headers: dict[str, str] | None = None) -> tuple[str, bool]:
+def _expired_response(exc: CrawlJobExpired) -> JSONResponse:
+    status = get_deps().crawl_jobs.status_from_record(exc.record)
+    return JSONResponse(status_code=410, content=status.model_dump(mode="json"))
+
+
+def _job_error(exc: Exception):
+    if isinstance(exc, CrawlJobsDisabled):
+        raise HTTPException(status_code=503, detail={"reason": "crawl_jobs_disabled"})
+    if isinstance(exc, InvalidJobScope):
+        raise HTTPException(status_code=400, detail={"reason": "invalid_job_scope"})
+    if isinstance(exc, CrawlJobNotFound):
+        raise HTTPException(status_code=404, detail={"reason": "crawl_job_not_found"})
+    if isinstance(exc, InvalidIdempotencyKey):
+        raise HTTPException(status_code=400, detail={"reason": "invalid_idempotency_key"})
+    if isinstance(exc, IdempotencyConflict):
+        raise HTTPException(status_code=409, detail={"reason": "idempotency_conflict"})
+    if isinstance(exc, RawHtmlPersistenceDisabled):
+        raise HTTPException(
+            status_code=400,
+            detail={"reason": "crawl_job_raw_html_disabled"},
+        )
+    if isinstance(exc, CrawlJobQueueFull):
+        retry_after = get_deps().resource_policy.admission_retry_after_s
+        raise HTTPException(
+            status_code=429,
+            detail={"reason": "crawl_job_store_full"},
+            headers={"Retry-After": str(retry_after)},
+        )
+    if isinstance(exc, CrawlJobApiCapacityUnavailable):
+        raise HTTPException(
+            status_code=429,
+            detail={"reason": "crawl_job_api_capacity_unavailable"},
+            headers={"Retry-After": str(exc.retry_after_s)},
+        )
+    if isinstance(exc, CrawlJobWorkerUnavailable):
+        raise HTTPException(
+            status_code=503,
+            detail={"reason": "crawl_job_worker_unavailable"},
+        )
+    if isinstance(exc, InvalidCursor):
+        raise HTTPException(status_code=400, detail={"reason": "invalid_cursor"})
+    if isinstance(exc, InvalidPageLimit):
+        raise HTTPException(status_code=400, detail={"reason": "invalid_page_limit"})
+    if isinstance(exc, CrawlJobResultTooLarge):
+        raise HTTPException(
+            status_code=413,
+            detail={"reason": "result_exceeds_page_byte_limit"},
+        )
+    raise exc
+
+
+@app.post(
+    "/v1/crawl/jobs",
+    status_code=202,
+    responses={
+        200: {"model": CrawlJobCreateResponse, "description": "Idempotent replay"},
+        400: {"description": "Invalid scope, idempotency key, or raw HTML policy"},
+        409: {"description": "Idempotency key was used for another request"},
+        413: {"description": "Request body exceeds its configured byte limit"},
+        429: {"description": "Durable job storage is at its configured limit"},
+        503: {"description": "Durable crawl jobs are disabled or unavailable"},
+    },
+)
+async def create_crawl_job(
+    req: CrawlRequest,
+    job_scope: str = Header(alias="X-Thorondor-Job-Scope"),
+    idempotency_key: str = Header(alias="Idempotency-Key"),
+) -> CrawlJobCreateResponse:
+    try:
+        response = await get_deps().crawl_jobs.create(
+            req,
+            scope=job_scope,
+            idempotency_key=idempotency_key,
+        )
+    except Exception as exc:
+        _job_error(exc)
+    if response.replayed:
+        return JSONResponse(status_code=200, content=response.model_dump(mode="json"))
+    return response
+
+
+@app.get("/v1/crawl/jobs/{job_id}", responses=JOB_LOOKUP_ERROR_RESPONSES)
+async def crawl_job_status(
+    job_id: str,
+    job_scope: str = Header(alias="X-Thorondor-Job-Scope"),
+) -> CrawlJobStatus:
+    try:
+        return await get_deps().crawl_jobs.status(job_id, scope=job_scope)
+    except CrawlJobExpired as exc:
+        return _expired_response(exc)
+    except Exception as exc:
+        _job_error(exc)
+
+
+@app.get(
+    "/v1/crawl/jobs/{job_id}/results",
+    responses={
+        **JOB_LOOKUP_ERROR_RESPONSES,
+        413: {"description": "One retained result exceeds the requested byte cap"},
+    },
+)
+async def crawl_job_results(
+    job_id: str,
+    job_scope: str = Header(alias="X-Thorondor-Job-Scope"),
+    cursor: str | None = Query(default=None, max_length=512),
+    max_items: int | None = Query(default=None, ge=1, le=MAX_SITE_PAGES),
+    max_bytes: int | None = Query(
+        default=None,
+        ge=1,
+        description="Byte cap up to the operator-configured maximum.",
+    ),
+) -> CrawlJobResultPage:
+    try:
+        return await get_deps().crawl_jobs.results(
+            job_id,
+            scope=job_scope,
+            cursor=cursor,
+            max_items=max_items,
+            max_bytes=max_bytes,
+        )
+    except CrawlJobExpired as exc:
+        return _expired_response(exc)
+    except Exception as exc:
+        _job_error(exc)
+
+
+@app.post(
+    "/v1/crawl/jobs/{job_id}/cancel",
+    responses={
+        **JOB_LOOKUP_ERROR_RESPONSES,
+        413: {"description": "Request body exceeds its configured byte limit"},
+    },
+)
+async def cancel_crawl_job(
+    job_id: str,
+    job_scope: str = Header(alias="X-Thorondor-Job-Scope"),
+) -> CrawlJobStatus:
+    try:
+        return await get_deps().crawl_jobs.cancel(job_id, scope=job_scope)
+    except CrawlJobExpired as exc:
+        return _expired_response(exc)
+    except Exception as exc:
+        _job_error(exc)
+
+
+async def _check_url(
+    name: str,
+    url: str,
+    headers: dict[str, str] | None = None,
+) -> tuple[str, bool]:
     try:
         response = await get_health_client().get(url, headers=headers)
         return name, response.is_success
@@ -297,11 +473,16 @@ async def healthz():
         "embedding": embedding[1],
         "reranker": reranker[1],
     }
+    if s.crawl_jobs_enabled:
+        dependencies["crawl_jobs"] = get_deps().crawl_jobs.healthy
+    hard_dependencies = ["searxng", "chunker"]
+    if s.crawl_jobs_enabled:
+        hard_dependencies.append("crawl_jobs")
     return {
         "status": "ok" if all(dependencies.values()) else "degraded",
         "dependencies": dependencies,
         "hard_failures": [
-            name for name in ("searxng", "chunker") if not dependencies[name]
+            name for name in hard_dependencies if not dependencies[name]
         ],
         "degraded_dependencies": [
             name for name in ("crawl4ai", "embedding", "reranker") if not dependencies[name]

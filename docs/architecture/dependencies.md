@@ -57,6 +57,8 @@ publishes multi-arch manifests and records digest refs in the release artifact
 | MCP Python SDK | 2.0.0 | MIT | MCP `web_search`, `web_fetch`, `web_map`, and `web_crawl` tool surfaces |
 | Trafilatura | 2.2.0 | Apache-2.0 | HTML-to-Markdown content extraction |
 
+Page-cache and crawl-job persistence use Python's standard-library `sqlite3`; Phase 5 adds no runtime package, Redis service, or queue dependency.
+
 ### Semantic Chunking Service (`semantic-chunking-service/requirements.txt`)
 
 | Package | Version | License | Purpose |

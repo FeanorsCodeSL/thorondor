@@ -14,6 +14,8 @@ from .clients.chunker_client import ChunkerUnavailable
 from .clients.reranker_client import RerankerUnavailable
 from .clients.searxng_client import DiscoveryUnavailable
 from .content_dedup import content_dedup
+from .crawl_job_store import SqliteCrawlJobStore
+from .crawl_jobs import CrawlJobManager, disabled_crawl_jobs
 from .evidence_metadata import extract_document_metadata
 from .evidence_quality import filter_evidence_quality
 from .interfaces import (
@@ -32,6 +34,8 @@ from .merge import merge_dedup
 from .models import (
     MAX_EVIDENCE_BYTES,
     MAX_EVIDENCE_ITEM_BYTES,
+    MAX_JOB_FAILURE_SUMMARIES,
+    MAX_JOB_FAILURE_SUMMARY_CHARS,
     MAX_PASSAGES,
     MAX_QUERY_CHARS,
     MAX_RAW_MARKDOWN_BYTES,
@@ -148,11 +152,14 @@ class PipelineDeps:
     page_diff_max_input_lines: int
     page_diff_max_operations: int
     page_diff_max_output_lines: int
+    crawl_jobs: CrawlJobManager
 
     async def start(self) -> None:
         await self.page_cache.start()
+        await self.crawl_jobs.start()
 
     async def aclose(self) -> None:
+        await self.crawl_jobs.aclose()
         await self.page_refresh.aclose()
         await self.page_cache.aclose()
         for component in (self.planner, self.discovery, self.extractor, self.chunker, self.reranker):
@@ -1026,6 +1033,7 @@ def build_deps_from_settings(settings) -> PipelineDeps:
     from .markdown_cleaner import MarkdownCleanerImpl
     from .prefilter import CandidatePrefilterImpl
     from .selection import SelectionPolicyImpl
+    from .site_pipeline import run_crawl_job
 
     if settings.markdown_extractor.lower() != "trafilatura":
         raise RuntimeError("MARKDOWN_EXTRACTOR must be trafilatura")
@@ -1083,7 +1091,46 @@ def build_deps_from_settings(settings) -> PipelineDeps:
         if settings.page_cache_enabled
         else DisabledPageCache()
     )
-    return PipelineDeps(
+    runtime_deps = None
+
+    async def crawl_job_runner(request, on_result, on_failure, cancel_requested):
+        return await run_crawl_job(
+            request,
+            runtime_deps,
+            on_result,
+            on_failure,
+            cancel_requested,
+            settings.crawl_job_attempt_deadline_s,
+        )
+
+    crawl_jobs = (
+        CrawlJobManager(
+            enabled=True,
+            store=SqliteCrawlJobStore(
+                settings.crawl_job_path,
+                retention_s=settings.crawl_job_retention_s,
+                tombstone_s=settings.crawl_job_expired_tombstone_s,
+                max_failure_summaries=MAX_JOB_FAILURE_SUMMARIES,
+                max_failure_summary_chars=MAX_JOB_FAILURE_SUMMARY_CHARS,
+                max_result_item_bytes=settings.crawl_job_result_page_max_bytes,
+                max_records=settings.crawl_job_max_records,
+            ),
+            runner=crawl_job_runner,
+            synchronous_max_pages=settings.crawl_sync_max_pages,
+            max_attempts=settings.crawl_job_max_attempts,
+            retry_base_s=settings.crawl_job_retry_base_s,
+            max_page_items=settings.crawl_job_result_page_max_items,
+            max_page_bytes=settings.crawl_job_result_page_max_bytes,
+            raw_html_enabled=settings.crawl_job_raw_html_enabled,
+            max_inflight_requests=settings.crawl_job_max_inflight_requests,
+            admission_wait_s=settings.admission_wait_s,
+            admission_retry_after_s=settings.admission_retry_after_s,
+            poll_interval_s=60,
+        )
+        if settings.crawl_jobs_enabled
+        else disabled_crawl_jobs()
+    )
+    runtime_deps = PipelineDeps(
         planner=planner,
         discovery=SearxngDiscovery(
             settings.searxng_url,
@@ -1171,4 +1218,6 @@ def build_deps_from_settings(settings) -> PipelineDeps:
         page_diff_max_input_lines=settings.page_diff_max_input_lines,
         page_diff_max_operations=settings.page_diff_max_operations,
         page_diff_max_output_lines=settings.page_diff_max_output_lines,
+        crawl_jobs=crawl_jobs,
     )
+    return runtime_deps

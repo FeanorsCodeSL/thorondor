@@ -21,6 +21,7 @@ def _health_settings(**overrides):
         "chunker_url": "http://chunker:8000",
         "reranker_endpoint": "http://reranker:80",
         "reranker_health_path": "/health",
+        "crawl_jobs_enabled": False,
     }
     values.update(overrides)
     return SimpleNamespace(**values)
@@ -259,6 +260,26 @@ def test_healthz_reports_all_green(monkeypatch):
         "embedding": True,
         "reranker": True,
     }
+
+
+def test_healthz_reports_an_enabled_failed_crawl_job_worker(monkeypatch):
+    runtime = fakes.deps()
+    runtime.crawl_jobs.enabled = True
+    monkeypatch.setattr(appmod, "deps", runtime)
+    monkeypatch.setattr(appmod, "settings", _health_settings(crawl_jobs_enabled=True))
+
+    class FakeHealthClient:
+        async def get(self, url, headers=None):
+            if "chunker" in url:
+                return httpx.Response(200, json={"status": "ok", "embedding": True})
+            return httpx.Response(200, json={"status": "ok"})
+
+    monkeypatch.setattr(appmod, "get_health_client", lambda: FakeHealthClient())
+    body = TestClient(appmod.app).get("/healthz").json()
+
+    assert body["status"] == "degraded"
+    assert body["dependencies"]["crawl_jobs"] is False
+    assert body["hard_failures"] == ["crawl_jobs"]
 
 
 def test_repeated_healthz_requests_never_search_searxng(monkeypatch):

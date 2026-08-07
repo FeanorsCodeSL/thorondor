@@ -67,6 +67,26 @@ All environment variables must be present in `.env` (and `.env.llamacpp` or `.en
 | `PAGE_DIFF_MAX_OPERATIONS` | Required / `1000000` | int (≥ 1) | Maximum old-line × new-line comparison work. | `PAGE_DIFF_MAX_INPUT_LINES` |
 | `PAGE_DIFF_MAX_OUTPUT_LINES` | Required / `24` | int (1–24) | Maximum added and removed lines returned. | `MAX_RESPONSE_BODY_BYTES` |
 
+### Durable Crawl Jobs
+
+| Variable | Required / Default | Type | Description | Related |
+|---|---|---|---|---|
+| `CRAWL_JOBS_ENABLED` | Required / `false` | bool | Enable the REST-only SQLite crawl-job worker. Run one orchestrator replica. | `CRAWL_JOB_PATH` |
+| `CRAWL_JOB_PATH` | Required / `/var/lib/thorondor/crawl-jobs.sqlite3` | absolute container path | Job state and result database in the existing persistent volume. | `CRAWL_JOBS_ENABLED` |
+| `CRAWL_SYNC_MAX_PAGES` | Required / `10` | int (1–20) | Advertised default boundary for synchronous crawl; callers may still choose durable mode explicitly at any size. | `MAX_SITE_PAGES` |
+| `CRAWL_JOB_RETENTION_S` | Required / `86400` | int (≥ 1) | Absolute result lifetime from terminal transition. Polling never extends it. | `CRAWL_JOB_EXPIRED_TOMBSTONE_S` |
+| `CRAWL_JOB_EXPIRED_TOMBSTONE_S` | Required / `3600` | int (≥ 1) | Time an expired status remains available after results and the idempotency claim are removed. | `CRAWL_JOB_RETENTION_S` |
+| `CRAWL_JOB_MAX_ATTEMPTS` | Required / `3` | int (1–5) | Total attempts for retryable capacity, deadline, rate-limit, timeout, or upstream failures. | `CRAWL_JOB_RETRY_BASE_S` |
+| `CRAWL_JOB_RETRY_BASE_S` | Required / `1` | float (0–60) | Exponential retry base, capped internally at 30 seconds. | `CRAWL_JOB_MAX_ATTEMPTS` |
+| `CRAWL_JOB_ATTEMPT_DEADLINE_S` | Required / `600` | float (1–3600) | Wall-clock limit for each durable attempt, independent of the synchronous route deadline. | `CRAWL_JOB_MAX_ATTEMPTS` |
+| `CRAWL_JOB_MAX_RECORDS` | Required / `100` | int (1–10000) | Maximum retained job records across active, terminal, and expired states. New claims return 429 at the cap. | `CRAWL_JOB_RETENTION_S` |
+| `CRAWL_JOB_RAW_HTML_ENABLED` | Required / `false` | bool | Permit durable serialization only when a crawl also requests `raw_html`. | `CRAWL_JOBS_ENABLED` |
+| `CRAWL_JOB_MAX_INFLIGHT_REQUESTS` | Required / `16` | int (1–128) | Concurrent create, status, result-page, and cancellation store operations before bounded 429 admission. | `ADMISSION_WAIT_S` |
+| `CRAWL_JOB_RESULT_PAGE_MAX_ITEMS` | Required / `10` | int (1–20) | Maximum result items accepted per cursor-page request. | `MAX_SITE_PAGES` |
+| `CRAWL_JOB_RESULT_PAGE_MAX_BYTES` | Required / `524288` | int (1–half response cap) | Maximum stored result item and requested cursor-page payload. | `MAX_RESPONSE_BODY_BYTES` |
+
+The worker wakes immediately when this process creates a job. While idle it performs expiry maintenance at most once per minute rather than polling SQLite continuously.
+
 ### Search Profiles
 
 | Variable | Required / Default | Type | Description | Related |

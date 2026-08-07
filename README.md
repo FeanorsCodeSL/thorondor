@@ -420,6 +420,22 @@ Use `POST /v1/map` to discover a deterministic, robots-aware URL set for one sit
 
 The shared request policy supports `sitemap` modes `include`, `only`, and `skip`; path include/exclude globs; query preservation, stripping, or exclusion; file-extension allowlists; and explicit depth, page, and discovered-URL limits. Responses report every retained URL's sources, state transitions, terminal reason, untrusted sitemap modification metadata, aggregate fetch outcomes, robots state and network/cache source, warnings, and omissions. These operations are synchronous and intentionally limited to small site slices.
 
+### Durable crawl jobs
+
+When `CRAWL_JOBS_ENABLED=true`, `POST /v1/crawl/jobs` runs the same bounded crawl policy through one durable local worker. The caller must send `Idempotency-Key` and `X-Thorondor-Job-Scope`; an identical scoped replay returns the existing job, while the same key with a different request returns 409. The scope is an ownership label for an already authenticated internal ingress, not authentication by itself.
+
+Use `GET /v1/crawl/jobs/{job_id}` for status, `GET /v1/crawl/jobs/{job_id}/results` for byte-and-item-bounded cursor pages, and `POST /v1/crawl/jobs/{job_id}/cancel` for cooperative cancellation. All reads and cancellation require the same scope. Results survive an orchestrator restart, are deduplicated, and expire at an absolute deadline that polling does not extend. Recovery repeats the bounded crawl from its seed and suppresses already stored final-URL results; it is not checkpointed frontier resumption. A job attempt has its own bounded deadline and consumes one shared `MAX_INFLIGHT_CRAWLS` slot while running. The default advertised synchronous boundary is 10 pages; durable mode remains explicit and can be selected for any crawl when recovery or polling matters.
+
+```bash
+curl -s -X POST http://localhost:8080/v1/crawl/jobs \
+  -H 'Content-Type: application/json' \
+  -H 'Idempotency-Key: product-catalog-2026-08-07' \
+  -H 'X-Thorondor-Job-Scope: internal-agent' \
+  -d '{"url":"https://example.com/docs","max_pages":20}'
+```
+
+This REST-only job API does not add MCP tools, schedules, or webhooks. Status exposes bounded progress, observed failure summaries, warnings, and page results, but not the synchronous crawl route's full frontier URL records or aggregate statistics. The feature is disabled by default and uses SQLite under `/var/lib/thorondor`; enable only one orchestrator replica. New jobs return 429 when the configured record cap is full. Raw HTML requests are rejected unless `CRAWL_JOB_RAW_HTML_ENABLED=true` explicitly permits persistence.
+
 ## MCP
 
 Mount the MCP endpoint in your agent's configuration:
@@ -610,6 +626,24 @@ All keys must be present in `.env` (leave optional keys blank rather than deleti
 | `PAGE_DIFF_MAX_INPUT_LINES` | `2000` | Per-document line cap before returning summary-only truncated diff metadata. |
 | `PAGE_DIFF_MAX_OPERATIONS` | `1000000` | Maximum old-line × new-line comparison work. |
 | `PAGE_DIFF_MAX_OUTPUT_LINES` | `24` | Maximum added and removed lines returned; hard cap 24. |
+
+### Optional Durable Crawl Jobs
+
+| Variable | Default | Description |
+|---|---|---|
+| `CRAWL_JOBS_ENABLED` | `false` | Enable the REST-only, single-replica SQLite worker. |
+| `CRAWL_JOB_PATH` | `/var/lib/thorondor/crawl-jobs.sqlite3` | Durable job and result database. |
+| `CRAWL_SYNC_MAX_PAGES` | `10` | Advertised synchronous/durable product boundary. |
+| `CRAWL_JOB_RETENTION_S` | `86400` | Absolute terminal-result lifetime. |
+| `CRAWL_JOB_EXPIRED_TOMBSTONE_S` | `3600` | Typed expired-status lifetime after result removal. |
+| `CRAWL_JOB_MAX_ATTEMPTS` | `3` | Total attempts for retryable whole-job failures. |
+| `CRAWL_JOB_RETRY_BASE_S` | `1` | Exponential retry base in seconds. |
+| `CRAWL_JOB_ATTEMPT_DEADLINE_S` | `600` | Maximum wall time for one durable attempt. |
+| `CRAWL_JOB_MAX_RECORDS` | `100` | Maximum retained jobs, including terminal and expired records. |
+| `CRAWL_JOB_RAW_HTML_ENABLED` | `false` | Permit raw HTML in durable results when requested. |
+| `CRAWL_JOB_MAX_INFLIGHT_REQUESTS` | `16` | Concurrent job create/status/results/cancel database operations. |
+| `CRAWL_JOB_RESULT_PAGE_MAX_ITEMS` | `10` | Maximum items per cursor page. |
+| `CRAWL_JOB_RESULT_PAGE_MAX_BYTES` | `524288` | Maximum stored result item and cursor-page bytes. |
 
 ### Markdown Extraction
 

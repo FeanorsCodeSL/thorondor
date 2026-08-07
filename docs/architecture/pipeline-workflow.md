@@ -71,6 +71,12 @@ Target watches parse the raw fetched DOM when available without executing caller
 
 Every candidate passes deterministic URL normalization, same-origin and seed-directory scope, include/exclude globs, query and file policy, URL safety, robots, deduplication, depth, discovery, and page limits. Requests to one host honor configured spacing, robots crawl delay, bounded jitter, parsed `Retry-After`, and adaptive 403/429 cooldown. `map` returns URL state histories and source diagnostics; `crawl` adds the same typed fetch results as known-URL fetch. The route deadline and caller cancellation cancel pending traversal rather than leaving background work running.
 
+### Durable crawl-job path
+
+`POST /v1/crawl/jobs` atomically claims the caller's scoped idempotency key and canonical request fingerprint, then one process-owned worker invokes the same `run_crawl_job` frontier, safety, robots, politeness, admission, and deadline path. Results are written transactionally as each page completes, so status and cursor pagination can expose bounded partial progress without waiting for the terminal response. The store deduplicates by conservative final-URL identity and reconciles requested-URL failures after a successful redirect retry.
+
+Startup changes interrupted `running` jobs back to `queued` unless their attempt budget is exhausted; a persisted cancellation becomes terminal instead of being resumed. Recovery repeats the bounded crawl from its seed and relies on atomic final-URL result deduplication rather than persisting the frontier. Retryable job-level capacity and deadline failures, plus zero-success terminal upstream failures, use bounded exponential backoff; completed or partial responses are not retried because one transient page must not amplify the whole crawl. Cancellation sets a durable request flag and an in-process event, stops new URL admission, and allows only already-started I/O to finish under the job-attempt deadline. `completed`, `partial`, `failed`, and `cancelled` results expire at an absolute terminal deadline; polling does not extend it.
+
 ## 2. Orchestrator Internal State Machine
 
 This diagram shows the sequential stages inside `run_search` in `orchestrator/pipeline.py`, including the early-exit branches that produce empty 200 responses.

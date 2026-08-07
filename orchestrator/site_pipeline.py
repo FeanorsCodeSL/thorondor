@@ -1,6 +1,7 @@
 import asyncio
 import time
 from collections import Counter, deque
+from collections.abc import Awaitable, Callable
 from dataclasses import replace
 from inspect import isawaitable
 from urllib.parse import urlsplit
@@ -28,6 +29,10 @@ from .types import FetchStageOutcome
 
 MAX_SITEMAP_DEPTH = 3
 MAP_CAPABILITIES = frozenset({"markdown", "javascript", "links", "metadata", "raw_html"})
+
+
+class CrawlOperationCancelled(Exception):
+    pass
 
 
 def _elapsed_ms(started: float) -> int:
@@ -91,10 +96,22 @@ def _site_reason(code: FetchOutcomeCode, *, seed: bool = False) -> str:
 
 
 class _SiteOperation:
-    def __init__(self, request: MapRequest | CrawlRequest, deps, *, return_content: bool):
+    def __init__(
+        self,
+        request: MapRequest | CrawlRequest,
+        deps,
+        *,
+        return_content: bool,
+        on_result: Callable[[FetchResult], Awaitable[None]] | None = None,
+        on_failure: Callable[[str, str], Awaitable[None]] | None = None,
+        cancel_requested: Callable[[], bool] | None = None,
+    ):
         self.request = request
         self.deps = deps
         self.return_content = return_content
+        self.on_result = on_result
+        self.on_failure = on_failure
+        self.cancel_requested = cancel_requested
         self.started = time.perf_counter()
         self.requested_origin = _origin(request.url)
         self.effective_url: str | None = None
@@ -125,6 +142,18 @@ class _SiteOperation:
         if value not in self.warnings and len(self.warnings) < 32:
             self.warnings.append(value)
 
+    def _check_cancelled(self) -> None:
+        if self.cancel_requested is not None and self.cancel_requested():
+            raise CrawlOperationCancelled
+
+    async def _emit_result(self, result: FetchResult) -> None:
+        if self.on_result is not None:
+            await self.on_result(result)
+
+    async def _emit_failure(self, url: str, reason: str) -> None:
+        if self.on_failure is not None:
+            await self.on_failure(url, reason)
+
     async def _is_safe(self, url: str) -> bool:
         try:
             result = self.deps.crawl_url_safety(url)
@@ -140,6 +169,7 @@ class _SiteOperation:
         capabilities: frozenset[str],
         robots: RobotsSnapshot | None = None,
     ) -> FetchStageOutcome:
+        self._check_cancelled()
         host = canonical_host(urlsplit(url).hostname)
         await self.deps.site_politeness.wait(
             host,
@@ -337,6 +367,7 @@ class _SiteOperation:
             and self.sitemap_candidates_examined
             < self.deps.resource_policy.max_internal_fanout
         ):
+            self._check_cancelled()
             sitemap_url, depth = queue.popleft()
             normalized = self.frontier.policy.normalize(sitemap_url)
             if normalized is None or normalized in visited or depth > MAX_SITEMAP_DEPTH:
@@ -397,6 +428,7 @@ class _SiteOperation:
             self._warning("sitemap_candidate_limit_reached")
 
     async def _augment_search(self) -> None:
+        self._check_cancelled()
         host = canonical_host(urlsplit(self.effective_url).hostname)
         try:
             async with asyncio.timeout(self.deps.resource_policy.discovery_stage_deadline_s):
@@ -425,6 +457,7 @@ class _SiteOperation:
             self.frontier.pop()
             self.frontier.mark_failed(record, outcome.code.value)
         self.page_outcomes.append(outcome)
+        await self._emit_failure(self.request.url, outcome.code.value)
         return _site_reason(outcome.code, seed=True)
 
     async def _reconcile_final(
@@ -469,7 +502,9 @@ class _SiteOperation:
         )
 
     async def run(self):
+        self._check_cancelled()
         if not await self._is_safe(self.request.url):
+            await self._emit_failure(self.request.url, "unsafe_seed")
             return self._response("unsafe_seed")
         seed_capabilities = (
             frozenset(self.request.capabilities) | {"links", "metadata", "markdown", "javascript"}
@@ -503,6 +538,7 @@ class _SiteOperation:
                 self.deps.markdown_cleaner,
             )
             self.results.append(result)
+            await self._emit_result(result)
             self.page_outcomes[-1] = replace(
                 seed,
                 code=FetchOutcomeCode(result.outcome),
@@ -516,6 +552,7 @@ class _SiteOperation:
                 await self._admit(link, source="link", depth=1)
         page_attempts = 1
         while True:
+            self._check_cancelled()
             record = self.frontier.pop()
             if record is None:
                 break
@@ -529,15 +566,22 @@ class _SiteOperation:
             record_robots = await self._robots_for(record.url)
             if not record_robots.allows(record.url):
                 self.frontier.mark_failed(record, "robots_refused")
+                await self._emit_failure(record.url, "robots_refused")
                 continue
             outcome = await self._fetch_target(record.url, seed_capabilities, record_robots)
             page_attempts += 1
             self.page_outcomes.append(outcome)
             if outcome.code != FetchOutcomeCode.CONTENT or outcome.page is None:
                 self.frontier.mark_failed(record, outcome.code.value)
+                await self._emit_failure(record.url, outcome.code.value)
                 continue
             final_record = await self._reconcile_final(record, outcome)
             if final_record is None:
+                if record.reason != "duplicate_final_url":
+                    await self._emit_failure(
+                        record.url,
+                        record.reason or "local_processing_failure",
+                    )
                 continue
             self.frontier.mark_fetched(final_record)
             if self.return_content:
@@ -547,6 +591,7 @@ class _SiteOperation:
                     self.deps.markdown_cleaner,
                 )
                 self.results.append(result)
+                await self._emit_result(result)
                 self.page_outcomes[-1] = replace(
                     outcome,
                     code=FetchOutcomeCode(result.outcome),
@@ -689,5 +734,28 @@ async def run_crawl(req: CrawlRequest, deps) -> CrawlResponse:
         try:
             async with asyncio.timeout(deps.resource_policy.site_crawl_route_deadline_s):
                 return await _SiteOperation(req, deps, return_content=True).run()
+        except TimeoutError as exc:
+            raise RouteDeadlineExceeded("crawl") from exc
+
+
+async def run_crawl_job(
+    req: CrawlRequest,
+    deps,
+    on_result: Callable[[FetchResult], Awaitable[None]],
+    on_failure: Callable[[str, str], Awaitable[None]],
+    cancel_requested: Callable[[], bool],
+    attempt_deadline_s: float,
+) -> CrawlResponse:
+    async with deps.admission.crawl_slot():
+        try:
+            async with asyncio.timeout(attempt_deadline_s):
+                return await _SiteOperation(
+                    req,
+                    deps,
+                    return_content=True,
+                    on_result=on_result,
+                    on_failure=on_failure,
+                    cancel_requested=cancel_requested,
+                ).run()
         except TimeoutError as exc:
             raise RouteDeadlineExceeded("crawl") from exc

@@ -1,4 +1,5 @@
 """Pydantic wire models for the Thorondor orchestrator."""
+from datetime import datetime
 from typing import Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
@@ -35,6 +36,8 @@ MAX_SITE_EXTENSIONS = 16
 DEFAULT_SITE_EXTENSIONS = ("", ".htm", ".html", ".pdf")
 MAX_TARGET_ATTRIBUTES = 32
 MAX_DIFF_OUTPUT_LINES = 24
+MAX_JOB_FAILURE_SUMMARIES = 16
+MAX_JOB_FAILURE_SUMMARY_CHARS = 256
 
 SearchProfile = Literal["quick", "research", "deep"]
 ReasonCode = Literal[
@@ -622,3 +625,82 @@ class CrawlResponse(BaseModel):
     stats: SiteStats
     warnings: list[str] = Field(default_factory=list, max_length=32)
     schema_version: Literal["thorondor.crawl.v1"] = "thorondor.crawl.v1"
+
+
+CrawlJobState = Literal[
+    "queued",
+    "running",
+    "completed",
+    "partial",
+    "failed",
+    "cancelled",
+    "expired",
+]
+JobTerminalReason = Literal[
+    "completed",
+    "partial",
+    "failed",
+    "cancelled",
+    "unsafe_seed",
+    "unsafe_redirect",
+    "robots_refused",
+    "limit_reached",
+    "upstream_timeout",
+    "deadline_cancelled",
+    "malformed_upstream_response",
+    "upstream_failure",
+    "rate_limited",
+    "unsafe_target",
+    "local_processing_failure",
+    "no_admitted_urls",
+    "capacity_unavailable",
+]
+
+
+class CrawlJobProgress(BaseModel):
+    pages_target: int = Field(ge=1)
+    pages_processed: int = Field(ge=0)
+    pages_succeeded: int = Field(ge=0)
+    pages_failed: int = Field(ge=0)
+    results_available: int = Field(ge=0)
+    attempts: int = Field(ge=0)
+
+
+class CrawlJobStatus(BaseModel):
+    job_id: str = Field(pattern=r"^[0-9a-f]{32}$")
+    state: CrawlJobState
+    request: CrawlRequest
+    progress: CrawlJobProgress
+    failure_summaries: list[str] = Field(
+        default_factory=list,
+        max_length=MAX_JOB_FAILURE_SUMMARIES,
+        description="Bounded failures observed across all attempts, including recovered ones.",
+    )
+    created_at: datetime
+    started_at: datetime | None = None
+    terminal_at: datetime | None = None
+    retention_deadline: datetime | None = None
+    cancel_requested: bool = False
+    outcome: JobTerminalReason | None = None
+    warnings: list[str] = Field(default_factory=list, max_length=32)
+    schema_version: Literal["thorondor.crawl-job.v1"] = "thorondor.crawl-job.v1"
+
+
+class CrawlJobCreateResponse(BaseModel):
+    job: CrawlJobStatus
+    replayed: bool
+    synchronous_max_pages: int = Field(ge=1, le=MAX_SITE_PAGES)
+    schema_version: Literal["thorondor.crawl-job.v1"] = "thorondor.crawl-job.v1"
+
+
+class CrawlJobResultPage(BaseModel):
+    job_id: str = Field(pattern=r"^[0-9a-f]{32}$")
+    state: CrawlJobState
+    results: list[FetchResult]
+    next_cursor: str | None = None
+    complete: bool
+    returned_items: int = Field(ge=0)
+    returned_bytes: int = Field(ge=0)
+    schema_version: Literal["thorondor.crawl-job-results.v1"] = (
+        "thorondor.crawl-job-results.v1"
+    )

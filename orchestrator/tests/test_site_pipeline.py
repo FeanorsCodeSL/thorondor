@@ -1,11 +1,14 @@
 from dataclasses import replace
 
 import anyio
+import anyio.lowlevel
+import pytest
 
 from orchestrator import fakes
 from orchestrator.models import CrawlRequest, MapRequest
 from orchestrator.outcome_codes import FetchOutcomeCode
-from orchestrator.site_pipeline import run_crawl, run_map
+from orchestrator.resource_policy import RouteDeadlineExceeded
+from orchestrator.site_pipeline import run_crawl, run_crawl_job, run_map
 from orchestrator.types import (
     DiscoveryEngineFailure,
     DiscoveryOutcome,
@@ -254,6 +257,104 @@ def test_crawl_returns_typed_page_results_and_shared_map_diagnostics():
     assert all(result.markdown for result in response.results)
     assert response.stats.pages_succeeded == 2
     assert response.outcome == "limit_reached"
+
+
+def test_async_crawl_observer_reuses_safety_robots_and_typed_results():
+    async def exercise():
+        deps, extractor = _site_deps()
+        results = []
+        failures = []
+
+        async def on_result(item):
+            results.append(item)
+
+        async def on_failure(url, reason):
+            failures.append((url, reason))
+
+        response = await run_crawl_job(
+            CrawlRequest(
+                url="https://example.com/docs/start",
+                max_pages=3,
+                capabilities=["markdown", "links", "metadata"],
+            ),
+            deps,
+            on_result,
+            on_failure,
+            lambda: False,
+            120,
+        )
+
+        assert response.outcome == "completed"
+        assert [item.final_url for item in results] == [
+            "https://example.com/docs/start",
+            "https://example.com/docs/sitemap-page",
+            "https://example.com/docs/linked",
+        ]
+        assert failures == []
+        assert all(item.provenance == "external_web" for item in results)
+        assert all(item.trust == "untrusted" for item in results)
+        calls = [call[0][0] for call in extractor.calls]
+        assert "https://example.com/private/hidden" not in calls
+        assert all("unsafe" not in url for url in calls)
+
+    anyio.run(exercise)
+
+
+def test_async_crawl_observer_emits_final_target_rejections():
+    async def exercise():
+        linked = "https://example.com/docs/linked"
+        deps, _extractor = _site_deps(
+            {
+                linked: _content(
+                    linked,
+                    final_url="https://example.com/docs/unsafe-final",
+                )
+            }
+        )
+        failures = []
+
+        async def on_failure(url, reason):
+            failures.append((url, reason))
+
+        response = await run_crawl_job(
+            CrawlRequest(
+                url="https://example.com/docs/start",
+                sitemap="skip",
+                max_pages=2,
+            ),
+            deps,
+            lambda _result: anyio.lowlevel.checkpoint(),
+            on_failure,
+            lambda: False,
+            120,
+        )
+
+        assert response.outcome == "partial"
+        assert failures == [(linked, "unsafe_redirect")]
+
+    anyio.run(exercise)
+
+
+def test_async_crawl_job_uses_its_own_attempt_deadline():
+    class SlowExtractor(SiteExtractor):
+        async def fetch(self, urls, capabilities, include_raw_html):
+            await anyio.sleep(1)
+            return await super().fetch(urls, capabilities, include_raw_html)
+
+    async def exercise():
+        deps, extractor = _site_deps()
+        deps.extractor = SlowExtractor(extractor.outcomes)
+        with pytest.raises(RouteDeadlineExceeded):
+            await run_crawl_job(
+                CrawlRequest(url="https://example.com/docs/start", max_pages=2),
+                deps,
+                lambda _result: anyio.lowlevel.checkpoint(),
+                lambda _url, _reason: anyio.lowlevel.checkpoint(),
+                lambda: False,
+                0.001,
+            )
+
+    anyio.run(exercise)
 
 
 def test_failed_page_attempts_consume_the_page_limit():
