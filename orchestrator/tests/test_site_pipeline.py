@@ -5,6 +5,7 @@ import anyio.lowlevel
 import pytest
 
 from orchestrator import fakes
+from orchestrator.clients.structured_extractor import StructuredModelResult
 from orchestrator.models import CrawlRequest, MapRequest
 from orchestrator.outcome_codes import FetchOutcomeCode
 from orchestrator.resource_policy import RouteDeadlineExceeded
@@ -257,6 +258,42 @@ def test_crawl_returns_typed_page_results_and_shared_map_diagnostics():
     assert all(result.markdown for result in response.results)
     assert response.stats.pages_succeeded == 2
     assert response.outcome == "limit_reached"
+
+
+def test_crawl_returns_structured_profiles_for_each_successful_page():
+    seed = "https://example.com/docs/start"
+    linked = "https://example.com/docs/linked"
+    deps, extractor = _site_deps(
+        {
+            seed: _content(
+                seed,
+                body="# Start",
+                html='<a href="/docs/linked">Linked</a>',
+                links={"internal": [{"href": linked}]},
+            ),
+            linked: _content(
+                linked,
+                body="# Stock",
+                html="<table><tr><th>Stock</th></tr><tr><td>Available</td></tr></table>",
+            ),
+        }
+    )
+
+    response = anyio.run(
+        run_crawl,
+        CrawlRequest(
+            url=seed,
+            sitemap="skip",
+            max_pages=2,
+            capabilities=["markdown", "links"],
+            structured_formats=["links", "tables"],
+        ),
+        deps,
+    )
+
+    assert response.results[0].structured[0].links[0].url == linked
+    assert response.results[1].structured[1].tables[0].rows[1][0].text == "Available"
+    assert all(call[2] is True for call in extractor.calls)
 
 
 def test_async_crawl_observer_reuses_safety_robots_and_typed_results():
@@ -930,3 +967,39 @@ def test_site_response_envelopes_omit_items_deterministically():
     assert "result_response_budget_reached" in crawled.warnings
     assert len(mapped.model_dump_json().encode("utf-8")) <= 65536
     assert len(crawled.model_dump_json().encode("utf-8")) <= 65536
+
+
+def test_crawl_applies_schema_extraction_to_each_bounded_result():
+    class SchemaExtractor:
+        async def extract(self, markdown, _schema):
+            return StructuredModelResult(
+                data={"heading": markdown.removeprefix("# ")},
+                evidence={"/heading": markdown},
+            )
+
+    deps, _extractor = _site_deps()
+    deps.structured_extractor = SchemaExtractor()
+    schema = {
+        "type": "object",
+        "properties": {"heading": {"type": "string"}},
+        "required": ["heading"],
+    }
+
+    response = anyio.run(
+        run_crawl,
+        CrawlRequest(
+            url="https://example.com/docs/start",
+            sitemap="skip",
+            max_depth=0,
+            max_pages=1,
+            capabilities=["markdown"],
+            structured_formats=["json_schema"],
+            extraction_schema=schema,
+        ),
+        deps,
+    )
+
+    extracted = response.results[0].structured[0]
+    assert extracted.status == "ok"
+    assert extracted.data == {"heading": "Start"}
+    assert extracted.fields[0].source is not None

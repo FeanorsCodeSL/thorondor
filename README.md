@@ -8,6 +8,15 @@ A self-hosted, data-sovereign semantic web-search service for agents — discove
 
 Thorondor is a local semantic web-search stack designed to replace hosted search-for-agents APIs (Exa, Tavily, and equivalents) with an on-premises, operator-controlled pipeline. It uses SearXNG for multi-engine URL discovery, Crawl4AI for JavaScript-capable page crawling, a first-party `ClusterSemanticChunker` backed by BGE-M3 embeddings for globally-optimal chunk boundaries, and BGE-reranker-v2-m3 to score passages against the original query before assembly. The orchestrator exposes versioned search, known-URL fetch, site-map, and bounded site-crawl contracts through REST and MCP. Search remains live and non-persistent; operators may separately enable a bounded local page cache for known-URL fetches and change monitoring.
 
+The result is an agent-facing web intelligence layer rather than only a search
+endpoint: an agent can discover cited evidence, inspect a known page, request
+bounded links/tables/typed metadata or schema-shaped fields, detect that a
+page changed, and evaluate a specific target transition such as “out of stock”
+to “available”. Whole-page noise such as advertisements may still produce a
+general change signal, but cannot satisfy a target watch. Scheduling, alerts,
+and follow-up actions remain the responsibility of Tengwar or the calling
+agent runtime.
+
 ## Architecture Overview
 
 ```
@@ -35,7 +44,7 @@ All inter-service traffic travels over internal Compose networks. Crawl4AI's out
 | `orchestrator/` | service | FastAPI app: `/v1/search`, `/search` (compat), `/v1/fetch`, `/v1/map`, `/v1/crawl`, `/livez`, `/healthz`, MCP `/mcp` |
 | `semantic-chunking-service/` | service | FastAPI chunker: `/chunk`, `/healthz` — ClusterSemanticChunker + OpenAI-compatible embedding client |
 | `thorondor_cli/` | tool | Textual configurator, env/deploy helpers, native `thorondor-mcp` proxy, and harness writers |
-| `ssrf-proxy/` | service | Minimal async HTTP CONNECT proxy that blocks RFC-1918 and embedded-IPv4 IPv6 targets |
+| `ssrf-proxy/` | service | Retained async HTTP CONNECT proxy for deployment compatibility; Crawl4AI 0.9.2 uses its own DNS-pinning egress |
 | `searxng/` | config | SearXNG `settings.yml` mounted read-only by Compose |
 | `models/` | artifact | Local GGUF model files consumed by the llama.cpp profile (not committed) |
 | `scripts/` | scripts | `install.*`, `deploy.ps1`, `deploy-llamacpp.ps1`, `smoke.ps1`, `check-release-guard.ps1` (PowerShell) + Bash equivalents |
@@ -46,7 +55,7 @@ All inter-service traffic travels over internal Compose networks. Crawl4AI's out
 | `.env.llamacpp.example` | config | Template for `.env.llamacpp` — llama.cpp image SHA, GGUF paths, and batch sizes |
 | `.env.production.example` | config | Template overlay for released GHCR image refs and production service names |
 | `docs/architecture/` | docs | Operational architecture reference (overview, pipeline, deployment, deps, security, config) |
-| `docs/plans/` | docs | Active remediation and implementation plans |
+| `docs/plans/` | docs | Remaining operational plans, such as release-image work |
 | `.agents/skills/thorondor-web-search/` | skill | Repo-local agent skill for calling the running service |
 | `LICENSE` | license | MIT |
 | `THIRD-PARTY-NOTICES.md` | license | Third-party runtime image and package notices |
@@ -88,7 +97,7 @@ status and harness status:
 | Action | Purpose |
 |---|---|
 | `Mode` | Choose BYO endpoints, bundled TEI containers, or llama.cpp GGUF containers. Picking `llamacpp` auto-downloads missing GGUF files into `models/` with a progress bar. |
-| `Endpoints` | Edit embedding, reranker, and optional LLM planner endpoints. |
+| `Endpoints` | Edit embedding, reranker, and optional LLM-operation endpoints. |
 | `Search/crawl` | Tune ports, budgets, crawl limits, robots, and domain filters. |
 | `Validate` | Check env completeness and show the exact Compose command. |
 | `Deploy` | Run `config`, `build`, `up -d`, `/healthz`, and smoke search. |
@@ -408,6 +417,10 @@ For `verbatim=true`, `start_index` and `end_index` are Unicode code-point offset
 
 Use `POST /v1/fetch` when the agent already knows one to four target URLs. The response is a `thorondor.fetch.v1` envelope with one bounded result per URL, aggregate terminal-outcome counts, retryability, final URL, status, content type, allowlisted validators, metadata, and links. Markdown, JavaScript rendering, links, and metadata are requested by default; PDF, document, and raw HTML capabilities are explicit. Raw HTML is size-capped and never appears in ordinary search responses.
 
+Optional `structured_formats` accepts the closed values `links`, `tables`, `json_ld`, and `json_schema`. Each format has its own result entry, status, omissions, untrusted labels, and source-document identity. Links and table elements carry exact source-HTML spans; each typed JSON-LD field addresses the exact `<script>` element that declared it. `json_ld` emits only Article-family and Product documents. `json_schema` requires a bounded `extraction_schema`, validates model output against a small local subset, and accepts a leaf only when its value occurs in an exact cleaned-Markdown evidence span. Extraction is all-or-nothing: any schema or evidence failure suppresses model data and returns only closed validation diagnostics. It rejects remote references, combinators, arbitrary keywords, schemas over 16 KiB, depth over five, more than 32 properties, prompts over 128 KiB, outputs over 64 KiB, and crawl requests over four pages. Model work has a 20-second deadline and a process-owned four-request concurrency limit, using the configured `LLM_ENDPOINT`, `LLM_MODEL`, and optional `LLM_API_KEY`.
+
+`links` requires the links capability, `tables` and `json_schema` require Markdown, and `json_ld` requires metadata. Duplicate, incompatible, or schema-less formats are rejected. Deterministic structured requests fetch live source HTML; schema-only requests use current cleaned Markdown without requesting an additional raw-HTML copy. Every structured request bypasses the page cache so a cached record without the addressed source cannot produce structured evidence. Consequently, `watch`, `change`, `diff`, stale reads, and revalidation are unavailable on the same request. All four profiles are explicit opt-ins. Omission counts are profile-specific: eligible HTTP links, table cells, JSON-LD blocks or fields, and schema leaves suppressed by response budgeting.
+
 Terminal outcomes distinguish content from challenge or empty shells, robots refusal, timeout, rate limiting, unsafe redirects or targets, unsupported content or capabilities, oversized content, malformed upstream data, and local processing failures. Returned web content is always marked `provenance: "external_web"` and `trust: "untrusted"`.
 
 When `PAGE_CACHE_ENABLED=true`, each result also reports `cache.state` (`fresh`, `stale`, `revalidated`, or `bypass`), a `new`/`same`/`changed`/`removed` page transition, and bounded changed-section and line summaries when content changed. `force_refresh=true` performs a live comparison. `stale_while_revalidate=true` may return bounded stale content while refreshing only for ordinary non-watch reads. Background refreshes reacquire fetch admission and run under the fetch deadline. Browser-rendered requests use a full refetch and hash comparison because the hardened Crawl4AI API cannot accept request-supplied validators; an extractor that explicitly supports conditional revalidation may reuse the stored document after `304 Not Modified` without extending its absolute retention deadline.
@@ -418,7 +431,7 @@ An optional `watch` evaluates one declarative target by a bounded compound CSS s
 
 Use `POST /v1/map` to discover a deterministic, robots-aware URL set for one site. Use `POST /v1/crawl` for the same bounded traversal plus typed page results. Both resolve the seed first, scope the operation to its effective origin and seed directory by default, combine declared and common sitemaps with bounded breadth-first link traversal, and optionally add SearXNG `site:` discovery. Parent paths and subdomains require explicit opt-in; arbitrary external-origin crawling is not supported.
 
-The shared request policy supports `sitemap` modes `include`, `only`, and `skip`; path include/exclude globs; query preservation, stripping, or exclusion; file-extension allowlists; and explicit depth, page, and discovered-URL limits. Responses report every retained URL's sources, state transitions, terminal reason, untrusted sitemap modification metadata, aggregate fetch outcomes, robots state and network/cache source, warnings, and omissions. These operations are synchronous and intentionally limited to small site slices.
+The shared request policy supports `sitemap` modes `include`, `only`, and `skip`; path include/exclude globs; query preservation, stripping, or exclusion; file-extension allowlists; and explicit depth, page, and discovered-URL limits. Crawl requests may use the same `structured_formats` contract for each successful page. Responses report every retained URL's sources, state transitions, terminal reason, untrusted sitemap modification metadata, aggregate fetch outcomes, robots state and network/cache source, warnings, and omissions. These operations are synchronous and intentionally limited to small site slices.
 
 ### Durable crawl jobs
 
@@ -497,7 +510,7 @@ pipeline tolerates their absence with reduced quality.
 
 ### X-Request-ID
 
-Every REST and MCP request generates or accepts `X-Request-ID`. The same ID is returned to the caller and forwarded to all downstream seams (SearXNG, Crawl4AI, chunker, embedding, reranker, LLM planner).
+Every REST and MCP request generates or accepts `X-Request-ID`. The same ID is returned to the caller and forwarded to all downstream seams (SearXNG, Crawl4AI, chunker, embedding, reranker, and configured LLM operations).
 
 ### Structured logging
 
@@ -690,13 +703,13 @@ All keys must be present in `.env` (leave optional keys blank rather than deleti
 | `RELEVANCE_SCORE_FLOOR` | `0.0` | Passages with reranker score ≤ this value are dropped after reranking (0.0 disables the filter). |
 | `EVIDENCE_QUALITY_ENABLED` | `false` | Enable the measured `evidence-quality@1` structural filter. Disabled by default until a broader independent corpus supports activation. |
 
-### Optional LLM Planner
+### Optional LLM Operations
 
 | Variable | Default | Description |
 |---|---|---|
-| `LLM_ENDPOINT` | _(blank)_ | Optional OpenAI-compatible chat completions server for query decomposition. Leave blank to use `IdentityPlanner` (no decomposition). |
-| `LLM_MODEL` | _(blank)_ | Model name sent to the LLM planner. Required when `LLM_ENDPOINT` is set. |
-| `LLM_API_KEY` | _(blank)_ | Optional bearer token for the LLM planner. |
+| `LLM_ENDPOINT` | _(blank)_ | Optional OpenAI-compatible chat completions server for query decomposition and explicit JSON-Schema extraction. Leave blank to use `IdentityPlanner` and report model extraction as unsupported. |
+| `LLM_MODEL` | _(blank)_ | Model name sent for configured LLM operations. Required when `LLM_ENDPOINT` is set. |
+| `LLM_API_KEY` | _(blank)_ | Optional bearer token for configured LLM operations. |
 
 ### URL Safety and SSRF Protection
 
@@ -756,7 +769,7 @@ Crawl4AI 0.9.2 owns its browser's connect-time DNS pinning and therefore has a d
 | `CHUNKER_API_KEY` | _(blank)_ | Optional bearer token for the chunking service. |
 | `RERANKER_API_KEY` | _(blank)_ | Optional bearer token for the reranker. |
 | `EMBEDDING_API_KEY` | _(blank)_ | Optional bearer token for the embedding server (read by chunker). |
-| `LLM_API_KEY` | _(blank)_ | Optional bearer token for the LLM planner. |
+| `LLM_API_KEY` | _(blank)_ | Optional bearer token for configured LLM operations. |
 
 ### llama.cpp Overrides (`.env.llamacpp`)
 

@@ -1,4 +1,5 @@
 """Pydantic wire models for the Thorondor orchestrator."""
+import json
 from datetime import datetime
 from typing import Annotated, Literal
 
@@ -11,7 +12,15 @@ from thorondor_contracts import (
     MAX_TARGET_TEXT_CHARS,
     RESOURCE_POLICY_SUMMARY,
     FetchCapability,
+    StructuredFormat,
     TargetWatch,
+)
+
+from .schema_contract import (
+    MAX_EXTRACTION_FIELDS,
+    MAX_EXTRACTION_PATH_CHARS,
+    MAX_EXTRACTION_URLS,
+    MAX_EXTRACTION_VALIDATION_FAILURES,
 )
 
 MAX_QUERY_CHARS = 500
@@ -38,6 +47,15 @@ MAX_TARGET_ATTRIBUTES = 32
 MAX_DIFF_OUTPUT_LINES = 24
 MAX_JOB_FAILURE_SUMMARIES = 16
 MAX_JOB_FAILURE_SUMMARY_CHARS = 256
+MAX_STRUCTURED_FORMATS = 4
+MAX_STRUCTURED_LINKS = 100
+MAX_STRUCTURED_TABLES = 20
+MAX_STRUCTURED_TABLE_ROWS = 100
+MAX_STRUCTURED_TABLE_CELLS = 1000
+MAX_STRUCTURED_DOCUMENTS = 16
+MAX_STRUCTURED_DOCUMENT_FIELDS = 16
+MAX_STRUCTURED_TEXT_CHARS = 4096
+MAX_STRUCTURED_SOURCE_BYTES = 1_048_576
 
 SearchProfile = Literal["quick", "research", "deep"]
 ReasonCode = Literal[
@@ -378,6 +396,260 @@ class PageDiff(BaseModel):
     changed_sections: list[str] = Field(default_factory=list, max_length=MAX_DIFF_OUTPUT_LINES)
 
 
+class StructuredSourceReference(BaseModel):
+    document_id: str = Field(pattern=r"^[0-9a-f]{64}$")
+    cleaned_markdown_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    source_html_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    final_url: str = Field(max_length=MAX_FETCH_URL_BYTES)
+    start_index: int = Field(ge=0)
+    end_index: int = Field(gt=0)
+
+    @model_validator(mode="after")
+    def validate_span(self) -> "StructuredSourceReference":
+        if self.end_index <= self.start_index:
+            raise ValueError("structured source span must be non-empty")
+        return self
+
+
+class StructuredLink(BaseModel):
+    url: str = Field(max_length=MAX_FETCH_URL_BYTES)
+    text: str = Field(max_length=MAX_STRUCTURED_TEXT_CHARS)
+    title: str | None = Field(default=None, max_length=MAX_STRUCTURED_TEXT_CHARS)
+    rel: list[Annotated[str, Field(max_length=128)]] = Field(default_factory=list, max_length=16)
+    kind: Literal["internal", "external"]
+    source: StructuredSourceReference
+    provenance: Literal["external_web"] = "external_web"
+    trust: Literal["untrusted"] = "untrusted"
+
+
+class StructuredTableCell(BaseModel):
+    text: str = Field(max_length=MAX_STRUCTURED_TEXT_CHARS)
+    header: bool = False
+    row_span: int = Field(default=1, ge=1, le=100)
+    column_span: int = Field(default=1, ge=1, le=100)
+    source: StructuredSourceReference
+    provenance: Literal["external_web"] = "external_web"
+    trust: Literal["untrusted"] = "untrusted"
+
+
+class StructuredTable(BaseModel):
+    caption: str | None = Field(default=None, max_length=MAX_STRUCTURED_TEXT_CHARS)
+    rows: list[list[StructuredTableCell]] = Field(max_length=MAX_STRUCTURED_TABLE_ROWS)
+    source: StructuredSourceReference
+    provenance: Literal["external_web"] = "external_web"
+    trust: Literal["untrusted"] = "untrusted"
+
+
+class StructuredDocumentField(BaseModel):
+    name: Literal[
+        "name",
+        "description",
+        "author",
+        "date_published",
+        "date_modified",
+        "url",
+        "sku",
+        "brand",
+        "availability",
+        "price",
+        "price_currency",
+    ]
+    value: str = Field(max_length=MAX_STRUCTURED_TEXT_CHARS)
+    source: StructuredSourceReference
+    provenance: Literal["external_web"] = "external_web"
+    trust: Literal["untrusted"] = "untrusted"
+
+
+class StructuredDocument(BaseModel):
+    kind: Literal["article", "product"]
+    fields: list[StructuredDocumentField] = Field(
+        min_length=1,
+        max_length=MAX_STRUCTURED_DOCUMENT_FIELDS,
+    )
+    source: StructuredSourceReference
+    provenance: Literal["external_web"] = "external_web"
+    trust: Literal["untrusted"] = "untrusted"
+
+
+class StructuredMarkdownReference(BaseModel):
+    document_id: str = Field(pattern=r"^[0-9a-f]{64}$")
+    cleaned_markdown_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    final_url: str = Field(max_length=MAX_FETCH_URL_BYTES)
+    start_index: int = Field(ge=0)
+    end_index: int = Field(gt=0)
+    evidence_id: str = Field(pattern=r"^[0-9a-f]{64}$")
+
+    @model_validator(mode="after")
+    def validate_span(self) -> "StructuredMarkdownReference":
+        if self.end_index <= self.start_index:
+            raise ValueError("structured Markdown span must be non-empty")
+        return self
+
+
+class StructuredSchemaField(BaseModel):
+    path: str = Field(max_length=MAX_EXTRACTION_PATH_CHARS)
+    value: str | int | float | bool
+    source: StructuredMarkdownReference | None = None
+    provenance: Literal["external_web"] = "external_web"
+    trust: Literal["untrusted"] = "untrusted"
+
+
+class StructuredValidationFailure(BaseModel):
+    path: str = Field(max_length=MAX_EXTRACTION_PATH_CHARS)
+    code: Literal[
+        "type_mismatch",
+        "enum_mismatch",
+        "required_missing",
+        "additional_property",
+        "evidence_missing",
+        "evidence_not_found",
+        "evidence_value_mismatch",
+        "model_unavailable",
+        "model_timeout",
+        "model_error",
+        "prompt_too_large",
+        "output_too_large",
+        "malformed_output",
+        "field_limit_exceeded",
+        "response_budget_exceeded",
+    ]
+
+
+class StructuredModelUsage(BaseModel):
+    prompt_bytes: int = Field(default=0, ge=0)
+    output_bytes: int = Field(default=0, ge=0)
+    input_tokens: int | None = Field(default=None, ge=0)
+    output_tokens: int | None = Field(default=None, ge=0)
+
+
+class StructuredExtraction(BaseModel):
+    format: StructuredFormat
+    status: Literal[
+        "ok",
+        "empty",
+        "truncated",
+        "unsupported",
+        "validation_failed",
+        "model_failed",
+    ]
+    document_id: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+    links: list[StructuredLink] = Field(default_factory=list, max_length=MAX_STRUCTURED_LINKS)
+    tables: list[StructuredTable] = Field(default_factory=list, max_length=MAX_STRUCTURED_TABLES)
+    documents: list[StructuredDocument] = Field(
+        default_factory=list,
+        max_length=MAX_STRUCTURED_DOCUMENTS,
+    )
+    data: dict[str, object] | None = None
+    fields: list[StructuredSchemaField] = Field(
+        default_factory=list,
+        max_length=MAX_EXTRACTION_FIELDS,
+    )
+    validation_failures: list[StructuredValidationFailure] = Field(
+        default_factory=list,
+        max_length=MAX_EXTRACTION_VALIDATION_FAILURES,
+    )
+    model_usage: StructuredModelUsage | None = None
+    omitted_items: int = Field(default=0, ge=0)
+    omitted_source_bytes: int = Field(default=0, ge=0)
+    provenance: Literal["external_web"] = "external_web"
+    trust: Literal["untrusted"] = "untrusted"
+    schema_version: Literal["thorondor.structured.v1"] = "thorondor.structured.v1"
+
+    @model_validator(mode="after")
+    def validate_payload(self) -> "StructuredExtraction":
+        payloads = {
+            "links": bool(self.links),
+            "tables": bool(self.tables),
+            "json_ld": bool(self.documents),
+            "json_schema": self.data is not None or bool(self.fields),
+        }
+        if any(present for name, present in payloads.items() if name != self.format):
+            raise ValueError("structured extraction cannot contain another format payload")
+        if self.format != "json_schema" and (
+            self.validation_failures or self.model_usage is not None
+        ):
+            raise ValueError("only json_schema extraction can contain model diagnostics")
+        if self.format != "json_schema" and self.status in {
+            "validation_failed",
+            "model_failed",
+        }:
+            raise ValueError("only json_schema extraction can use model statuses")
+        if self.format == "json_schema" and self.status in {"empty", "truncated"}:
+            raise ValueError("json_schema extraction cannot use deterministic statuses")
+        if self.format == "json_schema" and self.status == "ok":
+            if self.data is None or self.validation_failures:
+                raise ValueError("successful json_schema extraction requires valid data")
+            if any(field.source is None for field in self.fields):
+                raise ValueError("successful json_schema fields require evidence")
+        if self.status in {"validation_failed", "model_failed"} and not self.validation_failures:
+            raise ValueError("failed structured extraction requires validation failures")
+        if self.data is not None:
+            from .schema_contract import MAX_EXTRACTION_OUTPUT_BYTES
+
+            try:
+                data_bytes = len(
+                    json.dumps(
+                        self.data,
+                        allow_nan=False,
+                        ensure_ascii=False,
+                        separators=(",", ":"),
+                    ).encode("utf-8")
+                )
+            except (TypeError, ValueError, UnicodeError, RecursionError) as exc:
+                raise ValueError("structured schema data must be bounded JSON") from exc
+            if data_bytes > MAX_EXTRACTION_OUTPUT_BYTES:
+                raise ValueError("structured schema data exceeds the output byte limit")
+        if self.status == "unsupported":
+            if self.document_id is not None or any(payloads.values()):
+                raise ValueError("unsupported structured extraction cannot claim source data")
+        elif self.document_id is None:
+            raise ValueError("supported structured extraction requires document_id")
+        sources = [link.source for link in self.links]
+        for table in self.tables:
+            sources.append(table.source)
+            sources.extend(cell.source for row in table.rows for cell in row)
+        for document in self.documents:
+            sources.append(document.source)
+            sources.extend(field.source for field in document.fields)
+        if any(source.document_id != self.document_id for source in sources):
+            raise ValueError("structured source references must match document_id")
+        if sources:
+            source_identity = (
+                sources[0].cleaned_markdown_sha256,
+                sources[0].source_html_sha256,
+                sources[0].final_url,
+            )
+            if any(
+                (
+                    source.cleaned_markdown_sha256,
+                    source.source_html_sha256,
+                    source.final_url,
+                )
+                != source_identity
+                for source in sources[1:]
+            ):
+                raise ValueError("structured source references must identify one source")
+        cell_count = sum(len(row) for table in self.tables for row in table.rows)
+        if cell_count > MAX_STRUCTURED_TABLE_CELLS:
+            raise ValueError("structured tables exceed the aggregate cell limit")
+        markdown_sources = [field.source for field in self.fields if field.source is not None]
+        if any(source.document_id != self.document_id for source in markdown_sources):
+            raise ValueError("structured Markdown references must match document_id")
+        if markdown_sources and any(
+            (
+                source.cleaned_markdown_sha256,
+                source.final_url,
+            )
+            != (
+                markdown_sources[0].cleaned_markdown_sha256,
+                markdown_sources[0].final_url,
+            )
+            for source in markdown_sources[1:]
+        ):
+            raise ValueError("structured Markdown references must identify one source")
+        return self
+
+
 class FetchRequest(BaseModel):
     model_config = ConfigDict(json_schema_extra={"x-resource-policy": RESOURCE_POLICY_SUMMARY})
 
@@ -390,6 +662,11 @@ class FetchRequest(BaseModel):
         min_length=1,
         max_length=len(FETCH_CAPABILITIES),
     )
+    structured_formats: list[StructuredFormat] = Field(
+        default_factory=list,
+        max_length=MAX_STRUCTURED_FORMATS,
+    )
+    extraction_schema: dict[str, object] | None = None
     force_refresh: bool = False
     stale_while_revalidate: bool = False
     watch: TargetWatch | None = None
@@ -400,6 +677,32 @@ class FetchRequest(BaseModel):
             raise ValueError("urls must not contain duplicates")
         if len(self.capabilities) != len(set(self.capabilities)):
             raise ValueError("capabilities must not contain duplicates")
+        if len(self.structured_formats) != len(set(self.structured_formats)):
+            raise ValueError("structured_formats must not contain duplicates")
+        required = {
+            "links": "links",
+            "tables": "markdown",
+            "json_ld": "metadata",
+            "json_schema": "markdown",
+        }
+        for format_name in self.structured_formats:
+            if required[format_name] not in self.capabilities:
+                raise ValueError(
+                    f"structured format {format_name} requires "
+                    f"the {required[format_name]} capability"
+                )
+        if ("json_schema" in self.structured_formats) != (self.extraction_schema is not None):
+            raise ValueError(
+                "json_schema structured format and extraction_schema must be supplied together"
+            )
+        if self.extraction_schema is not None:
+            from .schema_contract import validate_extraction_schema
+
+            validate_extraction_schema(self.extraction_schema)
+            if len(self.urls) > MAX_EXTRACTION_URLS:
+                raise ValueError(
+                    f"json_schema fetch urls must not exceed {MAX_EXTRACTION_URLS}"
+                )
         return self
 
 
@@ -418,6 +721,10 @@ class FetchResult(BaseModel):
     raw_html: str | None = None
     links: dict[str, object] = Field(default_factory=dict)
     metadata: dict[str, object] = Field(default_factory=dict)
+    structured: list[StructuredExtraction] = Field(
+        default_factory=list,
+        max_length=MAX_STRUCTURED_FORMATS,
+    )
     response_headers: dict[
         Literal["content-type", "etag", "last-modified", "retry-after"],
         str,
@@ -550,11 +857,42 @@ class CrawlRequest(SiteRequest):
         min_length=1,
         max_length=len(FETCH_CAPABILITIES),
     )
+    structured_formats: list[StructuredFormat] = Field(
+        default_factory=list,
+        max_length=MAX_STRUCTURED_FORMATS,
+    )
+    extraction_schema: dict[str, object] | None = None
 
     @model_validator(mode="after")
     def validate_crawl_capabilities(self) -> "CrawlRequest":
         if len(self.capabilities) != len(set(self.capabilities)):
             raise ValueError("capabilities must not contain duplicates")
+        if len(self.structured_formats) != len(set(self.structured_formats)):
+            raise ValueError("structured_formats must not contain duplicates")
+        required = {
+            "links": "links",
+            "tables": "markdown",
+            "json_ld": "metadata",
+            "json_schema": "markdown",
+        }
+        for format_name in self.structured_formats:
+            if required[format_name] not in self.capabilities:
+                raise ValueError(
+                    f"structured format {format_name} requires "
+                    f"the {required[format_name]} capability"
+                )
+        if ("json_schema" in self.structured_formats) != (self.extraction_schema is not None):
+            raise ValueError(
+                "json_schema structured format and extraction_schema must be supplied together"
+            )
+        if self.extraction_schema is not None:
+            from .schema_contract import validate_extraction_schema
+
+            validate_extraction_schema(self.extraction_schema)
+            if self.max_pages > MAX_EXTRACTION_URLS:
+                raise ValueError(
+                    f"json_schema crawl max_pages must not exceed {MAX_EXTRACTION_URLS}"
+                )
         return self
 
 

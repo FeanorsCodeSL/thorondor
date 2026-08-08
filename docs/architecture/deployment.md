@@ -101,7 +101,7 @@ The orchestrator mounts the named `thorondor-page-cache` volume at
 runtime user. Persistence remains inactive while `PAGE_CACHE_ENABLED=false`.
 The optional crawl-job database uses the same mounted directory but remains
 inactive while `CRAWL_JOBS_ENABLED=false`. When enabled, deploy exactly one
-orchestrator replica: the Phase 5 worker and SQLite store are deliberately
+orchestrator replica: the durable crawl-job worker and SQLite store are deliberately
 single-process and do not require Redis or a queue service. Set the job attempt
 deadline, retained-record cap, retention windows, and raw-HTML policy before
 enabling it. One running background job consumes a shared crawl-admission slot.
@@ -202,7 +202,7 @@ The actions are:
 | Action | Writes or checks |
 |---|---|
 | `Mode` | Selects BYO endpoints, bundled TEI containers, or llama.cpp containers. |
-| `Endpoints` | Edits embedding, reranker, and optional LLM planner endpoints. |
+| `Endpoints` | Edits embedding, reranker, and optional LLM-operation endpoints. |
 | `Search/crawl` | Edits ports, budgets, crawl limits, robots, and domain filters. |
 | `Validate` | Reports env completeness and the Compose command that will run. |
 | `Deploy` | Runs `docker compose config`, `build`, `up -d`, `/healthz`, and smoke search. |
@@ -263,6 +263,14 @@ return a response with at least one dependency value and no `false` values in
 the `dependencies` object. The smoke script waits up to 180 seconds before
 issuing live search requests, which gives model containers extra time to finish
 loading.
+
+Structured fetch profiles are opt-in request capabilities and require no extra
+container or environment variable. `links`, `tables`, and `json_ld` use the
+live Crawl4AI source and return bounded source references. `json_schema` also
+uses the configured `LLM_ENDPOINT`, `LLM_MODEL`, and optional `LLM_API_KEY`; a
+blank LLM endpoint leaves only that profile unsupported. Structured requests
+bypass page-cache persistence and cannot be combined with watches, change/diff
+semantics, stale reads, or conditional revalidation.
 
 ## 5. The Deploy Script
 
@@ -401,7 +409,7 @@ Known considerations:
 - The SearXNG image (`sha256:f4c8e59d...`) and Crawl4AI image (`sha256:bd36741e...`) are pulled from Docker Hub; both pinned indexes include AMD64 and ARM64 manifests.
 - The bundled TEI profile cannot run natively on ARM64 with the pinned image.
 
-## 8. Production Hardening Checklist
+## 9. Production Hardening Checklist
 
 - [ ] **Host binding** — keep `ORCHESTRATOR_HOST=127.0.0.1` for local use. Set `ORCHESTRATOR_HOST=0.0.0.0` only when the service is behind firewall, TLS, authentication, and rate limiting.
 - [ ] **TLS termination** — place a reverse proxy (nginx, Caddy, Traefik) in front of port `ORCHESTRATOR_PORT` with a valid TLS certificate before exposing it beyond localhost. The orchestrator does not terminate TLS itself.

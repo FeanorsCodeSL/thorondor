@@ -1,6 +1,7 @@
 """Protocols for orchestrator pipeline stages."""
 from typing import Protocol
 
+from .clients.structured_extractor import StructuredModelResult
 from .page_cache import CacheRepositoryStats, PageCacheRecord, StoredTargetSnapshot
 from .types import (
     AssembledCitation,
@@ -45,6 +46,14 @@ class ContentExtractor(Protocol):
         capabilities: frozenset[str],
         include_raw_html: bool,
     ) -> list[FetchStageOutcome]: ...
+
+
+class StructuredDataExtractor(Protocol):
+    async def extract(
+        self,
+        markdown: str,
+        schema: dict[str, object],
+    ) -> StructuredModelResult: ...
 
 
 class PageCacheRepository(Protocol):

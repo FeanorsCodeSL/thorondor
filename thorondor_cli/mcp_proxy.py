@@ -17,6 +17,7 @@ from thorondor_contracts import (
     MAP_TOOL_DESCRIPTION,
     SEARCH_TOOL_DESCRIPTION,
     FetchCapability,
+    StructuredFormat,
     TargetWatch,
 )
 
@@ -130,6 +131,8 @@ async def web_search(
 async def web_fetch(
     urls: list[str],
     capabilities: list[FetchCapability] | None = None,
+    structured_formats: list[StructuredFormat] | None = None,
+    extraction_schema: dict[str, object] | None = None,
     force_refresh: bool | None = None,
     stale_while_revalidate: bool | None = None,
     watch: TargetWatch | None = None,
@@ -148,6 +151,8 @@ async def web_fetch(
         capabilities: Required output capabilities. Omit for Markdown,
             JavaScript rendering, links, and metadata. Unsupported capability
             combinations fail closed per URL.
+        structured_formats: Optional source-addressed structured profiles.
+        extraction_schema: Required bounded schema for json_schema extraction.
 
     Returns:
         The versioned `thorondor.fetch.v1` envelope with bounded per-URL
@@ -156,6 +161,8 @@ async def web_fetch(
     request_data = {
         "urls": urls,
         "capabilities": capabilities,
+        "structured_formats": structured_formats,
+        "extraction_schema": extraction_schema,
         "force_refresh": force_refresh,
         "stale_while_revalidate": stale_while_revalidate,
         "watch": watch.model_dump() if watch is not None else None,
@@ -223,6 +230,8 @@ async def web_crawl(
     allowed_file_extensions: list[str] | None = None,
     include_search: bool | None = None,
     capabilities: list[FetchCapability] | None = None,
+    structured_formats: list[StructuredFormat] | None = None,
+    extraction_schema: dict[str, object] | None = None,
 ) -> dict:
     """Crawl a small, bounded part of one site and return typed evidence."""
     request_data = {
@@ -239,6 +248,8 @@ async def web_crawl(
         "allowed_file_extensions": allowed_file_extensions,
         "include_search": include_search,
         "capabilities": capabilities,
+        "structured_formats": structured_formats,
+        "extraction_schema": extraction_schema,
     }
     payload = {key: value for key, value in request_data.items() if value is not None}
     return await _post(

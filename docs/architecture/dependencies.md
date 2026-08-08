@@ -57,7 +57,8 @@ publishes multi-arch manifests and records digest refs in the release artifact
 | MCP Python SDK | 2.0.0 | MIT | MCP `web_search`, `web_fetch`, `web_map`, and `web_crawl` tool surfaces |
 | Trafilatura | 2.2.0 | Apache-2.0 | HTML-to-Markdown content extraction |
 
-Page-cache and crawl-job persistence use Python's standard-library `sqlite3`; Phase 5 adds no runtime package, Redis service, or queue dependency.
+Page-cache and crawl-job persistence use Python's standard-library `sqlite3`; the
+current design adds no runtime package, Redis service, or queue dependency.
 
 ### Semantic Chunking Service (`semantic-chunking-service/requirements.txt`)
 
@@ -104,7 +105,7 @@ When using the `bundled-models` (TEI) profile, model weights are downloaded from
 | Chunking service (`CHUNKER_URL`) | Every search, for each crawled page | No (hard dependency) | Page markdown, source URL, title, source_id |
 | Embedding server (`EMBEDDING_ENDPOINT`) | Every chunk request with ≥1 segment | Degrades (token-based fallback) | Segment texts, model name |
 | Reranker (`RERANKER_ENDPOINT`) | Every search after chunking | Degrades (position ordering if unavailable) | Query text, chunk texts (in batches), model name |
-| LLM planner (`LLM_ENDPOINT`) | Every search if configured and `decompose=true` | Yes (IdentityPlanner fallback) | Original query, system prompt |
+| LLM (`LLM_ENDPOINT`) | Search when `decompose=true`; fetch/crawl only for explicit `json_schema` | Yes (IdentityPlanner fallback; schema profile unsupported) | Original query or bounded cleaned Markdown, fixed system prompt, caller schema |
 | SearXNG upstream search engines | Via SearXNG, not directly by Thorondor | Depends on SearXNG config | User query (after SearXNG's routing logic) |
 | Crawl target sites | Via Crawl4AI's dedicated egress network and built-in DNS-pinning proxy | N/A | HTTP GET to discovered URLs |
 

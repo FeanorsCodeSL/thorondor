@@ -388,6 +388,20 @@ def test_web_fetch_advertises_typed_target_watch_schema():
     }
 
 
+def test_fetch_and_crawl_mcp_advertise_closed_structured_formats():
+    async def advertised():
+        return {tool.name: tool for tool in await mcpmod.mcp.list_tools()}
+
+    tools = anyio.run(advertised)
+
+    for name in ("web_fetch", "web_crawl"):
+        schema = tools[name].input_schema["properties"]["structured_formats"]
+        item_schema = schema["anyOf"][0]["items"]
+        assert item_schema["enum"] == ["links", "tables", "json_ld", "json_schema"]
+        extraction_schema = tools[name].input_schema["properties"]["extraction_schema"]
+        assert extraction_schema["anyOf"][0]["type"] == "object"
+
+
 def test_fetch_mcp_returns_closed_capacity_error():
     deps = fakes.deps(
         resource_policy=appmod.ResourcePolicy(

@@ -7,7 +7,7 @@ from inspect import isawaitable
 from urllib.parse import urlsplit
 
 from .crawl_policy import CrawlFrontier, CrawlPolicy, FrontierRecord
-from .fetch_pipeline import wire_fetch_result
+from .fetch_pipeline import wire_fetch_result_with_schema
 from .models import (
     CrawlRequest,
     CrawlResponse,
@@ -179,7 +179,11 @@ class _SiteOperation:
             outcomes = await self.deps.extractor.fetch(
                 [url],
                 capabilities,
-                "raw_html" in capabilities,
+                "raw_html" in capabilities
+                or any(
+                    format_name != "json_schema"
+                    for format_name in getattr(self.request, "structured_formats", ())
+                ),
             )
         except asyncio.CancelledError:
             raise
@@ -532,10 +536,13 @@ class _SiteOperation:
         self.frontier.mark_fetched(seed_record)
         self.page_outcomes.append(seed)
         if self.return_content:
-            result = wire_fetch_result(
+            result = await wire_fetch_result_with_schema(
                 seed,
                 frozenset(self.request.capabilities),
                 self.deps.markdown_cleaner,
+                tuple(self.request.structured_formats),
+                self.request.extraction_schema,
+                self.deps,
             )
             self.results.append(result)
             await self._emit_result(result)
@@ -585,10 +592,13 @@ class _SiteOperation:
                 continue
             self.frontier.mark_fetched(final_record)
             if self.return_content:
-                result = wire_fetch_result(
+                result = await wire_fetch_result_with_schema(
                     outcome,
                     frozenset(self.request.capabilities),
                     self.deps.markdown_cleaner,
+                    tuple(self.request.structured_formats),
+                    self.request.extraction_schema,
+                    self.deps,
                 )
                 self.results.append(result)
                 await self._emit_result(result)

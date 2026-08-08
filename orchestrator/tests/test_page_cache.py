@@ -175,6 +175,24 @@ def test_credential_bearing_url_bypasses_cache(tmp_path):
     assert fetcher.calls == 2
 
 
+def test_structured_extraction_bypasses_cache_without_persisting_results(tmp_path):
+    outcome = _outcome("Product", '<a href="/stock">Stock</a>')
+    fetcher = SequenceFetcher([outcome, outcome])
+    deps = _cache_deps(tmp_path, fetcher)
+    request = FetchRequest(
+        urls=["https://shop.test/product"],
+        capabilities=["markdown", "links"],
+        structured_formats=["links"],
+    )
+
+    first = anyio.run(run_fetch, request, deps).results[0]
+    second = anyio.run(run_fetch, request, deps).results[0]
+
+    assert fetcher.calls == 2
+    assert first.cache.reason == second.cache.reason == "structured_source_required"
+    assert first.structured == second.structured
+
+
 def test_fetch_cache_miss_hit_force_refresh_change_and_diff(tmp_path):
     fetcher = SequenceFetcher(
         [

@@ -42,11 +42,14 @@ def test_web_search_returns_structured_error_on_unreachable(monkeypatch):
     assert result["error"] == "thorondor_unreachable"
 
 
-def test_web_search_signature_matches_orchestrator():
+def test_mcp_proxy_signatures_match_orchestrator():
     pytest.importorskip("orchestrator.mcp_server")
     from orchestrator import mcp_server
 
-    assert inspect.signature(mcp_proxy.web_search) == inspect.signature(mcp_server.web_search)
+    for name in ("web_search", "web_fetch", "web_map", "web_crawl"):
+        assert inspect.signature(getattr(mcp_proxy, name)) == inspect.signature(
+            getattr(mcp_server, name)
+        )
 
 
 @respx.mock
@@ -72,13 +75,52 @@ def test_web_fetch_forwards_capabilities(monkeypatch):
     result = asyncio.run(
         mcp_proxy.web_fetch(
             ["https://a.test/article"],
-            capabilities=["markdown", "links"],
+            capabilities=["markdown"],
+            structured_formats=["json_schema"],
+            extraction_schema={
+                "type": "object",
+                "properties": {"title": {"type": "string"}},
+            },
         )
     )
 
     assert result["schema_version"] == "thorondor.fetch.v1"
     assert route.calls.last.request.read() == (
-        b'{"urls":["https://a.test/article"],"capabilities":["markdown","links"]}'
+        b'{"urls":["https://a.test/article"],"capabilities":["markdown"],'
+        b'"structured_formats":["json_schema"],"extraction_schema":{"type":"object",'
+        b'"properties":{"title":{"type":"string"}}}}'
+    )
+
+
+@respx.mock
+def test_web_crawl_forwards_structured_formats(monkeypatch):
+    monkeypatch.setenv("THORONDOR_BASE_URL", "http://thorondor.test")
+    route = respx.post("http://thorondor.test/v1/crawl").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "requested_url": "https://a.test/article",
+                "outcome": "completed",
+                "urls": [],
+                "results": [],
+                "stats": {},
+                "warnings": [],
+                "schema_version": "thorondor.crawl.v1",
+            },
+        )
+    )
+
+    asyncio.run(
+        mcp_proxy.web_crawl(
+            "https://a.test/article",
+            capabilities=["markdown"],
+            structured_formats=["tables"],
+        )
+    )
+
+    assert route.calls.last.request.read() == (
+        b'{"url":"https://a.test/article","capabilities":["markdown"],'
+        b'"structured_formats":["tables"]}'
     )
 
 

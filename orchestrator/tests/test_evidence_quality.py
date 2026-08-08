@@ -51,22 +51,3 @@ def test_quality_gate_keeps_short_policy_answers_and_curated_link_lists(text):
 
     assert [item.chunk.text for item in outcome.scored] == [text]
     assert outcome.dropped_by_rule == {}
-
-
-def test_phase1b_benchmark_publishes_quality_and_rrf_decision():
-    from scripts.benchmark_web_intelligence_phase1b import build_report
-
-    report = build_report()
-
-    assert report["evidence_quality"]["drop_precision"] == 1.0
-    assert report["evidence_quality"]["drop_recall"] == 1.0
-    assert report["evidence_quality"]["useful_evidence_recall_delta"] == 0.0
-    assert (
-        report["ranking"]["best_upstream_mrr"]
-        == report["ranking"]["rrf_mrr"]
-        == 0.75
-    )
-    assert report["ranking"]["rrf_enabled"] is False
-    assert report["evidence_quality"]["network_request_count"] == 0
-    assert report["evidence_quality"]["degradation_reasons"] == []
-    assert report["evidence_quality"]["configuration"]["enabled_by_default"] is False

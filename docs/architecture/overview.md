@@ -48,9 +48,26 @@ An OpenAI-compatible `/v1/embeddings` server used by the semantic chunking servi
 
 An OpenAI-compatible reranker server used by the orchestrator. In the `bundled-models` profile this is a TEI container. In the `llamacpp-models` profile it is a llama.cpp server with `--reranking` enabled, loading a GGUF reranker file. The orchestrator calls `POST <RERANKER_ENDPOINT><RERANKER_PATH>` with `{"query": ..., "documents": [...], "model": ...}` and receives a scored list. If the reranker is unreachable, the pipeline degrades gracefully to position-based ordering.
 
-### Optional LLM Planner
+### Optional LLM Operations
 
-When `LLM_ENDPOINT` and `LLM_MODEL` are configured, the orchestrator uses an `LlmPlanner` client that calls `POST /v1/chat/completions` to decompose the user query into up to `MAX_SUBQUERIES` sub-queries. Each sub-query is run against SearXNG in parallel, and the results are merged and deduplicated before URL selection. When `LLM_ENDPOINT` is blank (the default), an `IdentityPlanner` is used instead, which simply returns the original query unchanged.
+When `LLM_ENDPOINT` and `LLM_MODEL` are configured, OpenAI-compatible chat completions support optional query decomposition and explicit `json_schema` extraction. Decomposition produces up to `MAX_SUBQUERIES` sub-queries. Schema extraction uses a separate bounded client, a fixed prompt, exact evidence checks, and server-side validation. When `LLM_ENDPOINT` is blank, search uses `IdentityPlanner` and model-driven extraction is reported as unsupported.
+
+### Agent-facing fetch capabilities
+
+Known-URL fetch is the place for targeted web intelligence. The agent may ask
+for deterministic links, tables, narrowly defined Article-family or Product
+JSON-LD fields, or a bounded JSON-Schema projection. Each retained value is
+linked to the exact fetched document and remains labelled untrusted. A schema
+projection is accepted only when the returned object passes the local schema
+subset and each scalar value appears in its exact cleaned-Markdown evidence
+excerpt; otherwise the model data is suppressed as one atomic failure.
+
+The optional page cache gives fetches a bounded `new`, `same`, `changed`, or
+`removed` transition and capped change summaries. A target watch narrows that
+signal to one uniquely resolved text or attribute target and reports true only
+for the declared expected-to-desired transition. This lets a caller distinguish
+“the page changed” from “the product became available”; scheduling and action
+execution remain outside Thorondor.
 
 ## 3. Data Flow Narrative
 
@@ -114,7 +131,7 @@ The llama.cpp build `b10276` image is pinned to a specific SHA (`bde659bf...`) t
 
 **Reranker** — any server that accepts `POST <path>` with `{"query", "documents", "model"}` and returns `{"results": [{"index", "score"}, ...]}` works. Adjust `RERANKER_ENDPOINT`, `RERANKER_PATH`, `RERANKER_HEALTH_PATH`, and `RERANKER_MODEL`.
 
-**Query planner / LLM** — any OpenAI-compatible chat completions server works. Set `LLM_ENDPOINT` and `LLM_MODEL`. The planner prompt asks for a JSON array of 1–3 sub-queries.
+**LLM operations** — set `LLM_ENDPOINT` and `LLM_MODEL` for an OpenAI-compatible chat completions server. Query decomposition asks for a JSON array of sub-queries. Explicit schema extraction has a fixed prompt, strict local validation, value-bearing evidence checks, a process-owned four-request concurrency limit, and a 20-second model deadline.
 
 **Domain policy** — `DOMAIN_BLOCKLIST`, `DOMAIN_ALLOWLIST`, `ALLOWLIST_ONLY`, and per-call `domains`/`exclude_domains` in the request body provide layered domain control without code changes.
 

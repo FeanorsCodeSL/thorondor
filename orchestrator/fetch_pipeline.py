@@ -1,4 +1,5 @@
 import asyncio
+import math
 import time
 from collections import Counter
 from dataclasses import replace
@@ -14,6 +15,12 @@ from .models import (
     FetchResult,
     FetchStats,
     PageChange,
+    StructuredExtraction,
+    StructuredFormat,
+    StructuredMarkdownReference,
+    StructuredModelUsage,
+    StructuredSchemaField,
+    StructuredValidationFailure,
     TargetWatchResult,
 )
 from .outcome_codes import FetchOutcomeCode
@@ -28,6 +35,14 @@ from .page_cache import (
 )
 from .resource_policy import RouteDeadlineExceeded
 from .robots_policy import RobotsSnapshot, robots_body
+from .schema_contract import (
+    MAX_EXTRACTION_FIELDS,
+    MAX_EXTRACTION_PATH_CHARS,
+    MAX_EXTRACTION_VALIDATION_FAILURES,
+    scalar_fields,
+    validate_extracted_value,
+)
+from .structured_extraction import extract_structured
 from .target_watch import evaluate_watch, resolve_target
 from .types import FetchStageOutcome
 
@@ -39,6 +54,7 @@ RETRYABLE_FETCH_OUTCOMES = {
     FetchOutcomeCode.CAPACITY_UNAVAILABLE,
 }
 REMOVED_STATUSES = {404, 410}
+FETCH_RESPONSE_ENVELOPE_RESERVE_BYTES = 65_536
 
 
 def _elapsed_ms(started: float) -> int:
@@ -122,22 +138,42 @@ def _materialize_fetch_result(
     outcome: FetchStageOutcome,
     capabilities: frozenset[str],
     cleaner,
+    structured_formats: tuple[StructuredFormat, ...] = (),
 ) -> tuple[FetchResult, str | None, str | None]:
     page = outcome.page
     code = outcome.code
+    final_url = outcome.final_url or (page.final_url if page is not None else None)
     markdown = None
     raw_html = None
     source_html = (page.raw_html or page.html) if page is not None else None
+    structured = [
+        StructuredExtraction(format=format_name, status="unsupported")
+        for format_name in structured_formats
+    ]
     if code == FetchOutcomeCode.CONTENT and page is not None:
         try:
             cleaned = cleaner.clean(page).page
             markdown = cleaned.markdown.strip() or page.markdown.strip()
             if not markdown:
                 code = FetchOutcomeCode.EXTRACTION_EMPTY
-            elif "raw_html" in capabilities:
-                raw_html = page.raw_html or page.html
+            else:
+                if "raw_html" in capabilities:
+                    raw_html = page.raw_html or page.html
+                if structured_formats and source_html:
+                    structured = extract_structured(
+                        source_html,
+                        final_url or outcome.requested_url,
+                        markdown,
+                        structured_formats,
+                    )
         except Exception:
             code = FetchOutcomeCode.LOCAL_PROCESSING_FAILURE
+            markdown = None
+            raw_html = None
+            structured = [
+                StructuredExtraction(format=format_name, status="unsupported")
+                for format_name in structured_formats
+            ]
     headers = {}
     if outcome.content_type:
         headers["content-type"] = outcome.content_type
@@ -149,7 +185,7 @@ def _materialize_fetch_result(
         headers["retry-after"] = outcome.retry_after
     result = FetchResult(
         requested_url=outcome.requested_url,
-        final_url=outcome.final_url,
+        final_url=final_url,
         outcome=code.value,
         retryable=code in RETRYABLE_FETCH_OUTCOMES,
         status_code=outcome.status_code,
@@ -162,6 +198,7 @@ def _materialize_fetch_result(
         raw_html=raw_html,
         links=outcome.links if "links" in capabilities else {},
         metadata=outcome.metadata if "metadata" in capabilities else {},
+        structured=structured,
         response_headers=headers,
     )
     return result, markdown, source_html
@@ -171,8 +208,260 @@ def wire_fetch_result(
     outcome: FetchStageOutcome,
     capabilities: frozenset[str],
     cleaner,
+    structured_formats: tuple[StructuredFormat, ...] = (),
 ) -> FetchResult:
-    return _materialize_fetch_result(outcome, capabilities, cleaner)[0]
+    return _materialize_fetch_result(
+        outcome,
+        capabilities,
+        cleaner,
+        structured_formats,
+    )[0]
+
+
+def _normalized_evidence_text(value: object) -> str:
+    return " ".join(str(value).split()).casefold()
+
+
+def _evidence_supports_value(value: object, excerpt: str) -> bool:
+    if value is None or not isinstance(value, (str, int, float, bool)):
+        return False
+    if isinstance(value, float) and not math.isfinite(value):
+        return False
+    normalized_excerpt = _normalized_evidence_text(excerpt)
+    if isinstance(value, bool):
+        candidates = ("true" if value else "false",)
+    elif isinstance(value, float) and value.is_integer():
+        candidates = (str(value), str(int(value)))
+    else:
+        candidates = (str(value),)
+    return any(
+        normalized and normalized in normalized_excerpt
+        for normalized in (_normalized_evidence_text(candidate) for candidate in candidates)
+    )
+
+
+async def apply_schema_extraction(
+    result: FetchResult,
+    markdown: str | None,
+    extraction_schema: dict[str, object] | None,
+    deps,
+) -> FetchResult:
+    if extraction_schema is None or not any(
+        item.format == "json_schema" for item in result.structured
+    ):
+        return result
+    if (
+        result.outcome != FetchOutcomeCode.CONTENT.value
+        or not markdown
+    ):
+        return result
+    from .url_identity import build_document_identity, evidence_id_for
+
+    final_url = result.final_url or result.requested_url
+    identity = build_document_identity(final_url, markdown)
+    try:
+        model_result = await deps.structured_extractor.extract(markdown, extraction_schema)
+    except Exception:
+        extraction = StructuredExtraction(
+            format="json_schema",
+            status="model_failed",
+            document_id=identity.document_id,
+            validation_failures=[
+                StructuredValidationFailure(path="", code="model_error")
+            ],
+            model_usage=StructuredModelUsage(),
+        )
+        result.structured = [
+            extraction if item.format == "json_schema" else item
+            for item in result.structured
+        ]
+        return result
+    usage = StructuredModelUsage(
+        prompt_bytes=model_result.prompt_bytes,
+        output_bytes=model_result.output_bytes,
+        input_tokens=model_result.input_tokens,
+        output_tokens=model_result.output_tokens,
+    )
+    if model_result.reason is not None:
+        status = "unsupported" if model_result.reason == "model_unavailable" else "model_failed"
+        extraction = StructuredExtraction(
+            format="json_schema",
+            status=status,
+            document_id=None if status == "unsupported" else identity.document_id,
+            validation_failures=[
+                StructuredValidationFailure(path="", code=model_result.reason)
+            ],
+            model_usage=usage,
+        )
+    else:
+        data = model_result.data or {}
+        failures = [
+            StructuredValidationFailure(path=path[:MAX_EXTRACTION_PATH_CHARS], code=code)
+            for path, code in validate_extracted_value(extraction_schema, data)
+        ]
+        fields = []
+        scalar_values = scalar_fields(data)
+        if len(scalar_values) > MAX_EXTRACTION_FIELDS:
+            failures.insert(
+                0,
+                StructuredValidationFailure(path="", code="field_limit_exceeded")
+            )
+        for path, value in scalar_values[:MAX_EXTRACTION_FIELDS]:
+            if len(path) > MAX_EXTRACTION_PATH_CHARS:
+                failures.append(
+                    StructuredValidationFailure(
+                        path=path[:MAX_EXTRACTION_PATH_CHARS],
+                        code="field_limit_exceeded",
+                    )
+                )
+                continue
+            if value is None or not isinstance(value, (str, int, float, bool)):
+                continue
+            if isinstance(value, float) and not math.isfinite(value):
+                continue
+            excerpt = model_result.evidence.get(path)
+            source = None
+            if not excerpt:
+                failures.append(
+                    StructuredValidationFailure(path=path, code="evidence_missing")
+                )
+            else:
+                start = markdown.find(excerpt)
+                if start < 0:
+                    failures.append(
+                        StructuredValidationFailure(path=path, code="evidence_not_found")
+                    )
+                elif not _evidence_supports_value(value, excerpt):
+                    failures.append(
+                        StructuredValidationFailure(
+                            path=path,
+                            code="evidence_value_mismatch",
+                        )
+                    )
+                else:
+                    end = start + len(excerpt)
+                    source = StructuredMarkdownReference(
+                        document_id=identity.document_id,
+                        cleaned_markdown_sha256=identity.cleaned_markdown_sha256,
+                        final_url=str(identity.final_url),
+                        start_index=start,
+                        end_index=end,
+                        evidence_id=evidence_id_for(
+                            identity.final_url,
+                            identity.cleaned_markdown_sha256,
+                            start,
+                            end,
+                        ),
+                    )
+            if source is not None:
+                fields.append(StructuredSchemaField(path=path, value=value, source=source))
+        validation_failed = bool(failures)
+        extraction = StructuredExtraction(
+            format="json_schema",
+            status="validation_failed" if validation_failed else "ok",
+            document_id=identity.document_id,
+            data=None if validation_failed else data,
+            fields=[] if validation_failed else fields,
+            validation_failures=failures[:MAX_EXTRACTION_VALIDATION_FAILURES],
+            model_usage=usage,
+        )
+    result.structured = [
+        extraction if item.format == "json_schema" else item
+        for item in result.structured
+    ]
+    return result
+
+
+def _trim_structured_extraction(
+    extraction: StructuredExtraction,
+) -> StructuredExtraction | None:
+    values = extraction.model_dump()
+    if extraction.links:
+        values["links"].pop()
+        values["omitted_items"] += 1
+        values["status"] = "truncated"
+    elif extraction.tables:
+        table = values["tables"][-1]
+        if len(table["rows"]) > 1:
+            row = table["rows"].pop()
+            values["omitted_items"] += max(1, len(row))
+        else:
+            table = values["tables"].pop()
+            values["omitted_items"] += max(
+                1,
+                sum(len(row) for row in table["rows"]),
+            )
+        values["status"] = "truncated"
+    elif extraction.documents:
+        values["documents"].pop()
+        values["omitted_items"] += 1
+        values["status"] = "truncated"
+    elif extraction.format == "json_schema" and (
+        extraction.data is not None or extraction.fields
+    ):
+        return StructuredExtraction(
+            format="json_schema",
+            status="validation_failed",
+            document_id=extraction.document_id,
+            validation_failures=[
+                StructuredValidationFailure(path="", code="response_budget_exceeded")
+            ],
+            model_usage=extraction.model_usage,
+            omitted_items=max(1, len(extraction.fields)),
+        )
+    else:
+        return None
+    return StructuredExtraction.model_validate(values)
+
+
+def _bound_fetch_result(result: FetchResult, max_bytes: int) -> None:
+    while len(result.model_dump_json().encode("utf-8")) > max_bytes:
+        candidates = [
+            (len(item.model_dump_json().encode("utf-8")), index)
+            for index, item in enumerate(result.structured)
+            if item.links
+            or item.tables
+            or item.documents
+            or (item.format == "json_schema" and (item.data is not None or item.fields))
+        ]
+        if not candidates:
+            return
+        _size, index = max(candidates)
+        replacement = _trim_structured_extraction(result.structured[index])
+        if replacement is None:
+            return
+        result.structured[index] = replacement
+
+
+def _bound_fetch_results(results: list[FetchResult], max_response_bytes: int) -> None:
+    available = max_response_bytes - FETCH_RESPONSE_ENVELOPE_RESERVE_BYTES
+    if not results or available <= 0:
+        return
+    result_budget = available // len(results)
+    for result in results:
+        _bound_fetch_result(result, result_budget)
+
+
+async def wire_fetch_result_with_schema(
+    outcome: FetchStageOutcome,
+    capabilities: frozenset[str],
+    cleaner,
+    structured_formats: tuple[StructuredFormat, ...],
+    extraction_schema: dict[str, object] | None,
+    deps,
+) -> FetchResult:
+    result, markdown, _source_html = _materialize_fetch_result(
+        outcome,
+        capabilities,
+        cleaner,
+        structured_formats,
+    )
+    return await apply_schema_extraction(
+        result,
+        markdown,
+        extraction_schema,
+        deps,
+    )
 
 
 def _record_to_result(
@@ -629,10 +918,12 @@ async def _run_uncached(
     fetched = await deps.extractor.fetch(
         safe_urls,
         capabilities,
-        "raw_html" in capabilities,
+        "raw_html" in capabilities
+        or any(format_name != "json_schema" for format_name in request.structured_formats),
     )
     by_url = {item.requested_url: item for item in fetched}
     results: list[FetchResult] = []
+    pending_schema: list[tuple[FetchResult, str | None]] = []
     for url in safe_urls:
         outcome = by_url.get(
             url,
@@ -644,8 +935,11 @@ async def _run_uncached(
                 elapsed_ms=0,
             ),
         )
-        result, _markdown, _source_html = _materialize_fetch_result(
-            outcome, capabilities, deps.markdown_cleaner
+        result, markdown, _source_html = _materialize_fetch_result(
+            outcome,
+            capabilities,
+            deps.markdown_cleaner,
+            tuple(request.structured_formats),
         )
         result.cache = FetchCacheInfo(state="bypass", reason=reason)
         if request.watch is not None:
@@ -655,6 +949,19 @@ async def _run_uncached(
                 condition_met=False,
             )
         results.append(result)
+        pending_schema.append((result, markdown))
+    if request.extraction_schema is not None:
+        await asyncio.gather(
+            *(
+                apply_schema_extraction(
+                    result,
+                    markdown,
+                    request.extraction_schema,
+                    deps,
+                )
+                for result, markdown in pending_schema
+            )
+        )
     return results
 
 
@@ -677,6 +984,7 @@ async def _run_fetch(req: FetchRequest, deps) -> FetchResponse:
                 ),
                 capabilities,
                 deps.markdown_cleaner,
+                tuple(req.structured_formats),
             )
             for url in req.urls
         ]
@@ -696,12 +1004,17 @@ async def _run_fetch(req: FetchRequest, deps) -> FetchResponse:
                         ),
                         capabilities,
                         deps.markdown_cleaner,
+                        tuple(req.structured_formats),
                     )
                 )
-        reason = cache_bypass_reason(
-            deps.page_cache.enabled,
-            capabilities,
-            deps.page_cache_raw_html_enabled,
+        reason = (
+            "structured_source_required"
+            if req.structured_formats
+            else cache_bypass_reason(
+                deps.page_cache.enabled,
+                capabilities,
+                deps.page_cache_raw_html_enabled,
+            )
         )
         if safe_urls and reason is not None:
             results.extend(await _run_uncached(req, safe_urls, capabilities, deps, reason))
@@ -718,7 +1031,7 @@ async def _run_fetch(req: FetchRequest, deps) -> FetchResponse:
     counts = Counter(item.outcome for item in results)
     cache_counts = Counter(item.cache.state for item in results)
     succeeded = counts.get(FetchOutcomeCode.CONTENT.value, 0)
-    return FetchResponse(
+    response = FetchResponse(
         results=results,
         stats=FetchStats(
             requested=len(req.urls),
@@ -735,6 +1048,8 @@ async def _run_fetch(req: FetchRequest, deps) -> FetchResponse:
             cache_bypassed=cache_counts["bypass"],
         ),
     )
+    _bound_fetch_results(response.results, deps.resource_policy.max_response_body_bytes)
+    return response
 
 
 async def run_fetch(req: FetchRequest, deps) -> FetchResponse:

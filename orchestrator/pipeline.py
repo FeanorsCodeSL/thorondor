@@ -29,6 +29,7 @@ from .interfaces import (
     SearchDiscovery,
     SelectionPolicy,
     SemanticChunker,
+    StructuredDataExtractor,
 )
 from .merge import merge_dedup
 from .models import (
@@ -116,6 +117,7 @@ class PipelineDeps:
     discovery: SearchDiscovery
     selector: SelectionPolicy
     extractor: ContentExtractor
+    structured_extractor: StructuredDataExtractor
     markdown_cleaner: MarkdownCleaner
     chunker: SemanticChunker
     candidate_prefilter: CandidatePrefilter
@@ -162,7 +164,14 @@ class PipelineDeps:
         await self.crawl_jobs.aclose()
         await self.page_refresh.aclose()
         await self.page_cache.aclose()
-        for component in (self.planner, self.discovery, self.extractor, self.chunker, self.reranker):
+        for component in (
+            self.planner,
+            self.discovery,
+            self.extractor,
+            self.structured_extractor,
+            self.chunker,
+            self.reranker,
+        ):
             close = getattr(component, "aclose", None)
             if close is not None:
                 await close()
@@ -1030,6 +1039,10 @@ def build_deps_from_settings(settings) -> PipelineDeps:
     from .clients.planner import IdentityPlanner, LlmPlanner
     from .clients.reranker_client import RerankerClient
     from .clients.searxng_client import SearxngDiscovery
+    from .clients.structured_extractor import (
+        DisabledStructuredExtractor,
+        LlmStructuredExtractor,
+    )
     from .markdown_cleaner import MarkdownCleanerImpl
     from .prefilter import CandidatePrefilterImpl
     from .selection import SelectionPolicyImpl
@@ -1052,6 +1065,15 @@ def build_deps_from_settings(settings) -> PipelineDeps:
         )
         if settings.llm_endpoint and settings.llm_model
         else IdentityPlanner()
+    )
+    structured_extractor = (
+        LlmStructuredExtractor(
+            settings.llm_endpoint,
+            settings.llm_model,
+            api_key=settings.llm_api_key,
+        )
+        if settings.llm_endpoint and settings.llm_model
+        else DisabledStructuredExtractor()
     )
     async def url_safety(results: list[DiscoveryResult]) -> list[DiscoveryResult]:
         return await filter_safe_discovery_results_async(
@@ -1151,6 +1173,7 @@ def build_deps_from_settings(settings) -> PipelineDeps:
             max_response_body_bytes=settings.max_response_body_bytes,
             admission_wait_s=settings.admission_wait_s,
         ),
+        structured_extractor=structured_extractor,
         markdown_cleaner=MarkdownCleanerImpl(
             extractor=trafilatura.extract,
             extractor_name=settings.markdown_extractor,

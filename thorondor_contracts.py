@@ -22,6 +22,7 @@ FetchCapability = Literal[
     "pdf",
     "document",
 ]
+StructuredFormat = Literal["links", "tables", "json_ld", "json_schema"]
 DEFAULT_FETCH_CAPABILITIES = ("markdown", "javascript", "links", "metadata")
 MAX_TARGET_SELECTOR_CHARS = 256
 MAX_TARGET_TEXT_CHARS = 1024
@@ -121,10 +122,11 @@ SEARCH_TOOL_DESCRIPTION = (
     "include_raw_markdown adds source Markdown when exact source context is needed."
 )
 FETCH_TOOL_DESCRIPTION = (
-    "Fetch bounded evidence from known URLs. When the operator enables page caching, "
-    "force_refresh compares a live fetch with the stored page and watch evaluates one "
-    "declared target transition; condition_met is fail-closed. stale_while_revalidate "
-    "is for non-watch reads that may accept bounded stale content."
+    "Fetch bounded evidence from known URLs. structured_formats requests source-addressed "
+    "links, tables, typed JSON-LD, or schema extraction. extraction_schema is required "
+    "for json_schema. force_refresh compares a live fetch with stored content; watch "
+    "evaluates one declared transition and fails closed. stale_while_revalidate permits "
+    "bounded stale content for non-watch reads."
 )
 MAP_TOOL_DESCRIPTION = (
     "Discover a bounded, robots-aware URL map for one site. Uses sitemaps first and "
@@ -132,5 +134,7 @@ MAP_TOOL_DESCRIPTION = (
 )
 CRAWL_TOOL_DESCRIPTION = (
     "Crawl a small, bounded part of one site and return typed page evidence. Uses the "
-    "same robots, scope, sitemap, safety, deadline, and politeness policy as web_map."
+    "same robots, scope, sitemap, safety, deadline, and politeness policy as web_map. "
+    "structured_formats adds source-addressed profiles; extraction_schema enables bounded "
+    "JSON Schema output when max_pages is four or less."
 )

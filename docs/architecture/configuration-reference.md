@@ -168,13 +168,21 @@ The worker wakes immediately when this process creates a job. While idle it perf
 | `RELEVANCE_SCORE_FLOOR` | Required / `0.0` | float | Passages with reranker score ≤ this value are dropped post-reranking. `0.0` disables the floor. Has no effect when `stats.reranked=false`. | `RERANKER_ENDPOINT` |
 | `EVIDENCE_QUALITY_ENABLED` | Required / `false` | bool | Enable the `evidence-quality@1` structural filter. It remains disabled by default pending broader independent-corpus measurement. | `RELEVANCE_SCORE_FLOOR` |
 
-### Optional LLM Planner
+### Optional LLM Operations
 
 | Variable | Required / Default | Type | Description | Related |
 |---|---|---|---|---|
-| `LLM_ENDPOINT` | Optional (blank) | URL | OpenAI-compatible chat completions base URL. Blank activates `IdentityPlanner` (no decomposition). | `LLM_MODEL` |
-| `LLM_MODEL` | Optional (blank) | string | Model name for the LLM planner. Required when `LLM_ENDPOINT` is set. | `LLM_ENDPOINT` |
-| `LLM_API_KEY` | Optional (blank) | string | Bearer token for the LLM planner. | `LLM_ENDPOINT` |
+| `LLM_ENDPOINT` | Optional (blank) | URL | OpenAI-compatible chat completions base URL for query decomposition and explicit JSON-Schema extraction. Blank activates `IdentityPlanner` and makes model extraction unsupported. | `LLM_MODEL` |
+| `LLM_MODEL` | Optional (blank) | string | Model name for query decomposition and explicit JSON-Schema extraction. Required when `LLM_ENDPOINT` is set. | `LLM_ENDPOINT` |
+| `LLM_API_KEY` | Optional (blank) | string | Bearer token for configured LLM operations. | `LLM_ENDPOINT` |
+
+`json_schema` extraction reuses these same three settings; it does not add a
+separate model endpoint or environment variable. The extraction client applies
+a 20-second model deadline and a process-owned four-request concurrency limit.
+The request contract independently bounds the schema to 16 KiB, five levels,
+32 properties, four URLs/pages, 128 KiB of prompt input, 64 KiB of model output,
+and 32 scalar leaves. Structured requests are explicit live fetches and bypass
+page-cache persistence.
 
 ### URL Safety and SSRF Protection
 
@@ -234,7 +242,7 @@ The `PROXY_*` settings above configure the retained first-party proxy service. C
 | `CHUNKER_API_KEY` | Optional (blank) | string | Bearer token for the chunking service. | `CHUNKER_URL` |
 | `RERANKER_API_KEY` | Optional (blank) | string | Bearer token for the reranker. | `RERANKER_ENDPOINT` |
 | `EMBEDDING_API_KEY` | Optional (blank) | string | Bearer token for the embedding server (read by the chunker service). | `EMBEDDING_ENDPOINT` |
-| `LLM_API_KEY` | Optional (blank) | string | Bearer token for the optional LLM planner. | `LLM_ENDPOINT` |
+| `LLM_API_KEY` | Optional (blank) | string | Bearer token for configured LLM operations. | `LLM_ENDPOINT` |
 
 ### llama.cpp Overrides (`.env.llamacpp` only)
 

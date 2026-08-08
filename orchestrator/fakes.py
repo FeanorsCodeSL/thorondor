@@ -5,6 +5,7 @@ from .assembly import ResultAssemblerImpl
 from .clients.chunker_client import ChunkerUnavailable
 from .clients.reranker_client import RerankerUnavailable
 from .clients.searxng_client import DiscoveryUnavailable
+from .clients.structured_extractor import DisabledStructuredExtractor
 from .crawl_jobs import disabled_crawl_jobs
 from .markdown_cleaner import MarkdownCleanerImpl
 from .outcome_codes import FetchOutcomeCode
@@ -421,6 +422,7 @@ def deps(**overrides) -> PipelineDeps:
         "discovery": FakeDiscovery(),
         "selector": SelectionPolicyImpl(),
         "extractor": FakeExtractor(),
+        "structured_extractor": DisabledStructuredExtractor(),
         "markdown_cleaner": MarkdownCleanerImpl(
             extractor=_fake_extract,
             extractor_name="fake-extractor",

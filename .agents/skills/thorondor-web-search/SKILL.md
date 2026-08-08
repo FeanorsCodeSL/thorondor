@@ -1,6 +1,6 @@
 ---
 name: thorondor-web-search
-description: Use Thorondor as a local semantic live-web search system through REST or MCP, returning citation-bearing passages. Use when the user asks to search the live web with this repo, query the local Thorondor service, call POST /search, or use the MCP web_search tool.
+description: Use Thorondor as a local semantic live-web service through REST or MCP, returning citation-bearing evidence. Use when the user asks to search, fetch known URLs, map or crawl a site, call the local REST API, or use a Thorondor MCP tool.
 ---
 
 # Thorondor Web Search
@@ -28,6 +28,9 @@ http://localhost:8080/mcp
 
 Tool name: `web_search`.
 
+The MCP server also exposes `web_fetch`, `web_map`, and `web_crawl`, matching
+`POST /v1/fetch`, `POST /v1/map`, and `POST /v1/crawl`.
+
 ## Workflow
 
 1. Check `/healthz`.
@@ -37,6 +40,15 @@ Tool name: `web_search`.
 5. Use `token_budget` to keep returned context small enough for the final answer.
 6. Prefer `domains` or `exclude_domains` when the user asks to include or avoid specific sources.
 7. Cite returned `citations` by URL when answering.
+
+For a known URL, prefer `web_fetch` when the agent needs the current page rather
+than discovery. Structured profiles are explicit opt-ins: use `links`,
+`tables`, `json_ld`, or a bounded `json_schema` plus `extraction_schema` when a
+typed, source-addressed result is more useful than passages. Structured fetches
+are live and bypass the page cache. A `watch` is for one declarative target and
+only reports a positive transition when the expected state becomes the desired
+state; page-wide advertisement changes cannot satisfy it. Scheduling and
+notifications belong to the calling agent runtime.
 
 ## Request Shape
 
