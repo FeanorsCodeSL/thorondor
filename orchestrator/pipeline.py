@@ -245,6 +245,60 @@ async def _planned_subqueries(req: SearchRequest, deps: PipelineDeps, stats: Sea
     return subqueries
 
 
+async def _discovery_attempt(
+    query: str,
+    req: SearchRequest,
+    deps: PipelineDeps,
+) -> _DiscoveryAttempt:
+    attempt_started = time.perf_counter()
+    try:
+        async with asyncio.timeout(deps.resource_policy.discovery_stage_deadline_s):
+            outcome = await deps.discovery.search(query, req.freshness)
+        return _DiscoveryAttempt(query, outcome, None, _elapsed_ms(attempt_started))
+    except TimeoutError:
+        return _DiscoveryAttempt(
+            query,
+            None,
+            "timeout",
+            _elapsed_ms(attempt_started),
+        )
+    except DiscoveryUnavailable as exc:
+        supported_reasons = {
+            "timeout",
+            "transport_error",
+            "upstream_status_error",
+            "malformed_response",
+        }
+        failure_reason = exc.reason if exc.reason in supported_reasons else "unavailable"
+        return _DiscoveryAttempt(
+            query,
+            None,
+            failure_reason,
+            _elapsed_ms(attempt_started),
+        )
+
+
+def _engine_contributions(outcomes: list[DiscoveryOutcome]) -> list[EngineContribution]:
+    engine_counts: dict[str, int] = {}
+    for outcome in outcomes:
+        for result in outcome.results:
+            engines = [item.engine for item in result.contributions if item.engine]
+            if not engines and result.engine:
+                engines = [result.engine]
+            for engine in engines:
+                engine_counts[engine] = engine_counts.get(engine, 0) + 1
+    return [
+        EngineContribution(
+            engine=_truncate_utf8(engine, 128),
+            contribution_count=count,
+        )
+        for engine, count in sorted(
+            engine_counts.items(),
+            key=lambda item: (-item[1], item[0]),
+        )[:32]
+    ]
+
+
 async def _discover_results(
     req: SearchRequest,
     deps: PipelineDeps,
@@ -252,39 +306,9 @@ async def _discover_results(
     subqueries: list[str],
     started: float,
 ) -> list[DiscoveryResult]:
-    async def attempt(query: str) -> _DiscoveryAttempt:
-        attempt_started = time.perf_counter()
-        try:
-            async with asyncio.timeout(deps.resource_policy.discovery_stage_deadline_s):
-                outcome = await deps.discovery.search(query, req.freshness)
-            return _DiscoveryAttempt(query, outcome, None, _elapsed_ms(attempt_started))
-        except TimeoutError:
-            return _DiscoveryAttempt(
-                query,
-                None,
-                "timeout",
-                _elapsed_ms(attempt_started),
-            )
-        except DiscoveryUnavailable as exc:
-            failure_reason = (
-                exc.reason
-                if exc.reason
-                in {
-                    "timeout",
-                    "transport_error",
-                    "upstream_status_error",
-                    "malformed_response",
-                }
-                else "unavailable"
-            )
-            return _DiscoveryAttempt(
-                query,
-                None,
-                failure_reason,
-                _elapsed_ms(attempt_started),
-            )
-
-    attempts = await asyncio.gather(*(attempt(query) for query in subqueries))
+    attempts = await asyncio.gather(
+        *(_discovery_attempt(query, req, deps) for query in subqueries)
+    )
     stats.subquery_diagnostics = [
         SubqueryDiagnostic(
             query=item.query,
@@ -321,24 +345,7 @@ async def _discover_results(
     if failures or failed_attempts:
         stats.discovery_status = "degraded"
 
-    engine_counts: dict[str, int] = {}
-    for outcome in outcomes:
-        for result in outcome.results:
-            engines = [item.engine for item in result.contributions if item.engine]
-            if not engines and result.engine:
-                engines = [result.engine]
-            for engine in engines:
-                engine_counts[engine] = engine_counts.get(engine, 0) + 1
-    stats.engine_contributions = [
-        EngineContribution(
-            engine=_truncate_utf8(engine, 128),
-            contribution_count=count,
-        )
-        for engine, count in sorted(
-            engine_counts.items(),
-            key=lambda item: (-item[1], item[0]),
-        )[:32]
-    ]
+    stats.engine_contributions = _engine_contributions(outcomes)
 
     result_sets = [
         item.outcome.results
@@ -520,6 +527,58 @@ def _set_fetch_diagnostics(
     ]
 
 
+async def _legacy_fetch_outcomes(deps: PipelineDeps, urls: list[str]) -> tuple[list[FetchStageOutcome], list[Page]]:
+    pages = await deps.extractor.extract(urls)
+    page_by_url = {page.requested_url or page.url: page for page in pages}
+    outcomes = [
+        FetchStageOutcome(
+            requested_url=url,
+            final_url=(page.final_url or page.url) if page is not None else None,
+            code=(
+                FetchOutcomeCode.CONTENT
+                if page is not None
+                else FetchOutcomeCode.UPSTREAM_FAILURE
+            ),
+            retrieval_method="legacy_extractor",
+            elapsed_ms=0,
+            status_code=page.status_code if page is not None else None,
+            content_type=page.content_type if page is not None else None,
+            title=page.title if page is not None else None,
+            page=page,
+        )
+        for url in urls
+        for page in [page_by_url.get(url)]
+    ]
+    return outcomes, pages
+
+
+async def _typed_fetch_outcomes(
+    deps: PipelineDeps,
+    urls: list[str],
+    fetch,
+) -> tuple[list[FetchStageOutcome], list[Page]]:
+    try:
+        async with asyncio.timeout(deps.resource_policy.crawl_stage_deadline_s):
+            outcomes = await fetch(urls, SEARCH_FETCH_CAPABILITIES, False)
+    except TimeoutError:
+        outcomes = [
+            FetchStageOutcome(
+                requested_url=url,
+                final_url=None,
+                code=FetchOutcomeCode.DEADLINE_CANCELLED,
+                retrieval_method="crawl4ai_browser",
+                elapsed_ms=int(deps.resource_policy.crawl_stage_deadline_s * 1000),
+            )
+            for url in urls
+        ]
+    pages = [
+        item.page
+        for item in outcomes
+        if item.code == FetchOutcomeCode.CONTENT and item.page is not None
+    ]
+    return outcomes, pages
+
+
 async def _fetch_pages(
     deps: PipelineDeps,
     urls: list[str],
@@ -527,47 +586,9 @@ async def _fetch_pages(
 ) -> list[Page]:
     fetch = getattr(deps.extractor, "fetch", None)
     if fetch is None:
-        pages = await deps.extractor.extract(urls)
-        page_by_url = {page.requested_url or page.url: page for page in pages}
-        outcomes = [
-            FetchStageOutcome(
-                requested_url=url,
-                final_url=(page.final_url or page.url) if page is not None else None,
-                code=(
-                    FetchOutcomeCode.CONTENT
-                    if page is not None
-                    else FetchOutcomeCode.UPSTREAM_FAILURE
-                ),
-                retrieval_method="legacy_extractor",
-                elapsed_ms=0,
-                status_code=page.status_code if page is not None else None,
-                content_type=page.content_type if page is not None else None,
-                title=page.title if page is not None else None,
-                page=page,
-            )
-            for url in urls
-            for page in [page_by_url.get(url)]
-        ]
+        outcomes, pages = await _legacy_fetch_outcomes(deps, urls)
     else:
-        try:
-            async with asyncio.timeout(deps.resource_policy.crawl_stage_deadline_s):
-                outcomes = await fetch(urls, SEARCH_FETCH_CAPABILITIES, False)
-        except TimeoutError:
-            outcomes = [
-                FetchStageOutcome(
-                    requested_url=url,
-                    final_url=None,
-                    code=FetchOutcomeCode.DEADLINE_CANCELLED,
-                    retrieval_method="crawl4ai_browser",
-                    elapsed_ms=int(deps.resource_policy.crawl_stage_deadline_s * 1000),
-                )
-                for url in urls
-            ]
-        pages = [
-            item.page
-            for item in outcomes
-            if item.code == FetchOutcomeCode.CONTENT and item.page is not None
-        ]
+        outcomes, pages = await _typed_fetch_outcomes(deps, urls, fetch)
     _set_fetch_diagnostics(stats, outcomes)
     stats.urls_crawled_ok = sum(
         item.code == FetchOutcomeCode.CONTENT for item in outcomes
@@ -872,53 +893,63 @@ def _build_raw_markdown(
     return raw_markdown
 
 
-async def _run_search(req: SearchRequest, deps: PipelineDeps) -> SearchResponse:
-    started = time.perf_counter()
-    token_budget, max_urls, max_passages = _request_limits(req, deps)
-    stats = SearchStats()
+def _timed_empty_response(
+    req: SearchRequest,
+    stats: SearchStats,
+    started: float,
+    reason: str,
+) -> SearchResponse:
+    stats.elapsed_ms = _elapsed_ms(started)
+    return _empty_response(req.query, stats, reason)
 
+
+async def _search_pages(
+    req: SearchRequest,
+    deps: PipelineDeps,
+    stats: SearchStats,
+    started: float,
+    max_urls: int,
+) -> tuple[list[Page], str | None]:
     subqueries = await _planned_subqueries(req, deps, stats)
     merged = await _discover_results(req, deps, stats, subqueries, started)
     if not merged:
-        stats.elapsed_ms = _elapsed_ms(started)
         reason = (
             "search_provider_unavailable"
             if stats.discovery_status == "unavailable"
             else "no_results_from_discovery"
         )
-        return _empty_response(req.query, stats, reason)
-
+        return [], reason
     safe_candidates = await _safe_candidates(deps, merged)
     selected = _select_results(req, deps, safe_candidates, max_urls, stats)
     stats.urls_selected = len(selected)
     if not selected:
-        stats.elapsed_ms = _elapsed_ms(started)
-        return _empty_response(req.query, stats, "no_urls_after_selection")
-
+        return [], "no_urls_after_selection"
     pages = _attach_discovery_metadata(
         await _fetch_pages(deps, [result.url for result in selected], stats),
         selected,
     )
     if not pages:
-        stats.elapsed_ms = _elapsed_ms(started)
-        return _empty_response(req.query, stats, "all_crawls_failed")
+        return [], "all_crawls_failed"
+    return pages, None
 
-    pages = _dedupe_pages(_clean_pages(deps, pages, stats), stats)
+
+async def _scored_evidence(
+    req: SearchRequest,
+    deps: PipelineDeps,
+    pages: list[Page],
+    stats: SearchStats,
+    started: float,
+) -> tuple[list[ScoredChunk], str | None]:
+    pages[:] = _dedupe_pages(_clean_pages(deps, pages, stats), stats)
     chunks = await _chunk_pages(req, deps, pages, stats, started)
     if not chunks:
-        stats.elapsed_ms = _elapsed_ms(started)
-        return _empty_response(req.query, stats, "no_chunks_after_dedup")
-
+        return [], "no_chunks_after_dedup"
     chunks = _prefilter_chunks(req, deps, chunks, stats)
     if not chunks:
-        stats.elapsed_ms = _elapsed_ms(started)
-        return _empty_response(req.query, stats, "no_chunks_after_dedup")
-
+        return [], "no_chunks_after_dedup"
     scored = await _rerank_chunks(req, deps, chunks, stats)
     if not scored:
-        stats.elapsed_ms = _elapsed_ms(started)
-        return _empty_response(req.query, stats, "no_chunks_after_rerank")
-
+        return [], "no_chunks_after_rerank"
     scored, dropped_below_threshold, threshold_policy = _apply_relevance_floor(
         scored,
         stats.reranked,
@@ -927,9 +958,7 @@ async def _run_search(req: SearchRequest, deps: PipelineDeps) -> SearchResponse:
     stats.passages_dropped_below_threshold = dropped_below_threshold
     stats.relevance_threshold_policy = threshold_policy
     if not scored:
-        stats.elapsed_ms = _elapsed_ms(started)
-        return _empty_response(req.query, stats, "no_chunks_after_rerank")
-
+        return [], "no_chunks_after_rerank"
     if deps.evidence_quality_enabled:
         quality_outcome = filter_evidence_quality(scored)
         stats.evidence_quality_strategy = quality_outcome.strategy
@@ -942,77 +971,84 @@ async def _run_search(req: SearchRequest, deps: PipelineDeps) -> SearchResponse:
         ]
         scored = quality_outcome.scored
         if not scored:
-            stats.elapsed_ms = _elapsed_ms(started)
-            return _empty_response(req.query, stats, "no_evidence_after_quality_gate")
-
+            return [], "no_evidence_after_quality_gate"
     scored = _bound_evidence(scored, stats)
     if not scored:
-        stats.elapsed_ms = _elapsed_ms(started)
-        return _empty_response(req.query, stats, "no_evidence_after_output_budget")
+        return [], "no_evidence_after_output_budget"
+    return scored, None
 
+
+def _wire_passage(passage) -> Passage:
+    return Passage(
+        text=passage.text,
+        score=passage.score,
+        token_count=passage.token_count,
+        citation_id=passage.citation_id,
+        start_index=passage.start_index,
+        end_index=passage.end_index,
+        verbatim=passage.verbatim,
+        document_id=passage.document_id,
+        evidence_id=passage.evidence_id,
+        section_heading=passage.section_heading,
+        score_components=[
+            {
+                "name": component.name,
+                "score": component.score,
+                "strategy": component.strategy,
+            }
+            for component in passage.score_components
+        ],
+    )
+
+
+def _citation_metadata_value(citation, name: str) -> str | None:
+    if citation.evidence_metadata is None:
+        return None
+    value = citation.evidence_metadata.get(name)
+    return value.value if value is not None else None
+
+
+def _wire_citation(citation) -> Citation:
+    return Citation(
+        id=citation.id,
+        url=citation.url,
+        title=citation.title,
+        published=_citation_metadata_value(citation, "published_at"),
+        modified_at=_citation_metadata_value(citation, "modified_at"),
+        document_id=citation.document_id,
+        evidence_spans=[
+            {
+                "start_index": span.start_index,
+                "end_index": span.end_index,
+                "verbatim": span.verbatim,
+                "evidence_id": span.evidence_id,
+                "section_heading": span.section_heading,
+            }
+            for span in citation.evidence_spans
+        ],
+        metadata=_wire_metadata(citation.evidence_metadata),
+    )
+
+
+def _assemble_search_response(
+    req: SearchRequest,
+    deps: PipelineDeps,
+    pages: list[Page],
+    scored: list[ScoredChunk],
+    stats: SearchStats,
+    started: float,
+    token_budget: int,
+    max_passages: int | None,
+) -> SearchResponse:
     assembled_passages, assembled_citations = deps.assembler.assemble(
         scored,
         token_budget,
         max_passages,
     )
-    passages = [
-        Passage(
-            text=passage.text,
-            score=passage.score,
-            token_count=passage.token_count,
-            citation_id=passage.citation_id,
-            start_index=passage.start_index,
-            end_index=passage.end_index,
-            verbatim=passage.verbatim,
-            document_id=passage.document_id,
-            evidence_id=passage.evidence_id,
-            section_heading=passage.section_heading,
-            score_components=[
-                {
-                    "name": component.name,
-                    "score": component.score,
-                    "strategy": component.strategy,
-                }
-                for component in passage.score_components
-            ],
-        )
-        for passage in assembled_passages
-    ]
-    citations = [
-        Citation(
-            id=citation.id,
-            url=citation.url,
-            title=citation.title,
-            published=(
-                citation.evidence_metadata.get("published_at").value
-                if citation.evidence_metadata is not None
-                and citation.evidence_metadata.get("published_at") is not None
-                else None
-            ),
-            modified_at=(
-                citation.evidence_metadata.get("modified_at").value
-                if citation.evidence_metadata is not None
-                and citation.evidence_metadata.get("modified_at") is not None
-                else None
-            ),
-            document_id=citation.document_id,
-            evidence_spans=[
-                {
-                    "start_index": span.start_index,
-                    "end_index": span.end_index,
-                    "verbatim": span.verbatim,
-                    "evidence_id": span.evidence_id,
-                    "section_heading": span.section_heading,
-                }
-                for span in citation.evidence_spans
-            ],
-            metadata=_wire_metadata(citation.evidence_metadata),
-        )
-        for citation in assembled_citations
-    ]
+    passages = [_wire_passage(passage) for passage in assembled_passages]
+    citations = [_wire_citation(citation) for citation in assembled_citations]
     stats.tokens_returned = sum(p.token_count for p in passages)
     stats.elapsed_ms = _elapsed_ms(started)
-
     response = SearchResponse(
         query=req.query,
         passages=passages,
@@ -1022,6 +1058,28 @@ async def _run_search(req: SearchRequest, deps: PipelineDeps) -> SearchResponse:
     )
     _log_search_summary(req.query, stats)
     return response
+
+
+async def _run_search(req: SearchRequest, deps: PipelineDeps) -> SearchResponse:
+    started = time.perf_counter()
+    token_budget, max_urls, max_passages = _request_limits(req, deps)
+    stats = SearchStats()
+    pages, reason = await _search_pages(req, deps, stats, started, max_urls)
+    if reason is not None:
+        return _timed_empty_response(req, stats, started, reason)
+    scored, reason = await _scored_evidence(req, deps, pages, stats, started)
+    if reason is not None:
+        return _timed_empty_response(req, stats, started, reason)
+    return _assemble_search_response(
+        req,
+        deps,
+        pages,
+        scored,
+        stats,
+        started,
+        token_budget,
+        max_passages,
+    )
 
 
 async def run_search(req: SearchRequest, deps: PipelineDeps) -> SearchResponse:

@@ -130,9 +130,68 @@ class ClusterSemanticChunker:
         if not text or not text.strip():
             return []
 
-        # Step 1: Split into initial segments
-        segment_start_time = time.perf_counter()
+        segments, segment_positions, preserve_offsets, segment_time = self._segment_text(
+            text, preserve_offsets
+        )
+        if not segments:
+            return []
+        if len(segments) == 1:
+            return self._single_segment_result(text, segments[0], segment_positions, preserve_offsets)
 
+        self._log_segmentation(text, segments, segment_time)
+        if progress_callback:
+            progress_callback(1, 5, f"Segmented into {len(segments)} segments")
+
+        large_result = self._large_document_result(
+            text,
+            segments,
+            segment_positions,
+            preserve_offsets,
+            progress_callback,
+        )
+        if large_result is not None:
+            return large_result
+
+        if not preserve_offsets:
+            segment_positions = self._calculate_segment_positions(text, segments)
+        segment_lengths = self._segment_lengths(segments)
+
+        if progress_callback:
+            progress_callback(2, 5, f"Generating embeddings for {len(segments)} segments...")
+        embeddings, embed_time = self._embeddings(segments)
+        if embeddings is None:
+            return self._fallback_chunking(
+                segments,
+                segment_positions,
+                segment_lengths,
+                text if preserve_offsets else None,
+            )
+
+        if progress_callback:
+            progress_callback(3, 5, f"Embeddings complete ({len(embeddings)} vectors)")
+        similarity_matrix, sim_time = self._similarities(segments, embeddings, progress_callback)
+        groupings, dp_time = self._optimal_groupings(segments, similarity_matrix, segment_lengths)
+        del similarity_matrix
+        del embeddings
+        gc.collect()
+        logger.debug("[ClusterSemantic] Released similarity matrix and embeddings after DP")
+
+        if progress_callback:
+            progress_callback(5, 5, f"Optimization complete ({len(groupings)} chunks)")
+        results = self._build_chunk_results(
+            segments,
+            groupings,
+            segment_positions,
+            segment_lengths,
+            text if preserve_offsets else None,
+        )
+        self._log_results(results, segments, segment_time + embed_time + sim_time + dp_time)
+        return results
+
+    def _segment_text(
+        self, text: str, preserve_offsets: bool
+    ) -> tuple[List[str], List[Tuple[int, int]], bool, float]:
+        start_time = time.perf_counter()
         splitter = RecursiveCharacterTextSplitter(
             chunk_size=self._initial_segment_size,
             chunk_overlap=0,
@@ -151,100 +210,97 @@ class ClusterSemanticChunker:
         else:
             segments = splitter.split_text(text)
             segment_positions = []
+        return segments, segment_positions, preserve_offsets, time.perf_counter() - start_time
 
-        segment_time = time.perf_counter() - segment_start_time
+    def _single_segment_result(
+        self,
+        text: str,
+        segment: str,
+        segment_positions: List[Tuple[int, int]],
+        preserve_offsets: bool,
+    ) -> List[ChunkResult]:
+        logger.info(
+            f"[ClusterSemantic] Single segment document ({len(text):,} chars), "
+            f"returning as single chunk"
+        )
+        start_index, end_index = segment_positions[0] if segment_positions else (0, len(segment))
+        return [ChunkResult(
+            text=text[start_index:end_index] if preserve_offsets else segment,
+            start_index=start_index,
+            end_index=end_index,
+            token_count=self._length_function(segment),
+            segment_indices=[0],
+            chunk_strategy="cluster-semantic-single",
+            verbatim=preserve_offsets,
+        )]
 
-        if not segments:
-            return []
-
-        # Handle single segment case
-        if len(segments) == 1:
-            logger.info(
-                f"[ClusterSemantic] Single segment document ({len(text):,} chars), "
-                f"returning as single chunk"
-            )
-            start_index, end_index = segment_positions[0] if segment_positions else (0, len(segments[0]))
-            return [ChunkResult(
-                text=text[start_index:end_index] if preserve_offsets else segments[0],
-                start_index=start_index,
-                end_index=end_index,
-                token_count=self._length_function(segments[0]),
-                segment_indices=[0],
-                chunk_strategy="cluster-semantic-single",
-                verbatim=preserve_offsets,
-            )]
-
+    def _log_segmentation(self, text: str, segments: List[str], segment_time: float) -> None:
         logger.info(
             f"[ClusterSemantic] Step 1/5 - Segmentation: "
             f"{len(text):,} chars -> {len(segments)} segments "
             f"(~{self._initial_segment_size} tokens each) in {segment_time:.2f}s"
         )
 
-        if progress_callback:
-            progress_callback(1, 5, f"Segmented into {len(segments)} segments")
-
-        # OOM Prevention: Check segment count BEFORE expensive operations.
-        # O(N^2) similarity matrix is infeasible for very large N.
-        if len(segments) > MAX_SEGMENTS_FOR_DP:
-            estimated_memory_gb = (len(segments) ** 2 * 4) / (1024 ** 3)
-            logger.warning(
-                f"[ClusterSemantic] OOM PREVENTION: {len(segments)} segments exceeds "
-                f"MAX_SEGMENTS_FOR_DP={MAX_SEGMENTS_FOR_DP}. "
-                f"Similarity matrix would require ~{estimated_memory_gb:.2f} GB. "
-                f"Using greedy semantic fallback (O(N) memory) instead of DP (O(N^2) memory)."
-            )
-            if not preserve_offsets:
-                segment_positions = self._calculate_segment_positions(text, segments)
-            segment_lengths = [self._length_function(s) for s in segments]
-            return self._greedy_semantic_chunking(
-                segments,
-                segment_positions,
-                segment_lengths,
-                progress_callback,
-                text if preserve_offsets else None,
-            )
-
-        # Step 2: Calculate segment positions in original text
+    def _large_document_result(
+        self,
+        text: str,
+        segments: List[str],
+        segment_positions: List[Tuple[int, int]],
+        preserve_offsets: bool,
+        progress_callback: Optional[Callable[[int, int, str], None]],
+    ) -> Optional[List[ChunkResult]]:
+        if len(segments) <= MAX_SEGMENTS_FOR_DP:
+            return None
+        estimated_memory_gb = (len(segments) ** 2 * 4) / (1024 ** 3)
+        logger.warning(
+            f"[ClusterSemantic] OOM PREVENTION: {len(segments)} segments exceeds "
+            f"MAX_SEGMENTS_FOR_DP={MAX_SEGMENTS_FOR_DP}. "
+            f"Similarity matrix would require ~{estimated_memory_gb:.2f} GB. "
+            f"Using greedy semantic fallback (O(N) memory) instead of DP (O(N^2) memory)."
+        )
         if not preserve_offsets:
             segment_positions = self._calculate_segment_positions(text, segments)
+        segment_lengths = [self._length_function(segment) for segment in segments]
+        return self._greedy_semantic_chunking(
+            segments,
+            segment_positions,
+            segment_lengths,
+            progress_callback,
+            text if preserve_offsets else None,
+        )
 
-        # Step 3: Calculate token count for each segment
+    def _segment_lengths(self, segments: List[str]) -> List[int]:
         segment_lengths = [self._length_function(s) for s in segments]
         total_tokens = sum(segment_lengths)
-        avg_tokens = total_tokens / len(segment_lengths) if segment_lengths else 0
+        avg_tokens = total_tokens / len(segment_lengths)
         logger.info(
             f"[ClusterSemantic] Step 2/5 - Token analysis: "
             f"{total_tokens:,} total tokens, avg {avg_tokens:.1f} tokens/segment, "
             f"range [{min(segment_lengths)}-{max(segment_lengths)}]"
         )
+        return segment_lengths
 
-        if progress_callback:
-            progress_callback(2, 5, f"Generating embeddings for {len(segments)} segments...")
-
-        # Step 4: Generate embeddings for all segments
+    def _embeddings(self, segments: List[str]) -> tuple[Optional[List[List[float]]], float]:
         logger.info(
             f"[ClusterSemantic] Step 3/5 - Generating embeddings for {len(segments)} segments..."
         )
         embeddings, embed_time = self._generate_embeddings_for_segments(segments, logger)
         if embeddings is None:
-            return self._fallback_chunking(
-                segments,
-                segment_positions,
-                segment_lengths,
-                text if preserve_offsets else None,
-            )
-
+            return None, embed_time
         embed_dim = len(embeddings[0]) if embeddings[0] else 0
         logger.info(
             f"[ClusterSemantic] Step 3/5 - Embeddings complete: "
             f"{len(embeddings)} vectors x {embed_dim} dims in {embed_time:.2f}s "
             f"({len(segments)/embed_time:.1f} segments/sec)"
         )
+        return embeddings, embed_time
 
-        if progress_callback:
-            progress_callback(3, 5, f"Embeddings complete ({len(embeddings)} vectors)")
-
-        # Step 5: Compute similarity matrix
+    def _similarities(
+        self,
+        segments: List[str],
+        embeddings: List[List[float]],
+        progress_callback: Optional[Callable[[int, int, str], None]],
+    ) -> tuple[np.ndarray, float]:
         estimated_memory_mb = (len(segments) ** 2 * 4) / (1024 ** 2)
         logger.info(
             f"[ClusterSemantic] Step 4/5 - Computing {len(segments)}x{len(segments)} similarity matrix "
@@ -256,10 +312,7 @@ class ClusterSemanticChunker:
 
         n = len(segments)
         diagonal_sum = float(np.trace(similarity_matrix))
-        avg_similarity = (
-            (similarity_matrix.sum() - diagonal_sum) / (n * (n - 1))
-            if n > 1 else 0
-        )
+        avg_similarity = (similarity_matrix.sum() - diagonal_sum) / (n * (n - 1))
         logger.info(
             f"[ClusterSemantic] Step 4/5 - Similarity matrix complete: "
             f"avg similarity={avg_similarity:.3f}, computed in {sim_time:.2f}s"
@@ -267,8 +320,14 @@ class ClusterSemanticChunker:
 
         if progress_callback:
             progress_callback(4, 5, f"Similarity matrix computed ({n}x{n})")
+        return similarity_matrix, sim_time
 
-        # Step 6: Run dynamic programming to find optimal groupings
+    def _optimal_groupings(
+        self,
+        segments: List[str],
+        similarity_matrix: np.ndarray,
+        segment_lengths: List[int],
+    ) -> tuple[List[Tuple[int, int]], float]:
         logger.info(
             f"[ClusterSemantic] Step 5/5 - Running DP optimization "
             f"(max_chunk={self._max_chunk_size}, min_chunk={self._min_chunk_size})..."
@@ -284,29 +343,11 @@ class ClusterSemanticChunker:
             f"[ClusterSemantic] Step 5/5 - DP optimization complete: "
             f"found {len(groupings)} optimal chunk boundaries in {dp_time:.2f}s"
         )
+        return groupings, dp_time
 
-        # MEMORY OPTIMIZATION: release large arrays immediately after DP.
-        # The similarity_matrix (O(n^2)) and embeddings are no longer needed
-        # after DP optimization. Explicit deletion + gc.collect() releases this
-        # memory before building results, reducing peak usage substantially.
-        del similarity_matrix
-        del embeddings
-        gc.collect()
-        logger.debug("[ClusterSemantic] Released similarity matrix and embeddings after DP")
-
-        if progress_callback:
-            progress_callback(5, 5, f"Optimization complete ({len(groupings)} chunks)")
-
-        # Step 7: Build chunk results from groupings
-        results = self._build_chunk_results(
-            segments,
-            groupings,
-            segment_positions,
-            segment_lengths,
-            text if preserve_offsets else None,
-        )
-
-        total_time = segment_time + embed_time + sim_time + dp_time
+    def _log_results(
+        self, results: List[ChunkResult], segments: List[str], total_time: float
+    ) -> None:
         logger.info(
             f"[ClusterSemantic] COMPLETE: {len(segments)} segments -> {len(results)} chunks "
             f"(total: {total_time:.2f}s)"
@@ -320,8 +361,6 @@ class ClusterSemanticChunker:
                 f"avg={sum(chunk_tokens)/len(chunk_tokens):.0f}, "
                 f"segments/chunk avg={len(segments)/len(results):.1f}"
             )
-
-        return results
 
     def _generate_embeddings_for_segments(self, segments: List[str], log: Any):
         """

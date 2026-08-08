@@ -109,7 +109,7 @@ def _origin(url: str) -> tuple[str, str, int | None]:
         parsed = urlsplit(url)
         port = parsed.port
         hostname = parsed.hostname
-    except (TypeError, ValueError, UnicodeError):
+    except (TypeError, ValueError):
         return "", "", None
     if port is None:
         port = 443 if parsed.scheme.casefold() == "https" else 80
@@ -263,7 +263,7 @@ class _StructuredParser(HTMLParser):
         try:
             url = urljoin(self.final_url, draft.href)
             parsed = urlsplit(url)
-        except (TypeError, ValueError, UnicodeError):
+        except (TypeError, ValueError):
             if draft.href.casefold().startswith(("http://", "https://", "//")):
                 self._omit_link()
             return
@@ -554,13 +554,61 @@ def _document_url(value: object, final_url: str) -> tuple[str | None, bool]:
         candidate = urljoin(final_url, value)
         parsed = urlsplit(candidate)
         _validated_port = parsed.port
-    except (TypeError, ValueError, UnicodeError):
+    except (TypeError, ValueError):
         return None, False
     if parsed.scheme.casefold() not in {"http", "https"} or not parsed.hostname:
         return None, False
     if len(candidate.encode("utf-8", "replace")) > MAX_FETCH_URL_BYTES:
         return None, True
     return candidate, False
+
+
+def _product_offers(node: dict[str, object]) -> dict[str, object]:
+    offers = node.get("offers")
+    if isinstance(offers, list):
+        offers = next((item for item in offers[:4] if isinstance(item, dict)), None)
+    return offers if isinstance(offers, dict) else {}
+
+
+def _document_fields(kind: str, node: dict[str, object]) -> list[tuple[str, object]]:
+    if kind == "article":
+        return [
+            ("name", node.get("headline") or node.get("name")),
+            ("description", node.get("description")),
+            ("author", node.get("author")),
+            ("date_published", node.get("datePublished")),
+            ("date_modified", node.get("dateModified")),
+            ("url", node.get("mainEntityOfPage") or node.get("url")),
+        ]
+    offers = _product_offers(node)
+    return [
+        ("name", node.get("name")),
+        ("description", node.get("description")),
+        ("sku", node.get("sku")),
+        ("brand", node.get("brand")),
+        ("availability", offers.get("availability")),
+        ("price", offers.get("price")),
+        ("price_currency", offers.get("priceCurrency")),
+        ("url", offers.get("url") or node.get("url")),
+    ]
+
+
+def _normalized_document_fields(
+    raw_fields: list[tuple[str, object]],
+    source: StructuredSourceReference,
+    final_url: str,
+) -> tuple[list[StructuredDocumentField], bool]:
+    fields = []
+    truncated = False
+    for name, value in raw_fields[:MAX_STRUCTURED_DOCUMENT_FIELDS]:
+        if name == "url":
+            normalized, field_truncated = _document_url(value, final_url)
+        else:
+            normalized, field_truncated = _document_text(value)
+        truncated = truncated or field_truncated
+        if normalized is not None:
+            fields.append(StructuredDocumentField(name=name, value=normalized, source=source))
+    return fields, truncated
 
 
 def _structured_document(
@@ -571,43 +619,11 @@ def _structured_document(
     kind = _document_kind(node.get("@type"))
     if kind is None:
         return None, False
-    raw_fields: list[tuple[str, object]] = []
-    if kind == "article":
-        raw_fields = [
-            ("name", node.get("headline") or node.get("name")),
-            ("description", node.get("description")),
-            ("author", node.get("author")),
-            ("date_published", node.get("datePublished")),
-            ("date_modified", node.get("dateModified")),
-            ("url", node.get("mainEntityOfPage") or node.get("url")),
-        ]
-    else:
-        offers = node.get("offers")
-        if isinstance(offers, list):
-            offers = next((item for item in offers[:4] if isinstance(item, dict)), None)
-        if not isinstance(offers, dict):
-            offers = {}
-        raw_fields = [
-            ("name", node.get("name")),
-            ("description", node.get("description")),
-            ("sku", node.get("sku")),
-            ("brand", node.get("brand")),
-            ("availability", offers.get("availability")),
-            ("price", offers.get("price")),
-            ("price_currency", offers.get("priceCurrency")),
-            ("url", offers.get("url") or node.get("url")),
-        ]
-    fields = []
-    truncated = False
-    for name, value in raw_fields[:MAX_STRUCTURED_DOCUMENT_FIELDS]:
-        normalized, field_truncated = (
-            _document_url(value, final_url)
-            if name == "url"
-            else _document_text(value)
-        )
-        truncated = truncated or field_truncated
-        if normalized is not None:
-            fields.append(StructuredDocumentField(name=name, value=normalized, source=source))
+    fields, truncated = _normalized_document_fields(
+        _document_fields(kind, node),
+        source,
+        final_url,
+    )
     if not fields:
         return None, truncated
     return StructuredDocument(kind=kind, fields=fields, source=source), truncated
@@ -623,19 +639,18 @@ def _source_prefix(source_html: str) -> tuple[str, int, str]:
     return prefix, len(encoded) - retained, digest
 
 
-def extract_structured(
-    source_html: str,
+def _parsed_structured_source(
+    source: str,
     final_url: str,
-    cleaned_markdown: str,
-    formats: list[StructuredFormat] | tuple[StructuredFormat, ...],
-) -> list[StructuredExtraction]:
-    source, omitted_source_bytes, source_digest = _source_prefix(source_html)
-    identity = build_document_identity(final_url, cleaned_markdown)
+    document_id: str,
+    markdown_sha256: str,
+    source_digest: str,
+) -> tuple[_StructuredParser, bool]:
     parser = _StructuredParser(
         source,
-        str(identity.final_url),
-        identity.document_id,
-        identity.cleaned_markdown_sha256,
+        final_url,
+        document_id,
+        markdown_sha256,
         source_digest,
     )
     malformed = False
@@ -645,62 +660,113 @@ def extract_structured(
     except Exception:
         malformed = True
     parser.finish()
-    json_ld_parser = _JsonLdParser(
+    return parser, malformed
+
+
+def _parsed_json_ld_source(
+    source: str,
+    final_url: str,
+    document_id: str,
+    markdown_sha256: str,
+    source_digest: str,
+    enabled: bool,
+) -> _JsonLdParser:
+    parser = _JsonLdParser(
+        source,
+        final_url,
+        document_id,
+        markdown_sha256,
+        source_digest,
+    )
+    if not enabled:
+        return parser
+    try:
+        parser.feed(source)
+        parser.close()
+    except Exception:
+        parser.truncated = True
+    parser.finish()
+    return parser
+
+
+def _collection_status(truncated: bool, populated: bool) -> str:
+    if truncated:
+        return "truncated"
+    return "ok" if populated else "empty"
+
+
+def _structured_result(
+    format_name: StructuredFormat,
+    parser: _StructuredParser,
+    json_ld_parser: _JsonLdParser,
+    document_id: str,
+    omitted_source_bytes: int,
+    malformed: bool,
+) -> StructuredExtraction:
+    if format_name == "links":
+        truncated = omitted_source_bytes > 0 or parser.links_truncated or malformed
+        return StructuredExtraction(
+            format="links",
+            status=_collection_status(truncated, bool(parser.links)),
+            document_id=document_id,
+            links=parser.links,
+            omitted_items=parser.omitted_links,
+            omitted_source_bytes=omitted_source_bytes,
+        )
+    if format_name == "tables":
+        truncated = omitted_source_bytes > 0 or parser.tables_truncated or malformed
+        return StructuredExtraction(
+            format="tables",
+            status=_collection_status(truncated, bool(parser.tables)),
+            document_id=document_id,
+            tables=parser.tables,
+            omitted_items=parser.omitted_tables,
+            omitted_source_bytes=omitted_source_bytes,
+        )
+    if format_name == "json_ld":
+        truncated = omitted_source_bytes > 0 or json_ld_parser.truncated
+        return StructuredExtraction(
+            format="json_ld",
+            status=_collection_status(truncated, bool(json_ld_parser.documents)),
+            document_id=document_id,
+            documents=json_ld_parser.documents,
+            omitted_items=json_ld_parser.omitted,
+            omitted_source_bytes=omitted_source_bytes,
+        )
+    return StructuredExtraction(format="json_schema", status="unsupported")
+
+
+def extract_structured(
+    source_html: str,
+    final_url: str,
+    cleaned_markdown: str,
+    formats: list[StructuredFormat] | tuple[StructuredFormat, ...],
+) -> list[StructuredExtraction]:
+    source, omitted_source_bytes, source_digest = _source_prefix(source_html)
+    identity = build_document_identity(final_url, cleaned_markdown)
+    parser, malformed = _parsed_structured_source(
         source,
         str(identity.final_url),
         identity.document_id,
         identity.cleaned_markdown_sha256,
         source_digest,
     )
-    if "json_ld" in formats:
-        try:
-            json_ld_parser.feed(source)
-            json_ld_parser.close()
-        except Exception:
-            json_ld_parser.truncated = True
-        json_ld_parser.finish()
-    results = []
-    for format_name in formats:
-        if format_name == "links":
-            truncated = omitted_source_bytes > 0 or parser.links_truncated or malformed
-            results.append(
-                StructuredExtraction(
-                    format="links",
-                    status="truncated" if truncated else "ok" if parser.links else "empty",
-                    document_id=identity.document_id,
-                    links=parser.links,
-                    omitted_items=parser.omitted_links,
-                    omitted_source_bytes=omitted_source_bytes,
-                )
-            )
-        elif format_name == "tables":
-            truncated = omitted_source_bytes > 0 or parser.tables_truncated or malformed
-            results.append(
-                StructuredExtraction(
-                    format="tables",
-                    status="truncated" if truncated else "ok" if parser.tables else "empty",
-                    document_id=identity.document_id,
-                    tables=parser.tables,
-                    omitted_items=parser.omitted_tables,
-                    omitted_source_bytes=omitted_source_bytes,
-                )
-            )
-        elif format_name == "json_ld":
-            truncated = omitted_source_bytes > 0 or json_ld_parser.truncated
-            results.append(
-                StructuredExtraction(
-                    format="json_ld",
-                    status=(
-                        "truncated"
-                        if truncated
-                        else "ok" if json_ld_parser.documents else "empty"
-                    ),
-                    document_id=identity.document_id,
-                    documents=json_ld_parser.documents,
-                    omitted_items=json_ld_parser.omitted,
-                    omitted_source_bytes=omitted_source_bytes,
-                )
-            )
-        else:
-            results.append(StructuredExtraction(format="json_schema", status="unsupported"))
-    return results
+    json_ld_parser = _parsed_json_ld_source(
+        source,
+        str(identity.final_url),
+        identity.document_id,
+        identity.cleaned_markdown_sha256,
+        source_digest,
+        "json_ld" in formats,
+    )
+    return [
+        _structured_result(
+            format_name,
+            parser,
+            json_ld_parser,
+            identity.document_id,
+            omitted_source_bytes,
+            malformed,
+        )
+        for format_name in formats
+    ]

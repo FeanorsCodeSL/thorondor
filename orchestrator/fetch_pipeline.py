@@ -4,6 +4,7 @@ import time
 from collections import Counter
 from dataclasses import replace
 from inspect import isawaitable
+from typing import cast
 from urllib.parse import urlsplit, urlunsplit
 
 from .diffing import bounded_diff
@@ -86,7 +87,7 @@ def _origin(url: str) -> str | None:
         ):
             host = f"{host}:{port}"
         return urlunsplit((parsed.scheme, host, "", "", ""))
-    except (TypeError, ValueError, UnicodeError):
+    except (TypeError, ValueError):
         return None
 
 
@@ -103,35 +104,46 @@ async def _cache_policy_allows(deps, url: str) -> bool:
             now = time.time()
             snapshot = deps.robots_cache.get(origin, now=now)
             if snapshot is None:
-                robots_url = f"{origin}/robots.txt"
-                if not await _is_safe(deps, robots_url):
-                    return False
-                fetched = await deps.extractor.fetch(
-                    [robots_url],
-                    frozenset({"markdown"}),
-                    False,
-                )
-                outcome = fetched[0] if fetched else None
-                status_code = outcome.status_code if outcome is not None else None
-                if outcome is not None and outcome.code == FetchOutcomeCode.CONTENT:
-                    status_code = status_code or 200
-                body = ""
-                if outcome is not None and outcome.page is not None:
-                    body = robots_body(
-                        outcome.page.markdown,
-                        outcome.page.raw_html or outcome.page.html,
-                        outcome.content_type or outcome.page.content_type,
-                    )
-                snapshot = RobotsSnapshot.from_http(
-                    origin=origin,
-                    user_agent=deps.crawler_robots_user_agent,
-                    status_code=status_code,
-                    body=body,
-                    fetched_at=now,
-                    max_bytes=deps.max_robots_bytes,
-                )
-                deps.robots_cache.put(snapshot)
+                snapshot = await _fetch_robots_snapshot(deps, origin, now)
+    if snapshot is None:
+        return False
     return snapshot.allows(url)
+
+
+async def _fetch_robots_snapshot(deps, origin: str, now: float) -> RobotsSnapshot | None:
+    robots_url = f"{origin}/robots.txt"
+    if not await _is_safe(deps, robots_url):
+        return None
+    fetched = await deps.extractor.fetch(
+        [robots_url],
+        frozenset({"markdown"}),
+        False,
+    )
+    outcome = fetched[0] if fetched else None
+    status_code = outcome.status_code if outcome is not None else None
+    if outcome is not None and outcome.code == FetchOutcomeCode.CONTENT:
+        status_code = status_code or 200
+    body = _robots_outcome_body(outcome)
+    snapshot = RobotsSnapshot.from_http(
+        origin=origin,
+        user_agent=deps.crawler_robots_user_agent,
+        status_code=status_code,
+        body=body,
+        fetched_at=now,
+        max_bytes=deps.max_robots_bytes,
+    )
+    deps.robots_cache.put(snapshot)
+    return snapshot
+
+
+def _robots_outcome_body(outcome: FetchStageOutcome | None) -> str:
+    if outcome is None or outcome.page is None:
+        return ""
+    return robots_body(
+        outcome.page.markdown,
+        outcome.page.raw_html or outcome.page.html,
+        outcome.content_type or outcome.page.content_type,
+    )
 
 
 def _materialize_fetch_result(
@@ -146,43 +158,17 @@ def _materialize_fetch_result(
     markdown = None
     raw_html = None
     source_html = (page.raw_html or page.html) if page is not None else None
-    structured = [
-        StructuredExtraction(format=format_name, status="unsupported")
-        for format_name in structured_formats
-    ]
-    if code == FetchOutcomeCode.CONTENT and page is not None:
-        try:
-            cleaned = cleaner.clean(page).page
-            markdown = cleaned.markdown.strip() or page.markdown.strip()
-            if not markdown:
-                code = FetchOutcomeCode.EXTRACTION_EMPTY
-            else:
-                if "raw_html" in capabilities:
-                    raw_html = page.raw_html or page.html
-                if structured_formats and source_html:
-                    structured = extract_structured(
-                        source_html,
-                        final_url or outcome.requested_url,
-                        markdown,
-                        structured_formats,
-                    )
-        except Exception:
-            code = FetchOutcomeCode.LOCAL_PROCESSING_FAILURE
-            markdown = None
-            raw_html = None
-            structured = [
-                StructuredExtraction(format=format_name, status="unsupported")
-                for format_name in structured_formats
-            ]
-    headers = {}
-    if outcome.content_type:
-        headers["content-type"] = outcome.content_type
-    if outcome.etag:
-        headers["etag"] = outcome.etag
-    if outcome.last_modified:
-        headers["last-modified"] = outcome.last_modified
-    if outcome.retry_after:
-        headers["retry-after"] = outcome.retry_after
+    code, markdown, raw_html, structured = _content_payload(
+        outcome,
+        page,
+        code,
+        final_url,
+        source_html,
+        capabilities,
+        cleaner,
+        structured_formats,
+    )
+    headers = _response_headers(outcome)
     result = FetchResult(
         requested_url=outcome.requested_url,
         final_url=final_url,
@@ -202,6 +188,59 @@ def _materialize_fetch_result(
         response_headers=headers,
     )
     return result, markdown, source_html
+
+
+def _unsupported_structured(
+    structured_formats: tuple[StructuredFormat, ...],
+) -> list[StructuredExtraction]:
+    return [
+        StructuredExtraction(format=format_name, status="unsupported")
+        for format_name in structured_formats
+    ]
+
+
+def _content_payload(
+    outcome: FetchStageOutcome,
+    page,
+    code: FetchOutcomeCode,
+    final_url: str | None,
+    source_html: str | None,
+    capabilities: frozenset[str],
+    cleaner,
+    structured_formats: tuple[StructuredFormat, ...],
+) -> tuple[FetchOutcomeCode, str | None, str | None, list[StructuredExtraction]]:
+    structured = _unsupported_structured(structured_formats)
+    if code != FetchOutcomeCode.CONTENT or page is None:
+        return code, None, None, structured
+    try:
+        cleaned = cleaner.clean(page).page
+        markdown = cleaned.markdown.strip() or page.markdown.strip()
+        if not markdown:
+            return FetchOutcomeCode.EXTRACTION_EMPTY, None, None, structured
+        raw_html = page.raw_html or page.html if "raw_html" in capabilities else None
+        if structured_formats and source_html:
+            structured = extract_structured(
+                source_html,
+                final_url or outcome.requested_url,
+                markdown,
+                structured_formats,
+            )
+        return code, markdown, raw_html, structured
+    except Exception:
+        return FetchOutcomeCode.LOCAL_PROCESSING_FAILURE, None, None, structured
+
+
+def _response_headers(outcome: FetchStageOutcome) -> dict[str, str]:
+    headers = {}
+    if outcome.content_type:
+        headers["content-type"] = outcome.content_type
+    if outcome.etag:
+        headers["etag"] = outcome.etag
+    if outcome.last_modified:
+        headers["last-modified"] = outcome.last_modified
+    if outcome.retry_after:
+        headers["retry-after"] = outcome.retry_after
+    return headers
 
 
 def wire_fetch_result(
@@ -240,6 +279,126 @@ def _evidence_supports_value(value: object, excerpt: str) -> bool:
     )
 
 
+def _replace_schema_extraction(
+    result: FetchResult, extraction: StructuredExtraction
+) -> FetchResult:
+    result.structured = [
+        extraction if item.format == "json_schema" else item
+        for item in result.structured
+    ]
+    return result
+
+
+def _model_usage(model_result) -> StructuredModelUsage:
+    return StructuredModelUsage(
+        prompt_bytes=model_result.prompt_bytes,
+        output_bytes=model_result.output_bytes,
+        input_tokens=model_result.input_tokens,
+        output_tokens=model_result.output_tokens,
+    )
+
+
+def _model_failure_extraction(
+    document_id: str,
+    reason: str,
+    usage: StructuredModelUsage,
+) -> StructuredExtraction:
+    unavailable = reason == "model_unavailable"
+    return StructuredExtraction(
+        format="json_schema",
+        status="unsupported" if unavailable else "model_failed",
+        document_id=None if unavailable else document_id,
+        validation_failures=[StructuredValidationFailure(path="", code=reason)],
+        model_usage=usage,
+    )
+
+
+def _schema_field(
+    path: str,
+    value: object,
+    evidence: dict[str, str],
+    markdown: str,
+    identity,
+) -> tuple[StructuredSchemaField | None, StructuredValidationFailure | None]:
+    if len(path) > MAX_EXTRACTION_PATH_CHARS:
+        return None, StructuredValidationFailure(
+            path=path[:MAX_EXTRACTION_PATH_CHARS],
+            code="field_limit_exceeded",
+        )
+    if value is None or not isinstance(value, (str, int, float, bool)):
+        return None, None
+    if isinstance(value, float) and not math.isfinite(value):
+        return None, None
+    excerpt = evidence.get(path)
+    if not excerpt:
+        return None, StructuredValidationFailure(path=path, code="evidence_missing")
+    start = markdown.find(excerpt)
+    if start < 0:
+        return None, StructuredValidationFailure(path=path, code="evidence_not_found")
+    if not _evidence_supports_value(value, excerpt):
+        return None, StructuredValidationFailure(path=path, code="evidence_value_mismatch")
+    from .url_identity import evidence_id_for
+
+    end = start + len(excerpt)
+    source = StructuredMarkdownReference(
+        document_id=identity.document_id,
+        cleaned_markdown_sha256=identity.cleaned_markdown_sha256,
+        final_url=str(identity.final_url),
+        start_index=start,
+        end_index=end,
+        evidence_id=evidence_id_for(
+            identity.final_url,
+            identity.cleaned_markdown_sha256,
+            start,
+            end,
+        ),
+    )
+    return StructuredSchemaField(path=path, value=value, source=source), None
+
+
+def _validated_schema_extraction(
+    extraction_schema: dict[str, object],
+    model_result,
+    markdown: str,
+    identity,
+    usage: StructuredModelUsage,
+) -> StructuredExtraction:
+    data = model_result.data or {}
+    failures = [
+        StructuredValidationFailure(path=path[:MAX_EXTRACTION_PATH_CHARS], code=code)
+        for path, code in validate_extracted_value(extraction_schema, data)
+    ]
+    fields = []
+    scalar_values = scalar_fields(data)
+    if len(scalar_values) > MAX_EXTRACTION_FIELDS:
+        failures.insert(
+            0,
+            StructuredValidationFailure(path="", code="field_limit_exceeded")
+        )
+    for path, value in scalar_values[:MAX_EXTRACTION_FIELDS]:
+        field, failure = _schema_field(
+            path,
+            value,
+            model_result.evidence,
+            markdown,
+            identity,
+        )
+        if failure is not None:
+            failures.append(failure)
+        if field is not None:
+            fields.append(field)
+    validation_failed = bool(failures)
+    return StructuredExtraction(
+        format="json_schema",
+        status="validation_failed" if validation_failed else "ok",
+        document_id=identity.document_id,
+        data=None if validation_failed else data,
+        fields=[] if validation_failed else fields,
+        validation_failures=failures[:MAX_EXTRACTION_VALIDATION_FAILURES],
+        model_usage=usage,
+    )
+
+
 async def apply_schema_extraction(
     result: FetchResult,
     markdown: str | None,
@@ -255,121 +414,37 @@ async def apply_schema_extraction(
         or not markdown
     ):
         return result
-    from .url_identity import build_document_identity, evidence_id_for
+    from .url_identity import build_document_identity
 
     final_url = result.final_url or result.requested_url
     identity = build_document_identity(final_url, markdown)
     try:
         model_result = await deps.structured_extractor.extract(markdown, extraction_schema)
     except Exception:
-        extraction = StructuredExtraction(
-            format="json_schema",
-            status="model_failed",
-            document_id=identity.document_id,
-            validation_failures=[
-                StructuredValidationFailure(path="", code="model_error")
-            ],
-            model_usage=StructuredModelUsage(),
+        return _replace_schema_extraction(
+            result,
+            _model_failure_extraction(
+                identity.document_id,
+                "model_error",
+                StructuredModelUsage(),
+            ),
         )
-        result.structured = [
-            extraction if item.format == "json_schema" else item
-            for item in result.structured
-        ]
-        return result
-    usage = StructuredModelUsage(
-        prompt_bytes=model_result.prompt_bytes,
-        output_bytes=model_result.output_bytes,
-        input_tokens=model_result.input_tokens,
-        output_tokens=model_result.output_tokens,
-    )
+    usage = _model_usage(model_result)
     if model_result.reason is not None:
-        status = "unsupported" if model_result.reason == "model_unavailable" else "model_failed"
-        extraction = StructuredExtraction(
-            format="json_schema",
-            status=status,
-            document_id=None if status == "unsupported" else identity.document_id,
-            validation_failures=[
-                StructuredValidationFailure(path="", code=model_result.reason)
-            ],
-            model_usage=usage,
+        extraction = _model_failure_extraction(
+            identity.document_id,
+            model_result.reason,
+            usage,
         )
     else:
-        data = model_result.data or {}
-        failures = [
-            StructuredValidationFailure(path=path[:MAX_EXTRACTION_PATH_CHARS], code=code)
-            for path, code in validate_extracted_value(extraction_schema, data)
-        ]
-        fields = []
-        scalar_values = scalar_fields(data)
-        if len(scalar_values) > MAX_EXTRACTION_FIELDS:
-            failures.insert(
-                0,
-                StructuredValidationFailure(path="", code="field_limit_exceeded")
-            )
-        for path, value in scalar_values[:MAX_EXTRACTION_FIELDS]:
-            if len(path) > MAX_EXTRACTION_PATH_CHARS:
-                failures.append(
-                    StructuredValidationFailure(
-                        path=path[:MAX_EXTRACTION_PATH_CHARS],
-                        code="field_limit_exceeded",
-                    )
-                )
-                continue
-            if value is None or not isinstance(value, (str, int, float, bool)):
-                continue
-            if isinstance(value, float) and not math.isfinite(value):
-                continue
-            excerpt = model_result.evidence.get(path)
-            source = None
-            if not excerpt:
-                failures.append(
-                    StructuredValidationFailure(path=path, code="evidence_missing")
-                )
-            else:
-                start = markdown.find(excerpt)
-                if start < 0:
-                    failures.append(
-                        StructuredValidationFailure(path=path, code="evidence_not_found")
-                    )
-                elif not _evidence_supports_value(value, excerpt):
-                    failures.append(
-                        StructuredValidationFailure(
-                            path=path,
-                            code="evidence_value_mismatch",
-                        )
-                    )
-                else:
-                    end = start + len(excerpt)
-                    source = StructuredMarkdownReference(
-                        document_id=identity.document_id,
-                        cleaned_markdown_sha256=identity.cleaned_markdown_sha256,
-                        final_url=str(identity.final_url),
-                        start_index=start,
-                        end_index=end,
-                        evidence_id=evidence_id_for(
-                            identity.final_url,
-                            identity.cleaned_markdown_sha256,
-                            start,
-                            end,
-                        ),
-                    )
-            if source is not None:
-                fields.append(StructuredSchemaField(path=path, value=value, source=source))
-        validation_failed = bool(failures)
-        extraction = StructuredExtraction(
-            format="json_schema",
-            status="validation_failed" if validation_failed else "ok",
-            document_id=identity.document_id,
-            data=None if validation_failed else data,
-            fields=[] if validation_failed else fields,
-            validation_failures=failures[:MAX_EXTRACTION_VALIDATION_FAILURES],
-            model_usage=usage,
+        extraction = _validated_schema_extraction(
+            extraction_schema,
+            model_result,
+            markdown,
+            identity,
+            usage,
         )
-    result.structured = [
-        extraction if item.format == "json_schema" else item
-        for item in result.structured
-    ]
-    return result
+    return _replace_schema_extraction(result, extraction)
 
 
 def _trim_structured_extraction(
@@ -574,7 +649,7 @@ def _project_snapshot(
     now: float,
 ) -> StoredTargetSnapshot:
     if request.watch is None:
-        return replace(snapshot, updated_at=now)
+        return cast(StoredTargetSnapshot, replace(snapshot, updated_at=now))
     attributes = {
         state.attribute.casefold(): snapshot.attributes.get(state.attribute.casefold(), "")
         for state in (request.watch.expected, request.watch.desired)
@@ -612,11 +687,14 @@ def _stored_target_snapshot(
     previous: StoredTargetSnapshot | None,
 ) -> StoredTargetSnapshot:
     baseline = current if current.resolution == "found" else previous
-    return replace(
-        current,
-        baseline_text=baseline.text if baseline is not None else None,
-        baseline_attributes=baseline.attributes if baseline is not None else None,
-        baseline_updated_at=baseline.updated_at if baseline is not None else None,
+    return cast(
+        StoredTargetSnapshot,
+        replace(
+            current,
+            baseline_text=baseline.text if baseline is not None else None,
+            baseline_attributes=baseline.attributes if baseline is not None else None,
+            baseline_updated_at=baseline.updated_at if baseline is not None else None,
+        ),
     )
 
 
@@ -674,6 +752,138 @@ async def _conditionally_revalidate(
     )
 
 
+def _apply_change(
+    result: FetchResult,
+    previous: PageCacheRecord | None,
+    current_hash: str,
+    current_markdown: str | None,
+    deps,
+) -> None:
+    result.change = _page_change(previous, current_hash, result.status_code)
+    if result.change.state == "same":
+        return
+    result.diff = bounded_diff(
+        previous.markdown if previous is not None else None,
+        current_markdown,
+        deps.page_diff_max_input_lines,
+        deps.page_diff_max_operations,
+        deps.page_diff_max_output_lines,
+    )
+
+
+async def _coalesced_result(
+    request: FetchRequest,
+    deps,
+    latest: PageCacheRecord,
+    baseline: PageCacheRecord | None,
+    now: float,
+    url: str,
+    cache_key: str,
+) -> FetchResult:
+    result = _record_to_result(
+        latest,
+        "revalidated",
+        "coalesced",
+        now,
+        url,
+    )
+    _apply_change(result, baseline, latest.source_hash, latest.markdown, deps)
+    result.watch = await _cached_watch_result(request, deps, cache_key)
+    return result
+
+
+async def _not_modified_result(
+    request: FetchRequest,
+    deps,
+    previous: PageCacheRecord,
+    now: float,
+    url: str,
+    cache_key: str,
+) -> FetchResult:
+    refreshed = cast(
+        PageCacheRecord,
+        replace(
+            previous,
+            fetched_at=now,
+            expires_at=now + deps.page_cache_ttl_s,
+        ),
+    )
+    await deps.page_cache.put(refreshed)
+    result = _record_to_result(
+        refreshed,
+        "revalidated",
+        "not_modified",
+        now,
+        url,
+    )
+    result.watch = await _cached_watch_result(request, deps, cache_key)
+    return result
+
+
+def _refreshed_record(
+    result: FetchResult,
+    markdown: str | None,
+    cache_key: str,
+    url_identity: str,
+    now: float,
+    deps,
+) -> PageCacheRecord | None:
+    if not _cacheable(result):
+        return None
+    return _build_record(
+        result,
+        markdown,
+        cache_key,
+        url_identity,
+        getattr(deps.markdown_cleaner, "cleaner_version", "unknown"),
+        now,
+        deps,
+    )
+
+
+def _watch_snapshot(
+    result: FetchResult,
+    source_html: str | None,
+    request: FetchRequest,
+    now: float,
+) -> StoredTargetSnapshot:
+    if result.outcome == FetchOutcomeCode.CONTENT.value:
+        return _project_snapshot(
+            resolve_target(source_html, request.watch.target),
+            request,
+            now,
+        )
+    if _is_tombstone(result):
+        return StoredTargetSnapshot("missing", None, {}, now)
+    return StoredTargetSnapshot("unsupported", None, {}, now)
+
+
+async def _persist_refresh(
+    request: FetchRequest,
+    deps,
+    cache_key: str,
+    result: FetchResult,
+    record: PageCacheRecord | None,
+    source_html: str | None,
+    now: float,
+) -> None:
+    if request.watch is None:
+        if record is not None:
+            await deps.page_cache.put(record)
+        return
+    current = _watch_snapshot(result, source_html, request, now)
+    watch_key = _watch_key(request)
+    stored_previous = await deps.page_cache.get_target(cache_key, watch_key)
+    previous_target = _target_baseline(stored_previous)
+    result.watch = evaluate_watch(request.watch, previous_target, current)
+    if record is not None:
+        await deps.page_cache.put_with_target(
+            record,
+            watch_key,
+            _stored_target_snapshot(current, previous_target),
+        )
+
+
 async def _refresh_one(
     request: FetchRequest,
     url: str,
@@ -690,43 +900,28 @@ async def _refresh_one(
         if latest is not None and (
             baseline is None or latest.fetched_at > baseline.fetched_at
         ):
-            result = _record_to_result(
+            return await _coalesced_result(
+                request,
+                deps,
                 latest,
-                "revalidated",
-                "coalesced",
+                baseline,
                 now,
                 url,
+                cache_key,
             )
-            result.change = _page_change(baseline, latest.source_hash, latest.status_code)
-            result.diff = bounded_diff(
-                baseline.markdown if baseline else None,
-                latest.markdown,
-                deps.page_diff_max_input_lines,
-                deps.page_diff_max_operations,
-                deps.page_diff_max_output_lines,
-            ) if result.change.state != "same" else None
-            result.watch = await _cached_watch_result(request, deps, cache_key)
-            return result
         previous = latest or baseline
         outcome = None
         if previous is not None:
             outcome = await _conditionally_revalidate(url, capabilities, previous, deps)
-        if outcome is not None and outcome.status_code == 304:
-            refreshed = replace(
+        if previous is not None and outcome is not None and outcome.status_code == 304:
+            return await _not_modified_result(
+                request,
+                deps,
                 previous,
-                fetched_at=now,
-                expires_at=now + deps.page_cache_ttl_s,
-            )
-            await deps.page_cache.put(refreshed)
-            result = _record_to_result(
-                refreshed,
-                "revalidated",
-                "not_modified",
                 now,
                 url,
+                cache_key,
             )
-            result.watch = await _cached_watch_result(request, deps, cache_key)
-            return result
         if outcome is None:
             outcome = await _fetch_outcome(url, capabilities, deps)
         result, markdown, source_html = _materialize_fetch_result(
@@ -739,50 +934,24 @@ async def _refresh_one(
             reason="miss" if previous is None else "full_refetch",
         )
         if _cacheable(result):
-            current_hash = source_hash(markdown)
-            result.change = _page_change(previous, current_hash, result.status_code)
-            if result.change.state != "same":
-                result.diff = bounded_diff(
-                    previous.markdown if previous else None,
-                    markdown,
-                    deps.page_diff_max_input_lines,
-                    deps.page_diff_max_operations,
-                    deps.page_diff_max_output_lines,
-                )
-        record = None
-        if _cacheable(result):
-            record = _build_record(
-                result,
-                markdown,
-                cache_key,
-                url_identity,
-                getattr(deps.markdown_cleaner, "cleaner_version", "unknown"),
-                now,
-                deps,
-            )
-        if request.watch is not None:
-            if result.outcome == FetchOutcomeCode.CONTENT.value:
-                current = _project_snapshot(
-                    resolve_target(source_html, request.watch.target),
-                    request,
-                    now,
-                )
-            elif _is_tombstone(result):
-                current = StoredTargetSnapshot("missing", None, {}, now)
-            else:
-                current = StoredTargetSnapshot("unsupported", None, {}, now)
-            watch_key = _watch_key(request)
-            stored_previous = await deps.page_cache.get_target(cache_key, watch_key)
-            previous_target = _target_baseline(stored_previous)
-            result.watch = evaluate_watch(request.watch, previous_target, current)
-            if record is not None:
-                await deps.page_cache.put_with_target(
-                    record,
-                    watch_key,
-                    _stored_target_snapshot(current, previous_target),
-                )
-        elif record is not None:
-            await deps.page_cache.put(record)
+            _apply_change(result, previous, source_hash(markdown), markdown, deps)
+        record = _refreshed_record(
+            result,
+            markdown,
+            cache_key,
+            url_identity,
+            now,
+            deps,
+        )
+        await _persist_refresh(
+            request,
+            deps,
+            cache_key,
+            result,
+            record,
+            source_html,
+            now,
+        )
         return result
 
 

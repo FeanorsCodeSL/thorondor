@@ -910,8 +910,11 @@ def test_corrupt_or_incompatible_job_database_is_quarantined(tmp_path):
         assert list(tmp_path.glob("corrupt.sqlite3.corrupt-*"))
 
         incompatible = tmp_path / "incompatible.sqlite3"
-        with sqlite3.connect(incompatible) as connection:
+        connection = sqlite3.connect(incompatible)
+        try:
             connection.execute("CREATE TABLE crawl_jobs (unexpected TEXT)")
+        finally:
+            connection.close()
         second = SqliteCrawlJobStore(
             str(incompatible),
             retention_s=60,

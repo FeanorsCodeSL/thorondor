@@ -57,7 +57,10 @@ def _origin_parts(url: str) -> tuple[str, str, int | None]:
     scheme = parsed.scheme.casefold()
     port = parsed.port
     if port is None:
-        port = 80 if scheme == "http" else 443 if scheme == "https" else None
+        if scheme == "http":
+            port = 80
+        elif scheme == "https":
+            port = 443
     return scheme, canonical_host(parsed.hostname), port
 
 
@@ -111,7 +114,7 @@ class CrawlPolicy:
                 return None
             dedup_key_for(normalized)
             return normalized
-        except (TypeError, ValueError, UnicodeError):
+        except (TypeError, ValueError):
             return None
 
     def rejection_reason(self, url: str, depth: int) -> str | None:
@@ -121,21 +124,25 @@ class CrawlPolicy:
             candidate = urlsplit(url)
             seed_scheme, seed_host, seed_port = _origin_parts(self.effective_url)
             candidate_scheme, candidate_host, candidate_port = _origin_parts(url)
-        except (TypeError, ValueError, UnicodeError):
+        except (TypeError, ValueError):
             return "invalid_url"
-        same_origin = (
+        origin = (
             candidate_scheme,
             candidate_host,
             candidate_port,
-        ) == (seed_scheme, seed_host, seed_port)
-        accepted_subdomain = (
+        )
+        seed_origin = (seed_scheme, seed_host, seed_port)
+        accepted_origin = origin == seed_origin or (
             self.include_subdomains
             and candidate_scheme == seed_scheme
             and candidate_port == seed_port
             and candidate_host.endswith(f".{seed_host}")
         )
-        if not same_origin and not accepted_subdomain:
+        if not accepted_origin:
             return "outside_origin"
+        return self._path_rejection(candidate)
+
+    def _path_rejection(self, candidate) -> str | None:
         path = candidate.path or "/"
         if not self.include_parent_paths:
             prefix = _seed_path_prefix(self.effective_url)
@@ -209,13 +216,7 @@ class CrawlFrontier:
         key = str(dedup_key_for(normalized))
         existing = self._by_key.get(key)
         if existing is not None:
-            if source not in existing.sources:
-                existing.sources.append(source)
-            if existing.modified_at is None and modified_at is not None:
-                existing.modified_at = modified_at
-            if existing.priority is None and priority is not None:
-                existing.priority = priority
-            existing.depth = min(existing.depth, depth)
+            self._merge_discovery(existing, source, depth, modified_at, priority)
             return existing
         if len(self.records) >= self.policy.max_discovered_urls:
             self.omitted_due_to_limit += 1
@@ -230,11 +231,7 @@ class CrawlFrontier:
         )
         self.records.append(record)
         self._by_key[key] = record
-        reason = self.policy.rejection_reason(normalized, depth)
-        if reason is None and not safe:
-            reason = "unsafe_target"
-        if reason is None and not robots_allowed:
-            reason = "robots_refused"
+        reason = self._admission_rejection(normalized, depth, safe, robots_allowed)
         if reason is not None:
             record.reason = reason
             record.states.append("filtered")
@@ -242,6 +239,36 @@ class CrawlFrontier:
         record.states.extend(("admitted", "queued"))
         self._queue.append(record)
         return record
+
+    @staticmethod
+    def _merge_discovery(
+        existing: FrontierRecord,
+        source: CrawlSource,
+        depth: int,
+        modified_at: str | None,
+        priority: float | None,
+    ) -> None:
+        if source not in existing.sources:
+            existing.sources.append(source)
+        if existing.modified_at is None and modified_at is not None:
+            existing.modified_at = modified_at
+        if existing.priority is None and priority is not None:
+            existing.priority = priority
+        existing.depth = min(existing.depth, depth)
+
+    def _admission_rejection(
+        self,
+        url: str,
+        depth: int,
+        safe: bool,
+        robots_allowed: bool,
+    ) -> str | None:
+        reason = self.policy.rejection_reason(url, depth)
+        if reason is None and not safe:
+            return "unsafe_target"
+        if reason is None and not robots_allowed:
+            return "robots_refused"
+        return reason
 
     def _record_filtered(
         self,
@@ -280,36 +307,51 @@ class CrawlFrontier:
         robots_allowed: bool,
     ) -> FrontierRecord | None:
         normalized = self.policy.normalize(final_url)
-        reason = (
-            self.policy.rejection_reason(normalized, record.depth)
-            if normalized
-            else "invalid_url"
-        )
-        if reason is None and not safe:
-            reason = "unsafe_redirect"
-        if reason is None and not robots_allowed:
-            reason = "robots_refused"
+        reason = self._redirect_rejection(normalized, record.depth, safe, robots_allowed)
         if reason is not None:
             self.mark_failed(record, reason)
             return None
         key = str(dedup_key_for(normalized))
         existing = self._by_key.get(key)
         if existing is not None and existing is not record:
-            for source in record.sources:
-                if source not in existing.sources:
-                    existing.sources.append(source)
-            existing.depth = min(existing.depth, record.depth)
-            self.mark_failed(record, "duplicate_final_url")
-            if existing.states[-1] == "queued":
-                self.mark_fetched(existing)
-                return existing
-            return None
+            return self._merge_final_record(record, existing)
         old_key = str(dedup_key_for(record.url))
         if self._by_key.get(old_key) is record:
             self._by_key.pop(old_key)
         record.url = normalized
         self._by_key[key] = record
         return record
+
+    def _redirect_rejection(
+        self,
+        normalized: str | None,
+        depth: int,
+        safe: bool,
+        robots_allowed: bool,
+    ) -> str | None:
+        if normalized is None:
+            return "invalid_url"
+        reason = self.policy.rejection_reason(normalized, depth)
+        if reason is None and not safe:
+            return "unsafe_redirect"
+        if reason is None and not robots_allowed:
+            return "robots_refused"
+        return reason
+
+    def _merge_final_record(
+        self,
+        record: FrontierRecord,
+        existing: FrontierRecord,
+    ) -> FrontierRecord | None:
+        for source in record.sources:
+            if source not in existing.sources:
+                existing.sources.append(source)
+        existing.depth = min(existing.depth, record.depth)
+        self.mark_failed(record, "duplicate_final_url")
+        if existing.states[-1] != "queued":
+            return None
+        self.mark_fetched(existing)
+        return existing
 
     def mark_fetched(self, record: FrontierRecord) -> None:
         if record.states[-1] not in {"fetched", "filtered", "failed", "cancelled"}:

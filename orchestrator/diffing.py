@@ -15,6 +15,33 @@ def _line_sections(lines: list[str]) -> list[str | None]:
     return sections
 
 
+def _collect_changes(
+    old_lines: list[str],
+    new_lines: list[str],
+) -> tuple[list[str], list[str], list[str]]:
+    removed: list[str] = []
+    added: list[str] = []
+    changed_sections: list[str] = []
+    old_sections = _line_sections(old_lines)
+    new_sections = _line_sections(new_lines)
+    matcher = difflib.SequenceMatcher(a=old_lines, b=new_lines, autojunk=False)
+    for tag, old_start, old_end, new_start, new_end in matcher.get_opcodes():
+        if tag in {"delete", "replace"}:
+            removed.extend(old_lines[old_start:old_end])
+        if tag in {"insert", "replace"}:
+            added.extend(new_lines[new_start:new_end])
+        if tag == "equal":
+            continue
+        sections = [
+            *old_sections[old_start:old_end],
+            *new_sections[new_start:new_end],
+        ]
+        for section in sections:
+            if section and section not in changed_sections:
+                changed_sections.append(section)
+    return removed, added, changed_sections
+
+
 def bounded_diff(
     previous: str | None,
     current: str | None,
@@ -36,24 +63,7 @@ def bounded_diff(
             previous_lines=len(old_lines),
             current_lines=len(new_lines),
         )
-    removed: list[str] = []
-    added: list[str] = []
-    changed_sections: list[str] = []
-    old_sections = _line_sections(old_lines)
-    new_sections = _line_sections(new_lines)
-    matcher = difflib.SequenceMatcher(a=old_lines, b=new_lines, autojunk=False)
-    for tag, old_start, old_end, new_start, new_end in matcher.get_opcodes():
-        if tag in {"delete", "replace"}:
-            removed.extend(old_lines[old_start:old_end])
-        if tag in {"insert", "replace"}:
-            added.extend(new_lines[new_start:new_end])
-        if tag != "equal":
-            for section in [
-                *old_sections[old_start:old_end],
-                *new_sections[new_start:new_end],
-            ]:
-                if section and section not in changed_sections:
-                    changed_sections.append(section)
+    removed, added, changed_sections = _collect_changes(old_lines, new_lines)
     truncated = (
         len(removed) > max_output_lines
         or len(added) > max_output_lines

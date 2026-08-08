@@ -55,7 +55,7 @@ def _json_size(value: object) -> int | None:
                 "utf-8"
             )
         )
-    except (TypeError, ValueError, UnicodeError):
+    except (TypeError, ValueError):
         return None
 
 
@@ -398,7 +398,7 @@ class Crawl4aiExtractor:
                         body.extend(chunk)
                     try:
                         payload = json.loads(bytes(body))
-                    except (ValueError, UnicodeError):
+                    except ValueError:
                         return self._failure_outcome(
                             source_url,
                             FetchOutcomeCode.MALFORMED_UPSTREAM_RESPONSE,
@@ -527,6 +527,39 @@ class Crawl4aiExtractor:
             return None
         return FetchOutcomeCode.UNSUPPORTED_CONTENT
 
+    async def _terminal_outcome_code(
+        self,
+        source_url: str,
+        final_url: str,
+        status_code: int | None,
+        item: dict,
+        raw_metadata: dict,
+        markdown: str,
+        html: str | None,
+        content_type: str | None,
+        capabilities: frozenset[str],
+    ) -> FetchOutcomeCode | None:
+        if await self._has_unsafe_final_url(source_url, final_url):
+            return FetchOutcomeCode.UNSAFE_REDIRECT
+        if status_code == 429:
+            return FetchOutcomeCode.RATE_LIMITED
+        if self._structured_robots_denial(item, raw_metadata):
+            return FetchOutcomeCode.ROBOTS_REFUSED
+        if self._is_challenge(markdown, html):
+            return FetchOutcomeCode.CHALLENGE
+        if item.get("success") is False:
+            return FetchOutcomeCode.UPSTREAM_FAILURE
+        return self._unsupported_content_code(content_type, capabilities)
+
+    @staticmethod
+    def _content_size(markdown: str, html: str | None, raw_html: str | None) -> int:
+        content_bytes = len(markdown.encode("utf-8", "replace"))
+        if html:
+            content_bytes += len(html.encode("utf-8", "replace"))
+        if raw_html and raw_html != html:
+            content_bytes += len(raw_html.encode("utf-8", "replace"))
+        return content_bytes
+
     async def _outcome_from_payload(
         self,
         source_url: str,
@@ -577,25 +610,20 @@ class Crawl4aiExtractor:
             "last_modified": last_modified,
             "retry_after": retry_after,
         }
-        if await self._has_unsafe_final_url(source_url, final_url):
-            return FetchStageOutcome(code=FetchOutcomeCode.UNSAFE_REDIRECT, **base)
-        if status_code == 429:
-            return FetchStageOutcome(code=FetchOutcomeCode.RATE_LIMITED, **base)
-        if self._structured_robots_denial(item, raw_metadata):
-            return FetchStageOutcome(code=FetchOutcomeCode.ROBOTS_REFUSED, **base)
-        if self._is_challenge(markdown, html):
-            return FetchStageOutcome(code=FetchOutcomeCode.CHALLENGE, **base)
-        if item.get("success") is False:
-            return FetchStageOutcome(code=FetchOutcomeCode.UPSTREAM_FAILURE, **base)
-        unsupported = self._unsupported_content_code(content_type, capabilities)
-        if unsupported is not None:
-            return FetchStageOutcome(code=unsupported, **base)
-        content_bytes = len(markdown.encode("utf-8", "replace"))
-        if html:
-            content_bytes += len(html.encode("utf-8", "replace"))
-        if raw_html and raw_html != html:
-            content_bytes += len(raw_html.encode("utf-8", "replace"))
-        if content_bytes > self.max_content_bytes:
+        terminal_code = await self._terminal_outcome_code(
+            source_url,
+            final_url,
+            status_code,
+            item,
+            raw_metadata,
+            markdown,
+            html,
+            content_type,
+            capabilities,
+        )
+        if terminal_code is not None:
+            return FetchStageOutcome(code=terminal_code, **base)
+        if self._content_size(markdown, html, raw_html) > self.max_content_bytes:
             return FetchStageOutcome(code=FetchOutcomeCode.CONTENT_TOO_LARGE, **base)
         if not markdown:
             code = (
@@ -658,17 +686,25 @@ class Crawl4aiExtractor:
     ) -> str | None:
         media_type = (content_type or "").split(";", 1)[0].strip().casefold()
         if media_type in {"application/xml", "application/rss+xml", "text/xml"}:
-            value = item.get("html") or payload.get("html")
-            if isinstance(value, str) and value.strip():
+            value = Crawl4aiExtractor._nonempty_string(item.get("html") or payload.get("html"))
+            if value is not None:
                 return value
         markdown = item.get("markdown") or payload.get("markdown")
         if isinstance(markdown, dict):
-            value = markdown.get("fit_html")
-            if isinstance(value, str) and value.strip():
+            value = Crawl4aiExtractor._nonempty_string(markdown.get("fit_html"))
+            if value is not None:
                 return value
+        return Crawl4aiExtractor._first_html_value(item, payload)
+
+    @staticmethod
+    def _nonempty_string(value: object) -> str | None:
+        return value if isinstance(value, str) and value.strip() else None
+
+    @staticmethod
+    def _first_html_value(item: dict, payload: dict) -> str | None:
         for key in ("fit_html", "cleaned_html", "html"):
-            value = item.get(key) or payload.get(key)
-            if isinstance(value, str) and value.strip():
+            value = Crawl4aiExtractor._nonempty_string(item.get(key) or payload.get(key))
+            if value is not None:
                 return value
         return None
 
@@ -679,43 +715,45 @@ class Crawl4aiExtractor:
 
     def _page_from_payload(self, source_url: str, payload: dict) -> Page | None:
         for item in self._result_items(payload):
-            if item.get("success") is False:
-                continue
-            final_url = self._final_url(source_url, item)
-            if not _is_utf8_within_limit(final_url, MAX_FINAL_URL_BYTES):
-                return None
-            markdown = self._markdown_from_result(item, payload)
-            if not markdown:
-                continue
-            raw_metadata = item.get("metadata") if isinstance(item.get("metadata"), dict) else {}
-            metadata = _bounded_json_mapping(raw_metadata, MAX_METADATA_ITEMS, MAX_METADATA_BYTES)
-            links = _bounded_json_mapping(item.get("links"), MAX_LINK_ITEMS, MAX_LINK_BYTES)
-            title = self._title_from_result(item, raw_metadata, source_url)
-            (
-                content_type,
-                etag,
-                last_modified,
-                retry_after,
-            ) = self._allowlisted_response_headers(item)
-            html = self._html_from_result(item, payload, content_type)
-            raw_html = self._raw_html_from_result(item, payload)
-            return Page(
-                url=source_url,
-                title=title,
-                markdown=markdown,
-                html=html,
-                raw_html=raw_html,
-                requested_url=source_url,
-                final_url=final_url,
-                status_code=self._status_code(item),
-                content_type=content_type,
-                etag=etag,
-                last_modified=last_modified,
-                retry_after=retry_after,
-                metadata=metadata,
-                links=links,
-            )
+            page, stop = self._page_from_item(source_url, payload, item)
+            if stop:
+                return page
         return None
+
+    def _page_from_item(
+        self, source_url: str, payload: dict, item: dict
+    ) -> tuple[Page | None, bool]:
+        if item.get("success") is False:
+            return None, False
+        final_url = self._final_url(source_url, item)
+        if not _is_utf8_within_limit(final_url, MAX_FINAL_URL_BYTES):
+            return None, True
+        markdown = self._markdown_from_result(item, payload)
+        if not markdown:
+            return None, False
+        raw_metadata = item.get("metadata") if isinstance(item.get("metadata"), dict) else {}
+        metadata = _bounded_json_mapping(raw_metadata, MAX_METADATA_ITEMS, MAX_METADATA_BYTES)
+        links = _bounded_json_mapping(item.get("links"), MAX_LINK_ITEMS, MAX_LINK_BYTES)
+        title = self._title_from_result(item, raw_metadata, source_url)
+        content_type, etag, last_modified, retry_after = self._allowlisted_response_headers(item)
+        html = self._html_from_result(item, payload, content_type)
+        raw_html = self._raw_html_from_result(item, payload)
+        return Page(
+            url=source_url,
+            title=title,
+            markdown=markdown,
+            html=html,
+            raw_html=raw_html,
+            requested_url=source_url,
+            final_url=final_url,
+            status_code=self._status_code(item),
+            content_type=content_type,
+            etag=etag,
+            last_modified=last_modified,
+            retry_after=retry_after,
+            metadata=metadata,
+            links=links,
+        ), True
 
     @staticmethod
     def _final_url(source_url: str, item: dict) -> str:

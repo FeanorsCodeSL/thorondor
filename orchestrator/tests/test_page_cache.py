@@ -11,6 +11,8 @@ from orchestrator.fetch_pipeline import run_fetch
 from orchestrator.models import FetchRequest, SearchRequest
 from orchestrator.outcome_codes import FetchOutcomeCode
 from orchestrator.page_cache import (
+    CacheRepositoryStats,
+    DisabledPageCache,
     PageCacheRecord,
     PageRefreshCoordinator,
     SqlitePageCache,
@@ -23,6 +25,21 @@ from orchestrator.pipeline import run_search
 from orchestrator.robots_policy import RobotsRule, RobotsSnapshot
 from orchestrator.resource_policy import ResourcePolicy, RuntimeAdmission
 from orchestrator.types import FetchStageOutcome, Page
+
+
+def test_disabled_cache_preserves_the_async_repository_contract():
+    cache = DisabledPageCache()
+
+    async def exercise():
+        assert await cache.get("missing") is None
+        assert await cache.get_target("missing", "locator") is None
+        assert await cache.clear_url("https://fixture.test/") == 0
+        assert await cache.cleanup() == 0
+        assert await cache.stats() == CacheRepositoryStats(0, 0, 0)
+        await cache.delete("missing")
+        await cache.aclose()
+
+    anyio.run(exercise)
 
 
 def _outcome(

@@ -69,11 +69,14 @@ def _tmpfs_targets(service: dict) -> set[str]:
     }
 
 
-def validate(config: dict, crawl_name: str, control_peer_name: str, provider_names: list[str]) -> list[str]:
+def _validate_networks(
+    services: dict,
+    networks: dict,
+    crawl: dict,
+    crawl_name: str,
+    control_peer_name: str,
+) -> list[str]:
     errors = []
-    services = config.get("services", {})
-    networks = config.get("networks", {})
-    crawl = services.get(crawl_name, {})
     crawl_networks = _networks(crawl)
     internal_networks = {name for name in crawl_networks if _is_internal(networks, name)}
     egress_networks = {name for name in crawl_networks if not _is_internal(networks, name)}
@@ -102,8 +105,13 @@ def validate(config: dict, crawl_name: str, control_peer_name: str, provider_nam
         )
         if _gateway_priority(crawl, egress_network) <= other_gateway_priority:
             errors.append(f"{crawl_name} egress network must be the default gateway")
+    return errors
 
+
+def _validate_environment(crawl: dict, crawl_name: str) -> list[str]:
+    errors = []
     environment = _environment(crawl)
+
     if environment.get("CRAWL4AI_ALLOW_INTERNAL_URLS") != "false":
         errors.append(f"{crawl_name} must reject internal target URLs")
     for variable in PROXY_ENVIRONMENT_VARIABLES:
@@ -111,6 +119,11 @@ def validate(config: dict, crawl_name: str, control_peer_name: str, provider_nam
             errors.append(f"{crawl_name} must not define {variable}")
     if "CRAWL4AI_API_TOKEN" not in environment:
         errors.append(f"{crawl_name} must define CRAWL4AI_API_TOKEN")
+    return errors
+
+
+def _validate_hardening(crawl: dict, crawl_name: str) -> list[str]:
+    errors = []
 
     if crawl.get("ports"):
         errors.append(f"{crawl_name} API port must not be published")
@@ -134,12 +147,29 @@ def validate(config: dict, crawl_name: str, control_peer_name: str, provider_nam
     health_test = healthcheck.get("test") if isinstance(healthcheck, dict) else None
     if health_test != EXPECTED_HEALTHCHECK:
         errors.append(f"{crawl_name} healthcheck must probe only /health")
+    return errors
+
+
+def _validate_providers(services: dict, networks: dict, provider_names: list[str]) -> list[str]:
+    errors = []
 
     for provider_name in provider_names:
         provider_networks = _networks(services.get(provider_name, {}))
         if not any(not _is_internal(networks, name) for name in provider_networks):
             errors.append(f"{provider_name} must retain provider-plane egress")
     return errors
+
+
+def validate(config: dict, crawl_name: str, control_peer_name: str, provider_names: list[str]) -> list[str]:
+    services = config.get("services", {})
+    networks = config.get("networks", {})
+    crawl = services.get(crawl_name, {})
+    return [
+        *_validate_networks(services, networks, crawl, crawl_name, control_peer_name),
+        *_validate_environment(crawl, crawl_name),
+        *_validate_hardening(crawl, crawl_name),
+        *_validate_providers(services, networks, provider_names),
+    ]
 
 
 def main() -> int:

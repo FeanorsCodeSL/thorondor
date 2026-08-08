@@ -30,7 +30,6 @@ obj/
 !.agents/skills/
 !.agents/skills/**
 .claude/
-.codegraph/
 .ruff_cache/
 
 # OS generated files

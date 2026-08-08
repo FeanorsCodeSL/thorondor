@@ -38,6 +38,7 @@ MAX_RAW_MARKDOWN_BYTES = 524_288
 MAX_SITE_URL_BYTES = 8192
 MAX_SITE_DEPTH = 5
 MAX_SITE_DISCOVERED_URLS = 500
+SHA256_PATTERN = r"^[0-9a-f]{64}$"
 MAX_SITE_PAGES = 20
 MAX_SITE_PATTERNS = 32
 MAX_SITE_PATTERN_CHARS = 256
@@ -126,8 +127,8 @@ class Passage(BaseModel):
     start_index: int | None = Field(default=None, ge=0)
     end_index: int | None = Field(default=None, gt=0)
     verbatim: bool = False
-    document_id: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
-    evidence_id: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+    document_id: str | None = Field(default=None, pattern=SHA256_PATTERN)
+    evidence_id: str | None = Field(default=None, pattern=SHA256_PATTERN)
     section_heading: str | None = None
     provenance: Literal["external_web"] = "external_web"
     trust: Literal["untrusted"] = "untrusted"
@@ -154,7 +155,7 @@ class EvidenceSpan(BaseModel):
     start_index: int | None = Field(default=None, ge=0)
     end_index: int | None = Field(default=None, gt=0)
     verbatim: bool = False
-    evidence_id: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+    evidence_id: str | None = Field(default=None, pattern=SHA256_PATTERN)
     section_heading: str | None = None
 
     @model_validator(mode="after")
@@ -200,7 +201,7 @@ class Citation(BaseModel):
     title: str
     published: str | None = None
     modified_at: str | None = None
-    document_id: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+    document_id: str | None = Field(default=None, pattern=SHA256_PATTERN)
     evidence_spans: list[EvidenceSpan] = Field(default_factory=list)
     metadata: CitationMetadata | None = None
 
@@ -238,7 +239,7 @@ class RawMarkdown(BaseModel):
     citation_id: int
     markdown: str
     cleaned_markdown: str | None = None
-    document_id: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+    document_id: str | None = Field(default=None, pattern=SHA256_PATTERN)
 
 
 class UnresponsiveEngine(BaseModel):
@@ -381,8 +382,8 @@ class FetchCacheInfo(BaseModel):
 
 class PageChange(BaseModel):
     state: Literal["new", "same", "changed", "removed"]
-    previous_sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
-    current_sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+    previous_sha256: str | None = Field(default=None, pattern=SHA256_PATTERN)
+    current_sha256: str | None = Field(default=None, pattern=SHA256_PATTERN)
     previous_status: int | None = Field(default=None, ge=100, le=599)
     current_status: int | None = Field(default=None, ge=100, le=599)
 
@@ -397,9 +398,9 @@ class PageDiff(BaseModel):
 
 
 class StructuredSourceReference(BaseModel):
-    document_id: str = Field(pattern=r"^[0-9a-f]{64}$")
-    cleaned_markdown_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
-    source_html_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    document_id: str = Field(pattern=SHA256_PATTERN)
+    cleaned_markdown_sha256: str = Field(pattern=SHA256_PATTERN)
+    source_html_sha256: str = Field(pattern=SHA256_PATTERN)
     final_url: str = Field(max_length=MAX_FETCH_URL_BYTES)
     start_index: int = Field(ge=0)
     end_index: int = Field(gt=0)
@@ -472,12 +473,12 @@ class StructuredDocument(BaseModel):
 
 
 class StructuredMarkdownReference(BaseModel):
-    document_id: str = Field(pattern=r"^[0-9a-f]{64}$")
-    cleaned_markdown_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    document_id: str = Field(pattern=SHA256_PATTERN)
+    cleaned_markdown_sha256: str = Field(pattern=SHA256_PATTERN)
     final_url: str = Field(max_length=MAX_FETCH_URL_BYTES)
     start_index: int = Field(ge=0)
     end_index: int = Field(gt=0)
-    evidence_id: str = Field(pattern=r"^[0-9a-f]{64}$")
+    evidence_id: str = Field(pattern=SHA256_PATTERN)
 
     @model_validator(mode="after")
     def validate_span(self) -> "StructuredMarkdownReference":
@@ -532,7 +533,7 @@ class StructuredExtraction(BaseModel):
         "validation_failed",
         "model_failed",
     ]
-    document_id: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+    document_id: str | None = Field(default=None, pattern=SHA256_PATTERN)
     links: list[StructuredLink] = Field(default_factory=list, max_length=MAX_STRUCTURED_LINKS)
     tables: list[StructuredTable] = Field(default_factory=list, max_length=MAX_STRUCTURED_TABLES)
     documents: list[StructuredDocument] = Field(
@@ -563,6 +564,15 @@ class StructuredExtraction(BaseModel):
             "json_ld": bool(self.documents),
             "json_schema": self.data is not None or bool(self.fields),
         }
+        self._validate_format_payloads(payloads)
+        self._validate_data()
+        self._validate_document(payloads)
+        self._validate_sources(self._sources())
+        self._validate_table_size()
+        self._validate_markdown_sources()
+        return self
+
+    def _validate_format_payloads(self, payloads: dict[str, bool]) -> None:
         if any(present for name, present in payloads.items() if name != self.format):
             raise ValueError("structured extraction cannot contain another format payload")
         if self.format != "json_schema" and (
@@ -577,33 +587,43 @@ class StructuredExtraction(BaseModel):
         if self.format == "json_schema" and self.status in {"empty", "truncated"}:
             raise ValueError("json_schema extraction cannot use deterministic statuses")
         if self.format == "json_schema" and self.status == "ok":
-            if self.data is None or self.validation_failures:
-                raise ValueError("successful json_schema extraction requires valid data")
-            if any(field.source is None for field in self.fields):
-                raise ValueError("successful json_schema fields require evidence")
+            self._validate_successful_schema()
         if self.status in {"validation_failed", "model_failed"} and not self.validation_failures:
             raise ValueError("failed structured extraction requires validation failures")
-        if self.data is not None:
-            from .schema_contract import MAX_EXTRACTION_OUTPUT_BYTES
 
-            try:
-                data_bytes = len(
-                    json.dumps(
-                        self.data,
-                        allow_nan=False,
-                        ensure_ascii=False,
-                        separators=(",", ":"),
-                    ).encode("utf-8")
-                )
-            except (TypeError, ValueError, UnicodeError, RecursionError) as exc:
-                raise ValueError("structured schema data must be bounded JSON") from exc
-            if data_bytes > MAX_EXTRACTION_OUTPUT_BYTES:
-                raise ValueError("structured schema data exceeds the output byte limit")
+    def _validate_successful_schema(self) -> None:
+        if self.data is None or self.validation_failures:
+            raise ValueError("successful json_schema extraction requires valid data")
+        if any(field.source is None for field in self.fields):
+            raise ValueError("successful json_schema fields require evidence")
+
+    def _validate_data(self) -> None:
+        if self.data is None:
+            return
+        from .schema_contract import MAX_EXTRACTION_OUTPUT_BYTES
+
+        try:
+            data_bytes = len(
+                json.dumps(
+                    self.data,
+                    allow_nan=False,
+                    ensure_ascii=False,
+                    separators=(",", ":"),
+                ).encode("utf-8")
+            )
+        except (TypeError, ValueError, RecursionError) as exc:
+            raise ValueError("structured schema data must be bounded JSON") from exc
+        if data_bytes > MAX_EXTRACTION_OUTPUT_BYTES:
+            raise ValueError("structured schema data exceeds the output byte limit")
+
+    def _validate_document(self, payloads: dict[str, bool]) -> None:
         if self.status == "unsupported":
             if self.document_id is not None or any(payloads.values()):
                 raise ValueError("unsupported structured extraction cannot claim source data")
         elif self.document_id is None:
             raise ValueError("supported structured extraction requires document_id")
+
+    def _sources(self) -> list[StructuredSourceReference]:
         sources = [link.source for link in self.links]
         for table in self.tables:
             sources.append(table.source)
@@ -611,6 +631,9 @@ class StructuredExtraction(BaseModel):
         for document in self.documents:
             sources.append(document.source)
             sources.extend(field.source for field in document.fields)
+        return sources
+
+    def _validate_sources(self, sources: list[StructuredSourceReference]) -> None:
         if any(source.document_id != self.document_id for source in sources):
             raise ValueError("structured source references must match document_id")
         if sources:
@@ -629,9 +652,13 @@ class StructuredExtraction(BaseModel):
                 for source in sources[1:]
             ):
                 raise ValueError("structured source references must identify one source")
+
+    def _validate_table_size(self) -> None:
         cell_count = sum(len(row) for table in self.tables for row in table.rows)
         if cell_count > MAX_STRUCTURED_TABLE_CELLS:
             raise ValueError("structured tables exceed the aggregate cell limit")
+
+    def _validate_markdown_sources(self) -> None:
         markdown_sources = [field.source for field in self.fields if field.source is not None]
         if any(source.document_id != self.document_id for source in markdown_sources):
             raise ValueError("structured Markdown references must match document_id")
@@ -647,7 +674,6 @@ class StructuredExtraction(BaseModel):
             for source in markdown_sources[1:]
         ):
             raise ValueError("structured Markdown references must identify one source")
-        return self
 
 
 class FetchRequest(BaseModel):

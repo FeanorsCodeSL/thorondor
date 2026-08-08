@@ -6,14 +6,22 @@ import logging
 import sqlite3
 import time
 from collections.abc import Callable, Coroutine
+from contextlib import closing
 from dataclasses import asdict, dataclass
 from pathlib import Path
+from typing import Any
 from urllib.parse import urlsplit, urlunsplit
 from weakref import WeakValueDictionary
 
 CACHE_SCHEMA_VERSION = 1
 CACHE_IDENTITY_VERSION = "thorondor.page-cache.v1"
 logger = logging.getLogger(__name__)
+_DELETE_EXPIRED_CACHE_SQL = "DELETE FROM page_cache WHERE retained_until <= ?"
+_DELETE_CACHE_KEY_SQL = "DELETE FROM page_cache WHERE cache_key = ?"
+
+
+def _completed[T](value: T) -> Coroutine[Any, Any, T]:
+    return asyncio.sleep(0, result=value)
 
 
 @dataclass(frozen=True)
@@ -77,7 +85,7 @@ def has_url_credentials(url: str) -> bool:
     try:
         parsed = urlsplit(url)
         return parsed.username is not None or parsed.password is not None
-    except (TypeError, ValueError, UnicodeError):
+    except (TypeError, ValueError):
         return True
 
 
@@ -124,50 +132,50 @@ def source_hash(markdown: str | None) -> str | None:
 class DisabledPageCache:
     enabled = False
 
-    async def get(self, _cache_key: str) -> PageCacheRecord | None:
-        return None
+    def get(self, _cache_key: str) -> Coroutine[Any, Any, PageCacheRecord | None]:
+        return _completed(None)
 
-    async def put(self, _record: PageCacheRecord) -> None:
-        return None
+    def put(self, _record: PageCacheRecord) -> Coroutine[Any, Any, None]:
+        return _completed(None)
 
-    async def put_with_target(
+    def put_with_target(
         self,
         _record: PageCacheRecord,
         _locator_hash: str,
         _snapshot: StoredTargetSnapshot,
-    ) -> None:
-        return None
+    ) -> Coroutine[Any, Any, None]:
+        return _completed(None)
 
-    async def get_target(
+    def get_target(
         self, _cache_key: str, _locator_hash: str
-    ) -> StoredTargetSnapshot | None:
-        return None
+    ) -> Coroutine[Any, Any, StoredTargetSnapshot | None]:
+        return _completed(None)
 
-    async def put_target(
+    def put_target(
         self,
         _cache_key: str,
         _locator_hash: str,
         _snapshot: StoredTargetSnapshot,
-    ) -> None:
-        return None
+    ) -> Coroutine[Any, Any, None]:
+        return _completed(None)
 
-    async def delete(self, _cache_key: str) -> None:
-        return None
+    def delete(self, _cache_key: str) -> Coroutine[Any, Any, None]:
+        return _completed(None)
 
-    async def clear_url(self, _url_identity: str) -> int:
-        return 0
+    def clear_url(self, _url_identity: str) -> Coroutine[Any, Any, int]:
+        return _completed(0)
 
-    async def cleanup(self, _now: float | None = None) -> int:
-        return 0
+    def cleanup(self, _now: float | None = None) -> Coroutine[Any, Any, int]:
+        return _completed(0)
 
-    async def stats(self) -> CacheRepositoryStats:
-        return CacheRepositoryStats(0, 0, 0)
+    def stats(self) -> Coroutine[Any, Any, CacheRepositoryStats]:
+        return _completed(CacheRepositoryStats(0, 0, 0))
 
-    async def aclose(self) -> None:
-        return None
+    def aclose(self) -> Coroutine[Any, Any, None]:
+        return _completed(None)
 
     async def start(self) -> None:
-        return None
+        await asyncio.sleep(0)
 
 
 class SqlitePageCache:
@@ -205,7 +213,7 @@ class SqlitePageCache:
             self._initialize()
 
     def _initialize(self) -> None:
-        with self._connect() as connection:
+        with closing(self._connect()) as connection, connection:
             version = connection.execute("PRAGMA user_version").fetchone()[0]
             if version > CACHE_SCHEMA_VERSION:
                 raise RuntimeError(
@@ -242,7 +250,7 @@ class SqlitePageCache:
                 """
             )
             connection.execute(
-                "DELETE FROM page_cache WHERE retained_until <= ?",
+                _DELETE_EXPIRED_CACHE_SQL,
                 (self._clock(),),
             )
             connection.execute(f"PRAGMA user_version = {CACHE_SCHEMA_VERSION}")
@@ -262,12 +270,12 @@ class SqlitePageCache:
             if row is None:
                 return None
             if row["retained_until"] <= self._clock():
-                connection.execute("DELETE FROM page_cache WHERE cache_key = ?", (cache_key,))
+                connection.execute(_DELETE_CACHE_KEY_SQL, (cache_key,))
                 return None
             try:
                 return self._record_from_json(row["record_json"])
-            except (KeyError, TypeError, ValueError, json.JSONDecodeError):
-                connection.execute("DELETE FROM page_cache WHERE cache_key = ?", (cache_key,))
+            except (KeyError, TypeError, ValueError):
+                connection.execute(_DELETE_CACHE_KEY_SQL, (cache_key,))
                 return None
 
     async def get(self, cache_key: str) -> PageCacheRecord | None:
@@ -343,11 +351,11 @@ class SqlitePageCache:
             if row is None:
                 return None
             if row["retained_until"] <= self._clock():
-                connection.execute("DELETE FROM page_cache WHERE cache_key = ?", (cache_key,))
+                connection.execute(_DELETE_CACHE_KEY_SQL, (cache_key,))
                 return None
             try:
                 return StoredTargetSnapshot(**json.loads(row["snapshot_json"]))
-            except (TypeError, ValueError, json.JSONDecodeError):
+            except (TypeError, ValueError):
                 connection.execute(
                     "DELETE FROM target_snapshots WHERE cache_key = ? AND locator_hash = ?",
                     (cache_key, locator_hash),
@@ -398,7 +406,7 @@ class SqlitePageCache:
 
     def _delete(self, cache_key: str) -> None:
         with self._connect() as connection:
-            connection.execute("DELETE FROM page_cache WHERE cache_key = ?", (cache_key,))
+            connection.execute(_DELETE_CACHE_KEY_SQL, (cache_key,))
 
     async def delete(self, cache_key: str) -> None:
         await asyncio.to_thread(self._delete, cache_key)
@@ -416,7 +424,7 @@ class SqlitePageCache:
     def _cleanup(self, now: float) -> int:
         with self._connect() as connection:
             cursor = connection.execute(
-                "DELETE FROM page_cache WHERE retained_until <= ?", (now,)
+                _DELETE_EXPIRED_CACHE_SQL, (now,)
             )
             return cursor.rowcount
 
@@ -426,7 +434,7 @@ class SqlitePageCache:
     def _stats(self) -> CacheRepositoryStats:
         with self._connect() as connection:
             connection.execute(
-                "DELETE FROM page_cache WHERE retained_until <= ?",
+                _DELETE_EXPIRED_CACHE_SQL,
                 (self._clock(),),
             )
             entries = connection.execute("SELECT COUNT(*) FROM page_cache").fetchone()[0]
@@ -466,6 +474,7 @@ class SqlitePageCache:
                 event.clear()
 
     async def start(self) -> None:
+        await asyncio.sleep(0)
         if self._retention_task is not None and not self._retention_task.done():
             return
         self._retention_changed = asyncio.Event()

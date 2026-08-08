@@ -1,14 +1,14 @@
 import asyncio
 import base64
-import binascii
 import hashlib
 import json
 import logging
 import re
 import uuid
 from collections.abc import Awaitable, Callable
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
 from datetime import UTC, datetime
+from functools import partial
 
 from .crawl_job_store import (
     TERMINAL_JOB_STATES,
@@ -155,12 +155,11 @@ class CrawlJobManager:
         self._wake.set()
         if self._worker is not None:
             self._worker.cancel()
-            try:
-                await self._worker
-            except asyncio.CancelledError:
-                pass
-            except Exception:
-                logger.exception("Crawl job worker exited before shutdown")
+            with suppress(asyncio.CancelledError):
+                try:
+                    await self._worker
+                except Exception:
+                    logger.exception("Crawl job worker exited before shutdown")
             self._worker = None
         self._active_cancel.clear()
 
@@ -177,7 +176,7 @@ class CrawlJobManager:
     def scope_hash(cls, scope: str) -> str:
         try:
             bounded = cls._bounded_header(scope, MAX_SCOPE_BYTES)
-        except (UnicodeError, ValueError) as exc:
+        except ValueError as exc:
             raise InvalidJobScope from exc
         return hashlib.sha256(bounded.encode("utf-8")).hexdigest()
 
@@ -185,7 +184,7 @@ class CrawlJobManager:
     def idempotency_hash(cls, scope_hash: str, key: str) -> str:
         try:
             bounded = cls._bounded_header(key, MAX_IDEMPOTENCY_KEY_BYTES)
-        except (UnicodeError, ValueError) as exc:
+        except ValueError as exc:
             raise InvalidIdempotencyKey from exc
         return hashlib.sha256(
             scope_hash.encode("ascii") + b"\x00" + bounded.encode("utf-8")
@@ -328,7 +327,7 @@ class CrawlJobManager:
                 validate=True,
             )
             payload = json.loads(decoded)
-        except (binascii.Error, UnicodeError, ValueError, json.JSONDecodeError) as exc:
+        except ValueError as exc:
             raise InvalidCursor from exc
         if (
             not isinstance(payload, dict)
@@ -395,55 +394,70 @@ class CrawlJobManager:
         recover_running = False
         while not self._closing:
             try:
-                if recover_running:
-                    await store.recover_interrupted(self.max_attempts)
-                    recover_running = False
-                record = await store.claim_next()
-                self._store_available = True
+                record = await self._claim_record(store, recover_running)
+                recover_running = False
                 retry_delay = max(0.1, self.poll_interval_s)
-                if record is None:
-                    self._wake.clear()
-                    record = await store.claim_next()
-                if record is None:
-                    try:
-                        await asyncio.wait_for(
-                            self._wake.wait(),
-                            timeout=self.poll_interval_s,
-                        )
-                    except TimeoutError:
-                        await store.cleanup()
-                    continue
             except asyncio.CancelledError:
                 raise
             except Exception:
-                self._store_available = False
-                logger.exception("Crawl job worker could not access its durable store")
-                self._wake.clear()
-                try:
-                    await asyncio.wait_for(self._wake.wait(), timeout=retry_delay)
-                except TimeoutError:
-                    pass
+                await self._wait_after_store_failure(retry_delay)
                 retry_delay = min(30.0, retry_delay * 2)
                 continue
+            if record is not None:
+                recover_running = await self._run_claimed_job(store, record)
+
+    async def _claim_record(
+        self, store: SqliteCrawlJobStore, recover_running: bool
+    ) -> CrawlJobRecord | None:
+        if recover_running:
+            await store.recover_interrupted(self.max_attempts)
+        record = await store.claim_next()
+        self._store_available = True
+        if record is not None:
+            return record
+        self._wake.clear()
+        record = await store.claim_next()
+        if record is not None:
+            return record
+        try:
+            await asyncio.wait_for(self._wake.wait(), timeout=self.poll_interval_s)
+        except TimeoutError:
+            await store.cleanup()
+        return None
+
+    async def _wait_after_store_failure(self, retry_delay: float) -> None:
+        self._store_available = False
+        logger.exception("Crawl job worker could not access its durable store")
+        self._wake.clear()
+        try:
+            await asyncio.wait_for(self._wake.wait(), timeout=retry_delay)
+        except TimeoutError:
+            pass
+
+    async def _run_claimed_job(
+        self, store: SqliteCrawlJobStore, record: CrawlJobRecord
+    ) -> bool:
+        try:
+            await self._run_job(record)
+            return False
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception("Crawl job worker failed job %s", record.job_id)
             try:
-                await self._run_job(record)
-            except asyncio.CancelledError:
-                raise
+                await store.append_summary(record.job_id, "local_processing_failure")
+                await store.finish(
+                    record.job_id,
+                    "failed",
+                    "local_processing_failure",
+                )
+                return False
             except Exception:
-                logger.exception("Crawl job worker failed job %s", record.job_id)
-                try:
-                    await store.append_summary(record.job_id, "local_processing_failure")
-                    await store.finish(
-                        record.job_id,
-                        "failed",
-                        "local_processing_failure",
-                    )
-                except Exception:
-                    recover_running = True
-                    logger.exception(
-                        "Crawl job worker could not persist failure for %s",
-                        record.job_id,
-                    )
+                logger.exception(
+                    "Crawl job worker could not persist failure for %s",
+                    record.job_id,
+                )
+                return True
 
     @staticmethod
     def _result_key(result: FetchResult) -> str:
@@ -481,93 +495,148 @@ class CrawlJobManager:
         except TimeoutError:
             return False
 
+    async def _append_job_result(
+        self,
+        store: SqliteCrawlJobStore,
+        job_id: str,
+        result: FetchResult,
+    ) -> None:
+        try:
+            await store.append_result(
+                job_id,
+                self._result_key(result),
+                result,
+                (self._failure_key(result.requested_url),),
+            )
+        except CrawlJobResultTooLarge:
+            await self._append_job_failure(
+                store,
+                job_id,
+                result.requested_url,
+                "result_too_large",
+            )
+
+    async def _append_job_failure(
+        self,
+        store: SqliteCrawlJobStore,
+        job_id: str,
+        url: str,
+        reason: str,
+    ) -> None:
+        await store.append_failure(
+            job_id,
+            self._failure_key(url),
+            self._bounded_failure(url, reason),
+        )
+
+    async def _run_attempt(
+        self,
+        store: SqliteCrawlJobStore,
+        current: CrawlJobRecord,
+        cancel_event: asyncio.Event,
+        on_result: Callable[[FetchResult], Awaitable[None]],
+        on_failure: Callable[[str, str], Awaitable[None]],
+    ) -> tuple[CrawlResponse | None, bool, str, bool]:
+        try:
+            response = await self.runner(
+                current.request,
+                on_result,
+                on_failure,
+                cancel_event.is_set,
+            )
+            return response, self._retryable_response(response), response.outcome, False
+        except asyncio.CancelledError:
+            raise
+        except CrawlOperationCancelled:
+            return None, False, "cancelled", True
+        except CapacityUnavailable:
+            await store.append_summary(current.job_id, "capacity_unavailable")
+            return None, True, "capacity_unavailable", False
+        except (RouteDeadlineExceeded, TimeoutError):
+            await store.append_summary(current.job_id, "deadline_cancelled")
+            return None, True, "deadline_cancelled", False
+        except Exception:
+            await store.append_summary(current.job_id, "local_processing_failure")
+            return None, False, "local_processing_failure", False
+
+    async def _finish_cancelled(self, store: SqliteCrawlJobStore, job_id: str) -> None:
+        await store.finish(job_id, "cancelled", "cancelled")
+
+    async def _run_attempts(
+        self,
+        store: SqliteCrawlJobStore,
+        record: CrawlJobRecord,
+        cancel_event: asyncio.Event,
+        on_result: Callable[[FetchResult], Awaitable[None]],
+        on_failure: Callable[[str, str], Awaitable[None]],
+    ) -> tuple[CrawlResponse | None, str, bool]:
+        current = record
+        response: CrawlResponse | None = None
+        last_failure = "local_processing_failure"
+        while True:
+            if cancel_event.is_set():
+                await self._finish_cancelled(store, record.job_id)
+                return response, last_failure, True
+            response, retryable, last_failure, cancelled = await self._run_attempt(
+                store,
+                current,
+                cancel_event,
+                on_result,
+                on_failure,
+            )
+            if cancelled or cancel_event.is_set():
+                await self._finish_cancelled(store, record.job_id)
+                return response, last_failure, True
+            if not retryable or current.attempts >= self.max_attempts:
+                return response, last_failure, False
+            if await self._wait_backoff(cancel_event, current.attempts):
+                await self._finish_cancelled(store, record.job_id)
+                return response, last_failure, True
+            current = await store.increment_attempt(record.job_id)
+
+    @staticmethod
+    def _final_result(
+        record: CrawlJobRecord,
+        response: CrawlResponse | None,
+        last_failure: str,
+    ) -> tuple[CrawlJobState, str, tuple[str, ...]]:
+        if record.pages_failed > 0:
+            state: CrawlJobState = "partial" if record.results_available > 0 else "failed"
+        elif response is not None and response.outcome in {"completed", "limit_reached"}:
+            state = "completed"
+        elif record.results_available > 0:
+            state = "partial"
+        else:
+            state = "failed"
+        if record.pages_failed > 0 and response is not None:
+            outcome = "partial" if record.results_available > 0 else "failed"
+        else:
+            outcome = response.outcome if response is not None else last_failure
+        warnings = tuple(response.warnings) if response is not None else ()
+        return state, outcome, warnings
+
     async def _run_job(self, record: CrawlJobRecord) -> None:
         store = self._require_enabled()
         if self.runner is None:
             raise RuntimeError("crawl job runner is unavailable")
         cancel_event = asyncio.Event()
         self._active_cancel[record.job_id] = cancel_event
-        response: CrawlResponse | None = None
-        last_failure = "local_processing_failure"
-
-        async def on_result(result: FetchResult) -> None:
-            try:
-                await store.append_result(
-                    record.job_id,
-                    self._result_key(result),
-                    result,
-                    (self._failure_key(result.requested_url),),
-                )
-            except CrawlJobResultTooLarge:
-                await on_failure(result.requested_url, "result_too_large")
-
-        async def on_failure(url: str, reason: str) -> None:
-            await store.append_failure(
-                record.job_id,
-                self._failure_key(url),
-                self._bounded_failure(url, reason),
-            )
-
+        on_result = partial(self._append_job_result, store, record.job_id)
+        on_failure = partial(self._append_job_failure, store, record.job_id)
         try:
-            current = record
-            while True:
-                if cancel_event.is_set():
-                    await store.finish(record.job_id, "cancelled", "cancelled")
-                    return
-                response = None
-                try:
-                    response = await self.runner(
-                        current.request,
-                        on_result,
-                        on_failure,
-                        cancel_event.is_set,
-                    )
-                    retryable = self._retryable_response(response)
-                    last_failure = response.outcome
-                except asyncio.CancelledError:
-                    raise
-                except CrawlOperationCancelled:
-                    await store.finish(record.job_id, "cancelled", "cancelled")
-                    return
-                except CapacityUnavailable:
-                    retryable = True
-                    last_failure = "capacity_unavailable"
-                    await store.append_summary(record.job_id, last_failure)
-                except (RouteDeadlineExceeded, TimeoutError):
-                    retryable = True
-                    last_failure = "deadline_cancelled"
-                    await store.append_summary(record.job_id, last_failure)
-                except Exception:
-                    retryable = False
-                    last_failure = "local_processing_failure"
-                    await store.append_summary(record.job_id, last_failure)
-                if cancel_event.is_set():
-                    await store.finish(record.job_id, "cancelled", "cancelled")
-                    return
-                if not retryable or current.attempts >= self.max_attempts:
-                    break
-                if await self._wait_backoff(cancel_event, current.attempts):
-                    await store.finish(record.job_id, "cancelled", "cancelled")
-                    return
-                current = await store.increment_attempt(record.job_id)
-
+            response, last_failure, cancelled = await self._run_attempts(
+                store,
+                record,
+                cancel_event,
+                on_result,
+                on_failure,
+            )
+            if cancelled:
+                return
             final_record = await store.get_any(record.job_id)
             if final_record is None:
                 return
-            state: CrawlJobState
-            if final_record.pages_failed > 0:
-                state = "partial" if final_record.results_available > 0 else "failed"
-            elif response is not None and response.outcome in {"completed", "limit_reached"}:
-                state = "completed"
-            elif final_record.results_available > 0:
-                state = "partial"
-            else:
-                state = "failed"
-            if final_record.pages_failed > 0 and response is not None:
-                outcome = "partial" if final_record.results_available > 0 else "failed"
-            else:
-                outcome = response.outcome if response is not None else last_failure
-            warnings = tuple(response.warnings) if response is not None else ()
+            state, outcome, warnings = self._final_result(final_record, response, last_failure)
             await store.finish(record.job_id, state, outcome, warnings)
         finally:
             self._active_cancel.pop(record.job_id, None)

@@ -13,6 +13,7 @@ MAX_CANDIDATES = 48
 MAX_CANDIDATES_PER_FIELD = 8
 MAX_TEXT_BYTES = 2_048
 MAX_URL_BYTES = 8_192
+UTC_OFFSET = "+00:00"
 
 FIELDS = (
     "title",
@@ -90,24 +91,30 @@ class _MetadataParser(HTMLParser):
         lowered = tag.lower()
         if lowered == "html" and self.language is None:
             self.language = attributes.get("lang")
-        elif lowered == "title":
+        if lowered == "title":
             self.in_title = True
-        elif lowered == "meta":
-            key = attributes.get("property") or attributes.get("name") or attributes.get("itemprop")
-            content = attributes.get("content")
-            if key and content and len(self.meta) < MAX_CANDIDATES:
-                self.meta.append((key.lower(), content))
-        elif lowered == "link":
-            rel = {part.lower() for part in (attributes.get("rel") or "").split()}
-            href = attributes.get("href")
-            if "canonical" in rel and href and len(self.canonicals) < MAX_CANDIDATES_PER_FIELD:
-                self.canonicals.append(href)
-        elif (
+        if lowered == "meta":
+            self._add_meta(attributes)
+        if lowered == "link":
+            self._add_canonical(attributes)
+        if (
             lowered == "script"
             and (attributes.get("type") or "").lower() == "application/ld+json"
         ):
             self.in_json_ld = True
             self.script_parts = []
+
+    def _add_meta(self, attributes: dict[str, str]) -> None:
+        key = attributes.get("property") or attributes.get("name") or attributes.get("itemprop")
+        content = attributes.get("content")
+        if key and content and len(self.meta) < MAX_CANDIDATES:
+            self.meta.append((key.lower(), content))
+
+    def _add_canonical(self, attributes: dict[str, str]) -> None:
+        rel = {part.lower() for part in (attributes.get("rel") or "").split()}
+        href = attributes.get("href")
+        if "canonical" in rel and href and len(self.canonicals) < MAX_CANDIDATES_PER_FIELD:
+            self.canonicals.append(href)
 
     def handle_endtag(self, tag):
         lowered = tag.lower()
@@ -142,10 +149,10 @@ def normalize_timestamp(value: object) -> str | None:
             )
         except ValueError:
             return None
-        return parsed.isoformat(timespec="seconds").replace("+00:00", "Z")
+        return parsed.isoformat(timespec="seconds").replace(UTC_OFFSET, "Z")
     try:
         normalized_candidate = (
-            candidate[:-1] + "+00:00"
+            candidate[:-1] + UTC_OFFSET
             if candidate.endswith(("Z", "z"))
             else candidate
         )
@@ -159,7 +166,7 @@ def normalize_timestamp(value: object) -> str | None:
         return None
     normalized = parsed.astimezone(UTC)
     timespec = "microseconds" if normalized.microsecond else "seconds"
-    return normalized.isoformat(timespec=timespec).replace("+00:00", "Z")
+    return normalized.isoformat(timespec=timespec).replace(UTC_OFFSET, "Z")
 
 
 def _bounded_text(value: object, max_bytes: int = MAX_TEXT_BYTES) -> str | None:
@@ -321,15 +328,12 @@ def _finalize(candidates: list[MetadataCandidate]) -> DocumentMetadata:
     return DocumentMetadata(tuple(selected), tuple(conflicts))
 
 
-def extract_document_metadata(
+def _add_page_metadata(
     page: Page,
-    sitemap_lastmod: str | None = None,
-) -> DocumentMetadata:
-    candidates = []
-    counts = {}
-    canonical_base_url = page.final_url or page.requested_url or page.url
-    _add_candidate(candidates, counts, "title", page.title, "fetch_title")
-
+    candidates: list[MetadataCandidate],
+    counts: dict[str, int],
+    canonical_base_url: str,
+) -> None:
     metadata_items = sorted(
         ((str(key).lower(), value) for key, value in page.metadata.items()),
         key=lambda item: item[0],
@@ -351,13 +355,24 @@ def extract_document_metadata(
         if key in {"json_ld", "json-ld", "jsonld"}:
             _add_json_ld(candidates, counts, value, canonical_base_url)
 
-    parser = _MetadataParser()
-    if page.html:
-        try:
-            parser.feed(page.html[:MAX_HTML_METADATA_CHARS])
-        except Exception:
-            parser = _MetadataParser()
 
+def _metadata_parser(source_html: str | None) -> _MetadataParser:
+    parser = _MetadataParser()
+    if not source_html:
+        return parser
+    try:
+        parser.feed(source_html[:MAX_HTML_METADATA_CHARS])
+        return parser
+    except Exception:
+        return _MetadataParser()
+
+
+def _add_html_metadata(
+    parser: _MetadataParser,
+    candidates: list[MetadataCandidate],
+    counts: dict[str, int],
+    canonical_base_url: str,
+) -> None:
     _add_candidate(candidates, counts, "title", "".join(parser.title_parts), "html_title")
     _add_candidate(candidates, counts, "language", parser.language, "html_lang")
     for key, value in parser.meta:
@@ -383,6 +398,17 @@ def extract_document_metadata(
     for json_ld in parser.json_ld:
         _add_json_ld(candidates, counts, json_ld, canonical_base_url)
 
+
+def extract_document_metadata(
+    page: Page,
+    sitemap_lastmod: str | None = None,
+) -> DocumentMetadata:
+    candidates = []
+    counts = {}
+    canonical_base_url = page.final_url or page.requested_url or page.url
+    _add_candidate(candidates, counts, "title", page.title, "fetch_title")
+    _add_page_metadata(page, candidates, counts, canonical_base_url)
+    _add_html_metadata(_metadata_parser(page.html), candidates, counts, canonical_base_url)
     _add_candidate(candidates, counts, "published_at", page.discovery_published_at, "discovery")
     _add_candidate(candidates, counts, "modified_at", sitemap_lastmod, "sitemap")
     return _finalize(candidates)

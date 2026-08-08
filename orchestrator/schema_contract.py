@@ -33,7 +33,7 @@ def _json_bytes(value: object) -> int:
         return len(
             json.dumps(value, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
         )
-    except (TypeError, ValueError, UnicodeError, RecursionError) as exc:
+    except (TypeError, ValueError, RecursionError) as exc:
         raise SchemaContractError("extraction_schema must contain only JSON values") from exc
 
 
@@ -44,10 +44,20 @@ def validate_extraction_schema(schema: object) -> dict[str, object]:
         raise SchemaContractError(
             f"extraction_schema must not exceed {MAX_EXTRACTION_SCHEMA_BYTES} UTF-8 bytes"
         )
-    property_count = 0
+    return _ExtractionSchemaValidator().validate(schema)
 
-    def visit(node: object, depth: int, path: str) -> None:
-        nonlocal property_count
+
+class _ExtractionSchemaValidator:
+    def __init__(self) -> None:
+        self._property_count = 0
+
+    def validate(self, schema: dict[str, object]) -> dict[str, object]:
+        self._visit(schema, 1, "$")
+        if schema.get("type") != "object":
+            raise SchemaContractError("extraction_schema root type must be object")
+        return schema
+
+    def _visit(self, node: object, depth: int, path: str) -> None:
         if depth > MAX_EXTRACTION_SCHEMA_DEPTH:
             raise SchemaContractError(
                 f"extraction_schema must not exceed depth {MAX_EXTRACTION_SCHEMA_DEPTH}"
@@ -60,6 +70,12 @@ def validate_extraction_schema(schema: object) -> dict[str, object]:
         schema_type = node.get("type")
         if not isinstance(schema_type, str) or schema_type not in _SCHEMA_TYPES:
             raise SchemaContractError(f"schema at {path} requires one supported type")
+        self._validate_description(node, path)
+        self._validate_enum(node, schema_type, path)
+        self._visit_children(node, schema_type, depth, path)
+
+    @staticmethod
+    def _validate_description(node: dict[object, object], path: str) -> None:
         description = node.get("description")
         if description is not None and (
             not isinstance(description, str)
@@ -68,56 +84,66 @@ def validate_extraction_schema(schema: object) -> dict[str, object]:
             raise SchemaContractError(
                 f"schema description at {path} exceeds its byte limit"
             )
+
+    @staticmethod
+    def _validate_enum(node: dict[object, object], schema_type: str, path: str) -> None:
         enum = node.get("enum")
-        if enum is not None:
-            if (
-                not isinstance(enum, list)
-                or not enum
-                or len(enum) > MAX_EXTRACTION_SCHEMA_ENUM_VALUES
-            ):
-                raise SchemaContractError(f"schema enum at {path} is invalid")
-            if any(isinstance(value, (dict, list)) for value in enum):
-                raise SchemaContractError(f"schema enum at {path} must contain scalar values")
-            if schema_type in {"object", "array"} or any(
-                not _instance_type_matches(schema_type, value) for value in enum
-            ):
-                raise SchemaContractError(f"schema enum at {path} does not match its type")
+        if enum is None:
+            return
+        if (
+            not isinstance(enum, list)
+            or not enum
+            or len(enum) > MAX_EXTRACTION_SCHEMA_ENUM_VALUES
+        ):
+            raise SchemaContractError(f"schema enum at {path} is invalid")
+        if any(isinstance(value, (dict, list)) for value in enum):
+            raise SchemaContractError(f"schema enum at {path} must contain scalar values")
+        if schema_type in {"object", "array"} or any(
+            not _instance_type_matches(schema_type, value) for value in enum
+        ):
+            raise SchemaContractError(f"schema enum at {path} does not match its type")
+
+    def _visit_children(
+        self,
+        node: dict[object, object],
+        schema_type: str,
+        depth: int,
+        path: str,
+    ) -> None:
         properties = node.get("properties")
         required = node.get("required", [])
         items = node.get("items")
         if schema_type == "object":
-            if not isinstance(properties, dict):
-                raise SchemaContractError(f"object schema at {path} requires properties")
-            property_count += len(properties)
-            if property_count > MAX_EXTRACTION_SCHEMA_PROPERTIES:
-                raise SchemaContractError(
-                    "extraction_schema must not exceed "
-                    f"{MAX_EXTRACTION_SCHEMA_PROPERTIES} properties"
-                )
-            if (
-                not isinstance(required, list)
-                or any(not isinstance(value, str) for value in required)
-                or len(required) != len(set(required))
-                or any(value not in properties for value in required)
-            ):
-                raise SchemaContractError(f"required fields at {path} are invalid")
-            for name, child in properties.items():
-                if not isinstance(name, str) or not _PROPERTY_NAME.fullmatch(name):
-                    raise SchemaContractError(f"property name at {path} is invalid")
-                visit(child, depth + 1, f"{path}/{_pointer_token(name)}")
+            self._visit_object(properties, required, depth, path)
         elif properties is not None or required:
             raise SchemaContractError(f"non-object schema at {path} cannot define properties")
         if schema_type == "array":
             if items is None:
                 raise SchemaContractError(f"array schema at {path} requires items")
-            visit(items, depth + 1, f"{path}/*")
+            self._visit(items, depth + 1, f"{path}/*")
         elif items is not None:
             raise SchemaContractError(f"non-array schema at {path} cannot define items")
 
-    visit(schema, 1, "$")
-    if schema.get("type") != "object":
-        raise SchemaContractError("extraction_schema root type must be object")
-    return schema
+    def _visit_object(self, properties: object, required: object, depth: int, path: str) -> None:
+        if not isinstance(properties, dict):
+            raise SchemaContractError(f"object schema at {path} requires properties")
+        self._property_count += len(properties)
+        if self._property_count > MAX_EXTRACTION_SCHEMA_PROPERTIES:
+            raise SchemaContractError(
+                "extraction_schema must not exceed "
+                f"{MAX_EXTRACTION_SCHEMA_PROPERTIES} properties"
+            )
+        if (
+            not isinstance(required, list)
+            or any(not isinstance(value, str) for value in required)
+            or len(required) != len(set(required))
+            or any(value not in properties for value in required)
+        ):
+            raise SchemaContractError(f"required fields at {path} are invalid")
+        for name, child in properties.items():
+            if not isinstance(name, str) or not _PROPERTY_NAME.fullmatch(name):
+                raise SchemaContractError(f"property name at {path} is invalid")
+            self._visit(child, depth + 1, f"{path}/{_pointer_token(name)}")
 
 
 def _pointer_token(value: str) -> str:
@@ -152,44 +178,61 @@ def validate_extracted_value(
     schema: dict[str, object],
     value: object,
 ) -> list[tuple[str, str]]:
-    failures: list[tuple[str, str]] = []
+    return _ExtractedValueValidator().validate(schema, value)
 
-    def fail(path: str, code: str) -> None:
-        if len(failures) < MAX_EXTRACTION_VALIDATION_FAILURES:
-            failures.append((path, code))
 
-    def visit(node: dict[str, object], current: object, path: str) -> None:
+class _ExtractedValueValidator:
+    def __init__(self) -> None:
+        self._failures: list[tuple[str, str]] = []
+
+    def validate(
+        self, schema: dict[str, object], value: object
+    ) -> list[tuple[str, str]]:
+        self._visit(schema, value, "")
+        return self._failures
+
+    def _fail(self, path: str, code: str) -> None:
+        if len(self._failures) < MAX_EXTRACTION_VALIDATION_FAILURES:
+            self._failures.append((path, code))
+
+    def _visit(self, node: dict[str, object], current: object, path: str) -> None:
         schema_type = str(node["type"])
         if not _instance_type_matches(schema_type, current):
-            fail(path, "type_mismatch")
+            self._fail(path, "type_mismatch")
             return
         enum = node.get("enum")
         if isinstance(enum, list) and not any(
             _same_json_scalar(current, candidate) for candidate in enum
         ):
-            fail(path, "enum_mismatch")
+            self._fail(path, "enum_mismatch")
         if schema_type == "object":
-            properties = node["properties"]
-            required = node.get("required", [])
-            if not isinstance(properties, dict) or not isinstance(current, dict):
-                return
-            for name in required if isinstance(required, list) else []:
-                if name not in current:
-                    fail(f"{path}/{_pointer_token(str(name))}", "required_missing")
-            for name in current:
-                if name not in properties:
-                    fail(f"{path}/{_pointer_token(str(name))}", "additional_property")
-            for name, child in properties.items():
-                if name in current and isinstance(child, dict):
-                    visit(child, current[name], f"{path}/{_pointer_token(str(name))}")
+            self._visit_object(node, current, path)
         elif schema_type == "array" and isinstance(current, list):
-            child = node.get("items")
-            if isinstance(child, dict):
-                for index, item in enumerate(current):
-                    visit(child, item, f"{path}/{index}")
+            self._visit_array(node, current, path)
 
-    visit(schema, value, "")
-    return failures
+    def _visit_object(self, node: dict[str, object], current: object, path: str) -> None:
+        properties = node["properties"]
+        required = node.get("required", [])
+        if not isinstance(properties, dict) or not isinstance(current, dict):
+            return
+        for name in required if isinstance(required, list) else []:
+            if name not in current:
+                self._fail(f"{path}/{_pointer_token(str(name))}", "required_missing")
+        for name in current:
+            if name not in properties:
+                self._fail(f"{path}/{_pointer_token(str(name))}", "additional_property")
+        for name, child in properties.items():
+            if name in current and isinstance(child, dict):
+                self._visit(child, current[name], f"{path}/{_pointer_token(str(name))}")
+
+    def _visit_array(
+        self, node: dict[str, object], current: list[object], path: str
+    ) -> None:
+        child = node.get("items")
+        if not isinstance(child, dict):
+            return
+        for index, item in enumerate(current):
+            self._visit(child, item, f"{path}/{index}")
 
 
 def scalar_fields(

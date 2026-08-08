@@ -187,7 +187,7 @@ class Settings:
     search_profiles: dict[str, SearchProfileDefaults]
     url_safety_policy: UrlSafetyPolicy
 
-    def __post_init__(self) -> None:
+    def _validate_crawler_identity(self) -> None:
         if not 1 <= self.crawl_concurrency <= MAX_CRAWL_CONCURRENCY:
             raise RuntimeError(f"CRAWL_CONCURRENCY must be between 1 and {MAX_CRAWL_CONCURRENCY}")
         if self.crawl_per_host_concurrency < 1:
@@ -200,6 +200,8 @@ class Settings:
             raise RuntimeError("CRAWLER_ROBOTS_USER_AGENT must be a robots user-agent token")
         if self.crawler_robots_user_agent.casefold() not in self.crawler_user_agent.casefold():
             raise RuntimeError("CRAWLER_ROBOTS_USER_AGENT must appear in CRAWLER_USER_AGENT")
+
+    def _validate_service_limits(self) -> None:
         if self.reranker_batch_size < 1:
             raise RuntimeError("RERANKER_BATCH_SIZE must be >= 1")
         if self.reranker_timeout_s < 1:
@@ -220,6 +222,8 @@ class Settings:
             raise RuntimeError(
                 f"MAX_URLS must be between 1 and {MAX_SELECTED_URLS}"
             )
+
+    def _validate_resource_policy(self) -> None:
         try:
             ResourcePolicy(
                 max_request_body_bytes=self.max_request_body_bytes,
@@ -255,6 +259,8 @@ class Settings:
             raise RuntimeError(
                 "MAX_INTERNAL_FANOUT must cover URL, subquery, crawl, chunk, and profile limits"
             )
+
+    def _validate_site_limits(self) -> None:
         if self.site_default_delay_s < 0:
             raise RuntimeError("SITE_DEFAULT_DELAY_S must be >= 0")
         if self.site_max_jitter_s < 0:
@@ -283,6 +289,8 @@ class Settings:
             raise RuntimeError(
                 "MAX_SITEMAP_DOCUMENTS must not exceed MAX_INTERNAL_FANOUT"
             )
+
+    def _validate_page_cache(self) -> None:
         if not self.page_cache_path:
             raise RuntimeError("PAGE_CACHE_PATH must not be blank")
         for name, value in (
@@ -302,6 +310,8 @@ class Settings:
             )
         if self.page_diff_max_output_lines > 24:
             raise RuntimeError("PAGE_DIFF_MAX_OUTPUT_LINES must not exceed 24")
+
+    def _validate_crawl_jobs(self) -> None:
         if not self.crawl_job_path:
             raise RuntimeError("CRAWL_JOB_PATH must not be blank")
         if not 1 <= self.crawl_sync_max_pages <= MAX_SITE_PAGES:
@@ -341,6 +351,14 @@ class Settings:
             raise RuntimeError(
                 "CRAWL_JOB_RESULT_PAGE_MAX_BYTES must not exceed half MAX_RESPONSE_BODY_BYTES"
             )
+
+    def __post_init__(self) -> None:
+        self._validate_crawler_identity()
+        self._validate_service_limits()
+        self._validate_resource_policy()
+        self._validate_site_limits()
+        self._validate_page_cache()
+        self._validate_crawl_jobs()
 
 
 def load_settings() -> Settings:

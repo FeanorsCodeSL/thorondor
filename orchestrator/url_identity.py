@@ -10,6 +10,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 from .url_safety import parse_ip_literal
 
 DEDUP_POLICY_VERSION = "thorondor.url-dedup.v1"
+SHA256_PATTERN = r"^[0-9a-f]{64}$"
 
 RequestedUrl = NewType("RequestedUrl", str)
 FinalUrl = NewType("FinalUrl", str)
@@ -58,8 +59,8 @@ class DocumentIdentity(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
 
     final_url: FinalUrl
-    cleaned_markdown_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
-    document_id: str = Field(pattern=r"^[0-9a-f]{64}$")
+    cleaned_markdown_sha256: str = Field(pattern=SHA256_PATTERN)
+    document_id: str = Field(pattern=SHA256_PATTERN)
 
     @model_validator(mode="after")
     def validate_document_identity(self) -> "DocumentIdentity":
@@ -78,11 +79,11 @@ class EvidenceIdentity(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
 
     final_url: FinalUrl
-    cleaned_markdown_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
-    document_id: str = Field(pattern=r"^[0-9a-f]{64}$")
+    cleaned_markdown_sha256: str = Field(pattern=SHA256_PATTERN)
+    document_id: str = Field(pattern=SHA256_PATTERN)
     start_index: int = Field(ge=0)
     end_index: int = Field(gt=0)
-    evidence_id: EvidenceId = Field(pattern=r"^[0-9a-f]{64}$")
+    evidence_id: EvidenceId = Field(pattern=SHA256_PATTERN)
 
     @model_validator(mode="after")
     def validate_evidence_identity(self) -> "EvidenceIdentity":

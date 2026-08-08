@@ -53,7 +53,7 @@ def test_exact_chunks_receive_document_evidence_identity_and_section_heading():
     document = (
         "# First\n\nAlpha evidence.\n\n"
         "```python\n# Not a section\nvalue = 1\n```\n\n"
-        "## Second\n\nBeta evidence."
+        "## Second ###\n\nBeta evidence."
     )
 
     def handler(req):

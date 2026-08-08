@@ -81,6 +81,24 @@ class LlmStructuredExtractor:
         markdown: str,
         schema: dict[str, object],
     ) -> StructuredModelResult:
+        user_prompt, prompt_bytes = self._prompt(markdown, schema)
+        if prompt_bytes > MAX_EXTRACTION_PROMPT_BYTES:
+            return StructuredModelResult(
+                reason="prompt_too_large",
+                prompt_bytes=prompt_bytes,
+            )
+        headers = {"Authorization": f"Bearer {self.api_key}"} if self.api_key else None
+        body = await self._read_body(
+            request_id_headers(headers),
+            self._request_payload(user_prompt),
+            prompt_bytes,
+        )
+        if isinstance(body, StructuredModelResult):
+            return body
+        return self._parse_body(body, prompt_bytes)
+
+    @staticmethod
+    def _prompt(markdown: str, schema: dict[str, object]) -> tuple[str, int]:
         safe_markdown = markdown.encode("utf-8", "replace").decode("utf-8")
         user_prompt = json.dumps(
             {
@@ -91,14 +109,10 @@ class LlmStructuredExtractor:
             separators=(",", ":"),
         )
         prompt_bytes = len((_SYSTEM_PROMPT + user_prompt).encode("utf-8"))
-        if prompt_bytes > MAX_EXTRACTION_PROMPT_BYTES:
-            return StructuredModelResult(
-                reason="prompt_too_large",
-                prompt_bytes=prompt_bytes,
-            )
-        headers = {"Authorization": f"Bearer {self.api_key}"} if self.api_key else None
-        headers = request_id_headers(headers)
-        payload = {
+        return user_prompt, prompt_bytes
+
+    def _request_payload(self, user_prompt: str) -> dict[str, object]:
+        return {
             "model": self.model,
             "messages": [
                 {"role": "system", "content": _SYSTEM_PROMPT},
@@ -108,6 +122,13 @@ class LlmStructuredExtractor:
             "temperature": 0,
             "max_tokens": MAX_EXTRACTION_OUTPUT_TOKENS,
         }
+
+    async def _read_body(
+        self,
+        headers: dict[str, str],
+        payload: dict[str, object],
+        prompt_bytes: int,
+    ) -> bytearray | StructuredModelResult:
         body_limit = MAX_EXTRACTION_OUTPUT_BYTES * 2
         body = bytearray()
         try:
@@ -138,6 +159,10 @@ class LlmStructuredExtractor:
             return StructuredModelResult(reason="model_timeout", prompt_bytes=prompt_bytes)
         except httpx.HTTPError:
             return StructuredModelResult(reason="model_error", prompt_bytes=prompt_bytes)
+        return body
+
+    @staticmethod
+    def _parse_body(body: bytearray, prompt_bytes: int) -> StructuredModelResult:
         try:
             envelope = json.loads(body)
             content = envelope["choices"][0]["message"]["content"]
@@ -187,7 +212,6 @@ class LlmStructuredExtractor:
             IndexError,
             TypeError,
             ValueError,
-            UnicodeError,
             RecursionError,
         ):
             return StructuredModelResult(

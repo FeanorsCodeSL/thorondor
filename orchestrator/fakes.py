@@ -34,6 +34,7 @@ from .types import (
 from .url_identity import build_document_identity, evidence_id_for
 
 FAKE_ARTICLE_URL = "https://a.test/article"
+FAKE_RERANKER_VERSION = "fake-reranker@1"
 
 
 def _fake_extract(html: str, **_kwargs) -> str:
@@ -302,7 +303,7 @@ class FakeReranker:
             ScoredChunk(
                 chunk,
                 1.0 - (index * 0.1),
-                (ScoreComponent("reranker", 1.0 - (index * 0.1), "fake-reranker@1"),),
+                (ScoreComponent("reranker", 1.0 - (index * 0.1), FAKE_RERANKER_VERSION),),
             )
             for index, chunk in enumerate(chunks)
         ]
@@ -312,14 +313,14 @@ class FakeReranker:
                 batches=1 if chunks else 0,
                 scored_count=len(scored),
             ),
-            "fake-reranker@1",
+            FAKE_RERANKER_VERSION,
         )
 
 
 class EmptyReranker:
     async def rerank(self, _query: str, _chunks: list[Chunk]) -> RerankOutcome:
         await _async_boundary()
-        return RerankOutcome([], RerankerTelemetry(), "fake-reranker@1")
+        return RerankOutcome([], RerankerTelemetry(), FAKE_RERANKER_VERSION)
 
 
 class PartialReranker:
@@ -329,14 +330,14 @@ class PartialReranker:
             ScoredChunk(
                 chunk,
                 1.0,
-                (ScoreComponent("reranker", 1.0, "fake-reranker@1"),),
+                (ScoreComponent("reranker", 1.0, FAKE_RERANKER_VERSION),),
             )
             for chunk in chunks[:1]
         ]
         return RerankOutcome(
             scored,
             RerankerTelemetry(batches=1 if chunks else 0, scored_count=len(scored)),
-            "fake-reranker@1",
+            FAKE_RERANKER_VERSION,
         )
 
 

@@ -159,6 +159,21 @@ def _inside_section(node: _Node, section: str | None) -> bool:
     return False
 
 
+def _attribute_matches(node: _Node, attribute: str | None) -> bool:
+    if attribute is None:
+        return True
+    parsed = _ATTRIBUTE.fullmatch(attribute)
+    if parsed is None:
+        return False
+    name = parsed.group("name").casefold()
+    if name not in node.attrs:
+        return False
+    expected = parsed.group("value")
+    if expected is None:
+        return True
+    return node.attrs[name] == expected.strip().strip("\"'")
+
+
 def _css_matches(node: _Node, selector: str) -> bool:
     match = _CSS_TOKEN.fullmatch(selector.strip())
     if match is None:
@@ -174,19 +189,7 @@ def _css_matches(node: _Node, selector: str) -> bool:
     if any(value not in actual_classes for value in classes):
         return False
     attribute = match.group("attr")
-    if attribute:
-        parsed = _ATTRIBUTE.fullmatch(attribute)
-        if parsed is None:
-            return False
-        name = parsed.group("name").casefold()
-        if name not in node.attrs:
-            return False
-        expected = parsed.group("value")
-        if expected is not None:
-            expected = expected.strip().strip("\"'")
-            if node.attrs[name] != expected:
-                return False
-    return bool(tag or element_id or classes or attribute)
+    return _attribute_matches(node, attribute) and bool(tag or element_id or classes or attribute)
 
 
 def _matches(node: _Node, locator: TargetLocator) -> bool:

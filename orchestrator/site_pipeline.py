@@ -4,6 +4,7 @@ from collections import Counter, deque
 from collections.abc import Awaitable, Callable
 from dataclasses import replace
 from inspect import isawaitable
+from typing import cast
 from urllib.parse import urlsplit
 
 from .crawl_policy import CrawlFrontier, CrawlPolicy, FrontierRecord
@@ -24,7 +25,7 @@ from .outcome_codes import FetchOutcomeCode
 from .politeness import parse_retry_after
 from .resource_policy import RouteDeadlineExceeded
 from .robots_policy import RobotsSnapshot, robots_body
-from .sitemap_policy import parse_sitemap
+from .sitemap_policy import SitemapDocument, parse_sitemap
 from .types import FetchStageOutcome
 
 MAX_SITEMAP_DEPTH = 3
@@ -46,7 +47,7 @@ def _origin(url: str) -> str | None:
         if parsed.scheme.casefold() not in {"http", "https"} or not host:
             return None
         port = parsed.port
-    except (TypeError, ValueError, UnicodeError):
+    except (TypeError, ValueError):
         return None
     include_port = port is not None and not (
         (parsed.scheme.casefold() == "http" and port == 80)
@@ -206,10 +207,13 @@ class _SiteOperation:
             retry_after_s=retry_after,
         )
         if outcome.final_url and not await self._is_safe(outcome.final_url):
-            return replace(
-                outcome,
-                code=FetchOutcomeCode.UNSAFE_REDIRECT,
-                page=None,
+            return cast(
+                FetchStageOutcome,
+                replace(
+                    outcome,
+                    code=FetchOutcomeCode.UNSAFE_REDIRECT,
+                    page=None,
+                ),
             )
         return outcome
 
@@ -293,7 +297,7 @@ class _SiteOperation:
     ) -> FrontierRecord | None:
         try:
             scheme = urlsplit(candidate).scheme.casefold()
-        except (TypeError, ValueError, UnicodeError):
+        except (TypeError, ValueError):
             scheme = ""
         if scheme and scheme not in {"http", "https"}:
             self.frontier.non_http_urls_skipped += 1
@@ -349,7 +353,7 @@ class _SiteOperation:
             candidate_origin = _origin(url)
             seed_host = canonical_host(urlsplit(self.effective_url).hostname)
             candidate_host = canonical_host(urlsplit(url).hostname)
-        except (TypeError, ValueError, UnicodeError):
+        except (TypeError, ValueError):
             return False
         return candidate_origin == seed_origin or (
             self.request.include_subdomains
@@ -357,13 +361,97 @@ class _SiteOperation:
             and candidate_host.endswith(f".{seed_host}")
         )
 
-    async def _load_sitemaps(self, snapshot: RobotsSnapshot) -> None:
+    def _sitemap_roots(self, snapshot: RobotsSnapshot) -> list[str]:
         roots = list(snapshot.sitemaps)
         for path in ("/sitemap.xml", "/sitemap_index.xml"):
             candidate = f"{self.effective_origin}{path}"
             if candidate not in roots:
                 roots.append(candidate)
-        queue = deque((url, 0) for url in roots)
+        return roots
+
+    def _next_sitemap_candidate(
+        self,
+        sitemap_url: str,
+        depth: int,
+        visited: set[str],
+    ) -> str | None:
+        normalized = self.frontier.policy.normalize(sitemap_url)
+        if normalized is None or normalized in visited or depth > MAX_SITEMAP_DEPTH:
+            return None
+        visited.add(normalized)
+        self.sitemap_candidates_examined += 1
+        return normalized
+
+    async def _fetch_sitemap_document(
+        self,
+        normalized: str,
+    ) -> SitemapDocument | None:
+        if not self._sitemap_origin_allowed(normalized):
+            self._warning("sitemap_outside_scope")
+            return None
+        if not await self._is_safe(normalized):
+            self._warning("sitemap_unsafe_target")
+            return None
+        robots = await self._robots_for(normalized)
+        if not robots.allows(normalized):
+            self._warning("sitemap_robots_refused")
+            return None
+        self.sitemap_documents_attempted += 1
+        outcome = await self._fetch_target(normalized, MAP_CAPABILITIES, robots)
+        if outcome.code != FetchOutcomeCode.CONTENT:
+            self._warning(f"sitemap_{outcome.code.value}")
+            return None
+        sitemap_final_url = outcome.final_url or normalized
+        if not self._sitemap_origin_allowed(sitemap_final_url):
+            self._warning("sitemap_redirect_outside_scope")
+            return None
+        final_robots = await self._robots_for(sitemap_final_url)
+        if not final_robots.allows(sitemap_final_url):
+            self._warning("sitemap_redirect_robots_refused")
+            return None
+        document = parse_sitemap(
+            _body(outcome),
+            max_bytes=self.deps.max_sitemap_bytes,
+            max_entries=self.deps.max_sitemap_entries,
+        )
+        if document.reason is not None:
+            self._warning(f"sitemap_{document.reason}")
+            return None
+        return document
+
+    async def _queue_sitemap_entries(
+        self,
+        document: SitemapDocument,
+        depth: int,
+        queue: deque[tuple[str, int]],
+        visited: set[str],
+    ) -> None:
+        self.sitemap_documents += 1
+        self.sitemap_entries += len(document.entries)
+        if document.truncated:
+            self.sitemap_truncated += 1
+        if document.kind == "index":
+            for entry in document.entries:
+                if entry.url not in visited:
+                    queue.append((entry.url, depth + 1))
+            return
+        for entry in document.entries:
+            await self._admit(
+                entry.url,
+                source="sitemap",
+                depth=0,
+                modified_at=entry.modified_at,
+                priority=entry.priority,
+            )
+
+    def _finish_sitemap_loading(self, queue: deque[tuple[str, int]]) -> None:
+        if queue and self.sitemap_documents_attempted >= self.deps.max_sitemap_documents:
+            self._warning("sitemap_document_limit_reached")
+        elif queue:
+            self._warning("sitemap_candidate_limit_reached")
+
+    async def _load_sitemaps(self, snapshot: RobotsSnapshot) -> None:
+        queue = deque((url, 0) for url in self._sitemap_roots(snapshot))
         visited: set[str] = set()
         while (
             queue
@@ -373,63 +461,14 @@ class _SiteOperation:
         ):
             self._check_cancelled()
             sitemap_url, depth = queue.popleft()
-            normalized = self.frontier.policy.normalize(sitemap_url)
-            if normalized is None or normalized in visited or depth > MAX_SITEMAP_DEPTH:
+            normalized = self._next_sitemap_candidate(sitemap_url, depth, visited)
+            if normalized is None:
                 continue
-            visited.add(normalized)
-            self.sitemap_candidates_examined += 1
-            if not self._sitemap_origin_allowed(normalized):
-                self._warning("sitemap_outside_scope")
+            document = await self._fetch_sitemap_document(normalized)
+            if document is None:
                 continue
-            if not await self._is_safe(normalized):
-                self._warning("sitemap_unsafe_target")
-                continue
-            robots = await self._robots_for(normalized)
-            if not robots.allows(normalized):
-                self._warning("sitemap_robots_refused")
-                continue
-            self.sitemap_documents_attempted += 1
-            outcome = await self._fetch_target(normalized, MAP_CAPABILITIES, robots)
-            if outcome.code != FetchOutcomeCode.CONTENT:
-                self._warning(f"sitemap_{outcome.code.value}")
-                continue
-            sitemap_final_url = outcome.final_url or normalized
-            if not self._sitemap_origin_allowed(sitemap_final_url):
-                self._warning("sitemap_redirect_outside_scope")
-                continue
-            final_robots = await self._robots_for(sitemap_final_url)
-            if not final_robots.allows(sitemap_final_url):
-                self._warning("sitemap_redirect_robots_refused")
-                continue
-            document = parse_sitemap(
-                _body(outcome),
-                max_bytes=self.deps.max_sitemap_bytes,
-                max_entries=self.deps.max_sitemap_entries,
-            )
-            if document.reason is not None:
-                self._warning(f"sitemap_{document.reason}")
-                continue
-            self.sitemap_documents += 1
-            self.sitemap_entries += len(document.entries)
-            if document.truncated:
-                self.sitemap_truncated += 1
-            if document.kind == "index":
-                for entry in document.entries:
-                    if entry.url not in visited:
-                        queue.append((entry.url, depth + 1))
-            else:
-                for entry in document.entries:
-                    await self._admit(
-                        entry.url,
-                        source="sitemap",
-                        depth=0,
-                        modified_at=entry.modified_at,
-                        priority=entry.priority,
-                    )
-        if queue and self.sitemap_documents_attempted >= self.deps.max_sitemap_documents:
-            self._warning("sitemap_document_limit_reached")
-        elif queue:
-            self._warning("sitemap_candidate_limit_reached")
+            await self._queue_sitemap_entries(document, depth, queue, visited)
+        self._finish_sitemap_loading(queue)
 
     async def _augment_search(self) -> None:
         self._check_cancelled()
@@ -505,58 +544,111 @@ class _SiteOperation:
             allowed_file_extensions=tuple(self.request.allowed_file_extensions),
         )
 
-    async def run(self):
-        self._check_cancelled()
+    def _seed_capabilities(self) -> frozenset[str]:
+        if isinstance(self.request, CrawlRequest):
+            return frozenset(self.request.capabilities) | {
+                "links",
+                "metadata",
+                "markdown",
+                "javascript",
+            }
+        return MAP_CAPABILITIES
+
+    async def _append_content_result(
+        self,
+        outcome: FetchStageOutcome,
+    ) -> None:
+        result = await wire_fetch_result_with_schema(
+            outcome,
+            frozenset(self.request.capabilities),
+            self.deps.markdown_cleaner,
+            tuple(self.request.structured_formats),
+            self.request.extraction_schema,
+            self.deps,
+        )
+        self.results.append(result)
+        await self._emit_result(result)
+        self.page_outcomes[-1] = replace(
+            outcome,
+            code=FetchOutcomeCode(result.outcome),
+        )
+
+    async def _prepare_seed(
+        self,
+    ) -> tuple[
+        frozenset[str] | None,
+        FetchStageOutcome | None,
+        RobotsSnapshot | None,
+        MapResponse | CrawlResponse | None,
+    ]:
         if not await self._is_safe(self.request.url):
             await self._emit_failure(self.request.url, "unsafe_seed")
-            return self._response("unsafe_seed")
-        seed_capabilities = (
-            frozenset(self.request.capabilities) | {"links", "metadata", "markdown", "javascript"}
-            if isinstance(self.request, CrawlRequest)
-            else MAP_CAPABILITIES
-        )
+            return None, None, None, self._response("unsafe_seed")
+        seed_capabilities = self._seed_capabilities()
         seed = await self._fetch_target(self.request.url, seed_capabilities)
         if seed.code != FetchOutcomeCode.CONTENT or seed.page is None:
             reason = await self._record_seed_failure(seed)
-            return self._response(reason)
+            return None, None, None, self._response(reason)
         self.effective_url = seed.final_url or self.request.url
         self.effective_origin = _origin(self.effective_url)
         if self.effective_origin is None:
-            return self._response("unsafe_redirect")
+            return None, None, None, self._response("unsafe_redirect")
         self.frontier = CrawlFrontier(self._policy(self.effective_url))
         robots = await self._robots_for(self.effective_url)
         seed_record = await self._admit(self.effective_url, source="seed", depth=0)
         if seed_record is None or seed_record.states[-1] == "filtered":
-            return self._response(
+            reason = (
                 "robots_refused"
                 if seed_record and seed_record.reason == "robots_refused"
                 else "no_admitted_urls"
             )
+            return None, None, None, self._response(reason)
         self.frontier.pop()
         self.frontier.mark_fetched(seed_record)
         self.page_outcomes.append(seed)
         if self.return_content:
-            result = await wire_fetch_result_with_schema(
-                seed,
-                frozenset(self.request.capabilities),
-                self.deps.markdown_cleaner,
-                tuple(self.request.structured_formats),
-                self.request.extraction_schema,
-                self.deps,
-            )
-            self.results.append(result)
-            await self._emit_result(result)
-            self.page_outcomes[-1] = replace(
-                seed,
-                code=FetchOutcomeCode(result.outcome),
-            )
-        if self.request.sitemap != "skip":
-            await self._load_sitemaps(robots)
-        if self.request.include_search:
-            await self._augment_search()
-        if self.request.sitemap != "only" and self.request.max_depth > 0:
-            for link in _links(seed):
-                await self._admit(link, source="link", depth=1)
+            await self._append_content_result(seed)
+        return seed_capabilities, seed, robots, None
+
+    async def _process_page(
+        self,
+        record: FrontierRecord,
+        page_attempts: int,
+        seed_capabilities: frozenset[str],
+    ) -> int:
+        record_robots = await self._robots_for(record.url)
+        if not record_robots.allows(record.url):
+            self.frontier.mark_failed(record, "robots_refused")
+            await self._emit_failure(record.url, "robots_refused")
+            return page_attempts
+        outcome = await self._fetch_target(record.url, seed_capabilities, record_robots)
+        page_attempts += 1
+        self.page_outcomes.append(outcome)
+        if outcome.code != FetchOutcomeCode.CONTENT or outcome.page is None:
+            self.frontier.mark_failed(record, outcome.code.value)
+            await self._emit_failure(record.url, outcome.code.value)
+            return page_attempts
+        final_record = await self._reconcile_final(record, outcome)
+        if final_record is None:
+            if record.reason != "duplicate_final_url":
+                await self._emit_failure(
+                    record.url,
+                    record.reason or "local_processing_failure",
+                )
+            return page_attempts
+        self.frontier.mark_fetched(final_record)
+        if self.return_content:
+            await self._append_content_result(outcome)
+        if self.request.sitemap != "only" and final_record.depth < self.request.max_depth:
+            for link in _links(outcome):
+                await self._admit(
+                    link,
+                    source="link",
+                    depth=final_record.depth + 1,
+                )
+        return page_attempts
+
+    async def _crawl_pages(self, seed_capabilities: frozenset[str]) -> None:
         page_attempts = 1
         while True:
             self._check_cancelled()
@@ -570,54 +662,36 @@ class _SiteOperation:
                 self.frontier.cancel_queued()
                 self.page_limit_reached = True
                 break
-            record_robots = await self._robots_for(record.url)
-            if not record_robots.allows(record.url):
-                self.frontier.mark_failed(record, "robots_refused")
-                await self._emit_failure(record.url, "robots_refused")
-                continue
-            outcome = await self._fetch_target(record.url, seed_capabilities, record_robots)
-            page_attempts += 1
-            self.page_outcomes.append(outcome)
-            if outcome.code != FetchOutcomeCode.CONTENT or outcome.page is None:
-                self.frontier.mark_failed(record, outcome.code.value)
-                await self._emit_failure(record.url, outcome.code.value)
-                continue
-            final_record = await self._reconcile_final(record, outcome)
-            if final_record is None:
-                if record.reason != "duplicate_final_url":
-                    await self._emit_failure(
-                        record.url,
-                        record.reason or "local_processing_failure",
-                    )
-                continue
-            self.frontier.mark_fetched(final_record)
-            if self.return_content:
-                result = await wire_fetch_result_with_schema(
-                    outcome,
-                    frozenset(self.request.capabilities),
-                    self.deps.markdown_cleaner,
-                    tuple(self.request.structured_formats),
-                    self.request.extraction_schema,
-                    self.deps,
-                )
-                self.results.append(result)
-                await self._emit_result(result)
-                self.page_outcomes[-1] = replace(
-                    outcome,
-                    code=FetchOutcomeCode(result.outcome),
-                )
-            if self.request.sitemap != "only" and final_record.depth < self.request.max_depth:
-                for link in _links(outcome):
-                    await self._admit(link, source="link", depth=final_record.depth + 1)
+            page_attempts = await self._process_page(
+                record,
+                page_attempts,
+                seed_capabilities,
+            )
+
+    def _site_outcome(self) -> str:
         if self.page_limit_reached or self.frontier.omitted_due_to_limit:
-            outcome_reason = "limit_reached"
-        elif any(record.states[-1] == "failed" for record in self.frontier.records) or any(
+            return "limit_reached"
+        if any(record.states[-1] == "failed" for record in self.frontier.records) or any(
             outcome.code != FetchOutcomeCode.CONTENT for outcome in self.page_outcomes
         ):
-            outcome_reason = "partial"
-        else:
-            outcome_reason = "completed"
-        return self._response(outcome_reason)
+            return "partial"
+        return "completed"
+
+    async def run(self):
+        self._check_cancelled()
+        seed_capabilities, seed, robots, early_response = await self._prepare_seed()
+        if early_response is not None:
+            return early_response
+        assert seed_capabilities is not None and seed is not None and robots is not None
+        if self.request.sitemap != "skip":
+            await self._load_sitemaps(robots)
+        if self.request.include_search:
+            await self._augment_search()
+        if self.request.sitemap != "only" and self.request.max_depth > 0:
+            for link in _links(seed):
+                await self._admit(link, source="link", depth=1)
+        await self._crawl_pages(seed_capabilities)
+        return self._response(self._site_outcome())
 
     def _records(self) -> list[SiteUrlRecord]:
         if self.frontier is None:

@@ -11,6 +11,10 @@ from .models import CrawlJobState, CrawlRequest, FetchResult
 from .outcome_codes import JobOutcomeCode
 
 JOB_SCHEMA_VERSION = 1
+BEGIN_IMMEDIATE_SQL = "BEGIN IMMEDIATE"
+COUNT_JOBS_SQL = "SELECT COUNT(*) FROM crawl_jobs"
+SELECT_JOB_SQL = "SELECT * FROM crawl_jobs WHERE job_id = ?"
+SELECT_SCOPED_JOB_SQL = "SELECT * FROM crawl_jobs WHERE job_id = ? AND scope_hash = ?"
 TERMINAL_JOB_STATES = frozenset(
     {
         JobOutcomeCode.COMPLETED.value,
@@ -370,7 +374,7 @@ class SqliteCrawlJobStore:
         conflict = False
         full = False
         with self._transaction() as connection:
-            connection.execute("BEGIN IMMEDIATE")
+            connection.execute(BEGIN_IMMEDIATE_SQL)
             self._expire_due(connection, now)
             row = connection.execute(
                 """
@@ -385,7 +389,7 @@ class SqliteCrawlJobStore:
                 else:
                     result = ClaimResult(self._record(connection, row), True)
             elif (
-                connection.execute("SELECT COUNT(*) FROM crawl_jobs").fetchone()[0]
+                connection.execute(COUNT_JOBS_SQL).fetchone()[0]
                 >= self.max_records
             ):
                 full = True
@@ -408,7 +412,7 @@ class SqliteCrawlJobStore:
                     ),
                 )
                 row = connection.execute(
-                    "SELECT * FROM crawl_jobs WHERE job_id = ?",
+                    SELECT_JOB_SQL,
                     (job_id,),
                 ).fetchone()
                 result = ClaimResult(self._record(connection, row), False)
@@ -427,7 +431,7 @@ class SqliteCrawlJobStore:
         with self._transaction() as connection:
             self._expire_due(connection, now)
             row = connection.execute(
-                "SELECT * FROM crawl_jobs WHERE job_id = ? AND scope_hash = ?",
+                SELECT_SCOPED_JOB_SQL,
                 (job_id, scope_hash),
             ).fetchone()
             if row is not None:
@@ -444,7 +448,7 @@ class SqliteCrawlJobStore:
     def _get_any(self, job_id: str) -> CrawlJobRecord | None:
         with self._transaction() as connection:
             row = connection.execute(
-                "SELECT * FROM crawl_jobs WHERE job_id = ?",
+                SELECT_JOB_SQL,
                 (job_id,),
             ).fetchone()
             return self._record(connection, row) if row is not None else None
@@ -490,7 +494,7 @@ class SqliteCrawlJobStore:
     def _claim_next(self) -> CrawlJobRecord | None:
         now = self.clock()
         with self._transaction() as connection:
-            connection.execute("BEGIN IMMEDIATE")
+            connection.execute(BEGIN_IMMEDIATE_SQL)
             self._expire_due(connection, now)
             row = connection.execute(
                 """
@@ -512,7 +516,7 @@ class SqliteCrawlJobStore:
                 (now, row["job_id"]),
             )
             claimed = connection.execute(
-                "SELECT * FROM crawl_jobs WHERE job_id = ?",
+                SELECT_JOB_SQL,
                 (row["job_id"],),
             ).fetchone()
             return self._record(connection, claimed)
@@ -522,7 +526,7 @@ class SqliteCrawlJobStore:
 
     def _increment_attempt(self, job_id: str) -> CrawlJobRecord:
         with self._transaction() as connection:
-            connection.execute("BEGIN IMMEDIATE")
+            connection.execute(BEGIN_IMMEDIATE_SQL)
             connection.execute(
                 """
                 UPDATE crawl_jobs SET attempts = attempts + 1
@@ -531,7 +535,7 @@ class SqliteCrawlJobStore:
                 (job_id,),
             )
             row = connection.execute(
-                "SELECT * FROM crawl_jobs WHERE job_id = ?",
+                SELECT_JOB_SQL,
                 (job_id,),
             ).fetchone()
             if row is None:
@@ -554,7 +558,7 @@ class SqliteCrawlJobStore:
             raise CrawlJobResultTooLarge(item_bytes)
         now = self.clock()
         with self._transaction() as connection:
-            connection.execute("BEGIN IMMEDIATE")
+            connection.execute(BEGIN_IMMEDIATE_SQL)
             existing = connection.execute(
                 """
                 SELECT 1 FROM crawl_job_results
@@ -630,7 +634,7 @@ class SqliteCrawlJobStore:
     def _append_failure(self, job_id: str, failure_key: str, summary: str) -> None:
         bounded = summary[: self.max_failure_summary_chars]
         with self._transaction() as connection:
-            connection.execute("BEGIN IMMEDIATE")
+            connection.execute(BEGIN_IMMEDIATE_SQL)
             if connection.execute(
                 "SELECT 1 FROM crawl_job_results WHERE job_id = ? AND result_key = ?",
                 (job_id, failure_key),
@@ -682,7 +686,7 @@ class SqliteCrawlJobStore:
     def _append_summary(self, job_id: str, summary: str) -> None:
         bounded = summary[: self.max_failure_summary_chars]
         with self._transaction() as connection:
-            connection.execute("BEGIN IMMEDIATE")
+            connection.execute(BEGIN_IMMEDIATE_SQL)
             row = connection.execute(
                 "SELECT failure_summaries_json FROM crawl_jobs WHERE job_id = ?",
                 (job_id,),
@@ -710,9 +714,9 @@ class SqliteCrawlJobStore:
         now = self.clock()
         retention_deadline = now + self.retention_s
         with self._transaction() as connection:
-            connection.execute("BEGIN IMMEDIATE")
+            connection.execute(BEGIN_IMMEDIATE_SQL)
             row = connection.execute(
-                "SELECT * FROM crawl_jobs WHERE job_id = ?",
+                SELECT_JOB_SQL,
                 (job_id,),
             ).fetchone()
             if row is None:
@@ -737,7 +741,7 @@ class SqliteCrawlJobStore:
                 ),
             )
             final = connection.execute(
-                "SELECT * FROM crawl_jobs WHERE job_id = ?",
+                SELECT_JOB_SQL,
                 (job_id,),
             ).fetchone()
             return self._record(connection, final)
@@ -755,17 +759,15 @@ class SqliteCrawlJobStore:
         now = self.clock()
         record = None
         with self._transaction() as connection:
-            connection.execute("BEGIN IMMEDIATE")
+            connection.execute(BEGIN_IMMEDIATE_SQL)
             self._expire_due(connection, now)
             row = connection.execute(
-                "SELECT * FROM crawl_jobs WHERE job_id = ? AND scope_hash = ?",
+                SELECT_SCOPED_JOB_SQL,
                 (job_id, scope_hash),
             ).fetchone()
-            if row is None:
-                pass
-            elif row["state"] == JobOutcomeCode.EXPIRED.value:
+            if row is not None and row["state"] == JobOutcomeCode.EXPIRED.value:
                 record = self._record(connection, row)
-            elif row["state"] == JobOutcomeCode.QUEUED.value:
+            elif row is not None and row["state"] == JobOutcomeCode.QUEUED.value:
                 connection.execute(
                     """
                     UPDATE crawl_jobs
@@ -775,14 +777,14 @@ class SqliteCrawlJobStore:
                     """,
                     (now, now + self.retention_s, job_id),
                 )
-            elif row["state"] == JobOutcomeCode.RUNNING.value:
+            elif row is not None and row["state"] == JobOutcomeCode.RUNNING.value:
                 connection.execute(
                     "UPDATE crawl_jobs SET cancel_requested = 1 WHERE job_id = ?",
                     (job_id,),
                 )
             if row is not None and record is None:
                 final = connection.execute(
-                    "SELECT * FROM crawl_jobs WHERE job_id = ?",
+                    SELECT_JOB_SQL,
                     (job_id,),
                 ).fetchone()
                 record = self._record(connection, final)
@@ -794,6 +796,39 @@ class SqliteCrawlJobStore:
 
     async def request_cancel(self, job_id: str, scope_hash: str) -> CrawlJobRecord:
         return await asyncio.to_thread(self._request_cancel, job_id, scope_hash)
+
+    @staticmethod
+    def _build_result_page(
+        rows: list[sqlite3.Row],
+        after_ordinal: int,
+        max_items: int,
+        max_bytes: int,
+    ) -> tuple[StoredResultPage, int | None]:
+        results: list[FetchResult] = []
+        used = 0
+        last_ordinal = after_ordinal
+        has_more = False
+        oversized_item = None
+        for result_row in rows:
+            if len(results) >= max_items:
+                has_more = True
+                break
+            item_bytes = result_row["item_bytes"]
+            if used + item_bytes > max_bytes:
+                if not results:
+                    oversized_item = item_bytes
+                else:
+                    has_more = True
+                break
+            results.append(FetchResult.model_validate_json(result_row["result_json"]))
+            used += item_bytes
+            last_ordinal = result_row["ordinal"]
+        return StoredResultPage(
+            results=tuple(results),
+            last_ordinal=last_ordinal,
+            returned_bytes=used,
+            has_more=has_more,
+        ), oversized_item
 
     def _result_page(
         self,
@@ -810,7 +845,7 @@ class SqliteCrawlJobStore:
         with self._transaction() as connection:
             self._expire_due(connection, now)
             row = connection.execute(
-                "SELECT * FROM crawl_jobs WHERE job_id = ? AND scope_hash = ?",
+                SELECT_SCOPED_JOB_SQL,
                 (job_id, scope_hash),
             ).fetchone()
             if row is not None:
@@ -826,29 +861,11 @@ class SqliteCrawlJobStore:
                     """,
                     (job_id, after_ordinal, max_items + 1),
                 ).fetchall()
-                results: list[FetchResult] = []
-                used = 0
-                last_ordinal = after_ordinal
-                has_more = False
-                for result_row in rows:
-                    if len(results) >= max_items:
-                        has_more = True
-                        break
-                    item_bytes = result_row["item_bytes"]
-                    if used + item_bytes > max_bytes:
-                        if not results:
-                            oversized_item = item_bytes
-                        else:
-                            has_more = True
-                        break
-                    results.append(FetchResult.model_validate_json(result_row["result_json"]))
-                    used += item_bytes
-                    last_ordinal = result_row["ordinal"]
-                page = StoredResultPage(
-                    results=tuple(results),
-                    last_ordinal=last_ordinal,
-                    returned_bytes=used,
-                    has_more=has_more,
+                page, oversized_item = self._build_result_page(
+                    rows,
+                    after_ordinal,
+                    max_items,
+                    max_bytes,
                 )
         if record is None:
             raise CrawlJobNotFound(job_id)
@@ -864,9 +881,9 @@ class SqliteCrawlJobStore:
     def _cleanup(self) -> int:
         now = self.clock()
         with self._transaction() as connection:
-            before = connection.execute("SELECT COUNT(*) FROM crawl_jobs").fetchone()[0]
+            before = connection.execute(COUNT_JOBS_SQL).fetchone()[0]
             self._expire_due(connection, now)
-            after = connection.execute("SELECT COUNT(*) FROM crawl_jobs").fetchone()[0]
+            after = connection.execute(COUNT_JOBS_SQL).fetchone()[0]
             return before - after
 
     async def cleanup(self) -> int:

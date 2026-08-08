@@ -55,7 +55,7 @@ class HostPoliteness:
 
     def _evict_idle(self, retained_host: str) -> None:
         now = self._clock()
-        for host, lock in list(self._locks.items()):
+        for host, lock in self._locks.copy().items():
             if (
                 host != retained_host
                 and not lock.locked()

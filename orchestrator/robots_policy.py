@@ -195,6 +195,89 @@ class _RobotsGroup:
     crawl_delays: list[float]
 
 
+class _RobotsParser:
+    def __init__(self, origin: str):
+        self._origin = origin
+        self._groups: list[_RobotsGroup] = []
+        self._current: _RobotsGroup | None = None
+        self._sitemaps: list[str] = []
+
+    def parse(self, body: str, user_agent: str, fetched_at: float) -> RobotsSnapshot:
+        for raw_line in body.splitlines():
+            directive = self._directive(raw_line)
+            if directive is not None:
+                self._add(*directive)
+        selected = self._selected_groups(user_agent)
+        rules = tuple(rule for group in selected for rule in group.rules)
+        delays = [delay for group in selected for delay in group.crawl_delays]
+        return RobotsSnapshot(
+            origin=self._origin,
+            user_agent=user_agent,
+            state="available",
+            rules=rules,
+            sitemaps=tuple(self._sitemaps),
+            crawl_delay_s=max(delays) if delays else None,
+            fetched_at=fetched_at,
+        )
+
+    @staticmethod
+    def _directive(raw_line: str) -> tuple[str, str] | None:
+        line = raw_line.split("#", 1)[0].strip()
+        if not line or ":" not in line:
+            return None
+        field, value = line.split(":", 1)
+        return field.strip().casefold(), value.strip()
+
+    def _add(self, field: str, value: str) -> None:
+        if field == "sitemap" and value:
+            self._add_sitemap(value)
+            return
+        if field == "user-agent" and value:
+            self._add_agent(value)
+            return
+        self._add_group_directive(field, value)
+
+    def _add_sitemap(self, value: str) -> None:
+        sitemap = urljoin(f"{self._origin.rstrip('/')}/", value)
+        if sitemap not in self._sitemaps:
+            self._sitemaps.append(sitemap)
+
+    def _add_agent(self, value: str) -> None:
+        if self._current is None or self._current.rules or self._current.crawl_delays:
+            self._current = _RobotsGroup([], [], [])
+            self._groups.append(self._current)
+        self._current.agents.append(value.casefold())
+
+    def _add_group_directive(self, field: str, value: str) -> None:
+        if self._current is None or not self._current.agents:
+            return
+        if field in {"allow", "disallow"}:
+            if value:
+                self._current.rules.append(RobotsRule(field == "allow", value))
+            return
+        if field == "crawl-delay":
+            self._add_delay(value)
+
+    def _add_delay(self, value: str) -> None:
+        try:
+            delay = float(value)
+        except ValueError:
+            return
+        if 0 <= delay <= 86400 and self._current is not None:
+            self._current.crawl_delays.append(delay)
+
+    def _selected_groups(self, user_agent: str) -> list[_RobotsGroup]:
+        token = user_agent.casefold()
+        matching = [
+            group
+            for group in self._groups
+            if any(agent != "*" and agent == token for agent in group.agents)
+        ]
+        if matching:
+            return matching
+        return [group for group in self._groups if "*" in group.agents]
+
+
 def parse_robots(
     body: str,
     *,
@@ -202,61 +285,7 @@ def parse_robots(
     user_agent: str,
     fetched_at: float,
 ) -> RobotsSnapshot:
-    groups: list[_RobotsGroup] = []
-    current: _RobotsGroup | None = None
-    sitemaps: list[str] = []
-    for raw_line in body.splitlines():
-        line = raw_line.split("#", 1)[0].strip()
-        if not line or ":" not in line:
-            continue
-        field, value = line.split(":", 1)
-        field = field.strip().casefold()
-        value = value.strip()
-        if field == "sitemap" and value:
-            sitemap = urljoin(f"{origin.rstrip('/')}/", value)
-            if sitemap not in sitemaps:
-                sitemaps.append(sitemap)
-            continue
-        if field == "user-agent" and value:
-            if current is None or current.rules or current.crawl_delays:
-                current = _RobotsGroup([], [], [])
-                groups.append(current)
-            current.agents.append(value.casefold())
-            continue
-        if current is None or not current.agents:
-            continue
-        if field in {"allow", "disallow"}:
-            if not value:
-                continue
-            current.rules.append(RobotsRule(field == "allow", value))
-        elif field == "crawl-delay":
-            try:
-                delay = float(value)
-            except ValueError:
-                continue
-            if 0 <= delay <= 86400:
-                current.crawl_delays.append(delay)
-    token = user_agent.casefold()
-    matching = [
-        group
-        for group in groups
-        if any(agent != "*" and agent == token for agent in group.agents)
-    ]
-    if matching:
-        selected = matching
-    else:
-        selected = [group for group in groups if "*" in group.agents]
-    rules = tuple(rule for group in selected for rule in group.rules)
-    delays = [delay for group in selected for delay in group.crawl_delays]
-    return RobotsSnapshot(
-        origin=origin,
-        user_agent=user_agent,
-        state="available",
-        rules=rules,
-        sitemaps=tuple(sitemaps),
-        crawl_delay_s=max(delays) if delays else None,
-        fetched_at=fetched_at,
-    )
+    return _RobotsParser(origin).parse(body, user_agent, fetched_at)
 
 
 class RobotsCache:

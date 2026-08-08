@@ -1,10 +1,9 @@
 """Internal pipeline data types."""
 from dataclasses import dataclass, field
-from typing import TypeAlias
 
 from .outcome_codes import FetchOutcomeCode
 
-JsonValue: TypeAlias = str | int | float | bool | None | list["JsonValue"] | dict[str, "JsonValue"]
+type JsonValue = str | int | float | bool | None | list[JsonValue] | dict[str, JsonValue]
 
 
 @dataclass(frozen=True)

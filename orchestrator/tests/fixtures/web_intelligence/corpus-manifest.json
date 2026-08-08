@@ -9,7 +9,7 @@
     },
     {
       "path": "javascript-shell.html",
-      "sha256": "dbec7042a2d16b374f3d0f04af4965881201bd66fd0f0c9e40581f19011a14ff",
+      "sha256": "0398d49ab8ce879d9ab1f8d55c02324c8111ed61b6201e0c8a757a33dda47553",
       "coverage": ["javascript_shell"]
     },
     {

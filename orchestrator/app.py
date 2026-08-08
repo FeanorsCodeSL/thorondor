@@ -1,6 +1,7 @@
 """FastAPI app for Thorondor."""
 import asyncio
 from contextlib import asynccontextmanager, suppress
+from typing import Annotated
 
 import httpx
 from fastapi import FastAPI, Header, HTTPException, Query, Request
@@ -279,46 +280,46 @@ def _expired_response(exc: CrawlJobExpired) -> JSONResponse:
     return JSONResponse(status_code=410, content=status.model_dump(mode="json"))
 
 
-def _job_error(exc: Exception):
+def _job_error(exc: Exception) -> HTTPException:
     if isinstance(exc, CrawlJobsDisabled):
-        raise HTTPException(status_code=503, detail={"reason": "crawl_jobs_disabled"})
+        return HTTPException(status_code=503, detail={"reason": "crawl_jobs_disabled"})
     if isinstance(exc, InvalidJobScope):
-        raise HTTPException(status_code=400, detail={"reason": "invalid_job_scope"})
+        return HTTPException(status_code=400, detail={"reason": "invalid_job_scope"})
     if isinstance(exc, CrawlJobNotFound):
-        raise HTTPException(status_code=404, detail={"reason": "crawl_job_not_found"})
+        return HTTPException(status_code=404, detail={"reason": "crawl_job_not_found"})
     if isinstance(exc, InvalidIdempotencyKey):
-        raise HTTPException(status_code=400, detail={"reason": "invalid_idempotency_key"})
+        return HTTPException(status_code=400, detail={"reason": "invalid_idempotency_key"})
     if isinstance(exc, IdempotencyConflict):
-        raise HTTPException(status_code=409, detail={"reason": "idempotency_conflict"})
+        return HTTPException(status_code=409, detail={"reason": "idempotency_conflict"})
     if isinstance(exc, RawHtmlPersistenceDisabled):
-        raise HTTPException(
+        return HTTPException(
             status_code=400,
             detail={"reason": "crawl_job_raw_html_disabled"},
         )
     if isinstance(exc, CrawlJobQueueFull):
         retry_after = get_deps().resource_policy.admission_retry_after_s
-        raise HTTPException(
+        return HTTPException(
             status_code=429,
             detail={"reason": "crawl_job_store_full"},
             headers={"Retry-After": str(retry_after)},
         )
     if isinstance(exc, CrawlJobApiCapacityUnavailable):
-        raise HTTPException(
+        return HTTPException(
             status_code=429,
             detail={"reason": "crawl_job_api_capacity_unavailable"},
             headers={"Retry-After": str(exc.retry_after_s)},
         )
     if isinstance(exc, CrawlJobWorkerUnavailable):
-        raise HTTPException(
+        return HTTPException(
             status_code=503,
             detail={"reason": "crawl_job_worker_unavailable"},
         )
     if isinstance(exc, InvalidCursor):
-        raise HTTPException(status_code=400, detail={"reason": "invalid_cursor"})
+        return HTTPException(status_code=400, detail={"reason": "invalid_cursor"})
     if isinstance(exc, InvalidPageLimit):
-        raise HTTPException(status_code=400, detail={"reason": "invalid_page_limit"})
+        return HTTPException(status_code=400, detail={"reason": "invalid_page_limit"})
     if isinstance(exc, CrawlJobResultTooLarge):
-        raise HTTPException(
+        return HTTPException(
             status_code=413,
             detail={"reason": "result_exceeds_page_byte_limit"},
         )
@@ -328,6 +329,7 @@ def _job_error(exc: Exception):
 @app.post(
     "/v1/crawl/jobs",
     status_code=202,
+    response_model=CrawlJobCreateResponse,
     responses={
         200: {"model": CrawlJobCreateResponse, "description": "Idempotent replay"},
         400: {"description": "Invalid scope, idempotency key, or raw HTML policy"},
@@ -339,9 +341,9 @@ def _job_error(exc: Exception):
 )
 async def create_crawl_job(
     req: CrawlRequest,
-    job_scope: str = Header(alias="X-Thorondor-Job-Scope"),
-    idempotency_key: str = Header(alias="Idempotency-Key"),
-) -> CrawlJobCreateResponse:
+    job_scope: Annotated[str, Header(alias="X-Thorondor-Job-Scope")],
+    idempotency_key: Annotated[str, Header(alias="Idempotency-Key")],
+) -> CrawlJobCreateResponse | JSONResponse:
     try:
         response = await get_deps().crawl_jobs.create(
             req,
@@ -349,7 +351,7 @@ async def create_crawl_job(
             idempotency_key=idempotency_key,
         )
     except Exception as exc:
-        _job_error(exc)
+        raise _job_error(exc) from exc
     if response.replayed:
         return JSONResponse(status_code=200, content=response.model_dump(mode="json"))
     return response
@@ -358,14 +360,14 @@ async def create_crawl_job(
 @app.get("/v1/crawl/jobs/{job_id}", responses=JOB_LOOKUP_ERROR_RESPONSES)
 async def crawl_job_status(
     job_id: str,
-    job_scope: str = Header(alias="X-Thorondor-Job-Scope"),
+    job_scope: Annotated[str, Header(alias="X-Thorondor-Job-Scope")],
 ) -> CrawlJobStatus:
     try:
         return await get_deps().crawl_jobs.status(job_id, scope=job_scope)
     except CrawlJobExpired as exc:
         return _expired_response(exc)
     except Exception as exc:
-        _job_error(exc)
+        raise _job_error(exc) from exc
 
 
 @app.get(
@@ -377,14 +379,13 @@ async def crawl_job_status(
 )
 async def crawl_job_results(
     job_id: str,
-    job_scope: str = Header(alias="X-Thorondor-Job-Scope"),
-    cursor: str | None = Query(default=None, max_length=512),
-    max_items: int | None = Query(default=None, ge=1, le=MAX_SITE_PAGES),
-    max_bytes: int | None = Query(
-        default=None,
-        ge=1,
-        description="Byte cap up to the operator-configured maximum.",
-    ),
+    job_scope: Annotated[str, Header(alias="X-Thorondor-Job-Scope")],
+    cursor: Annotated[str | None, Query(max_length=512)] = None,
+    max_items: Annotated[int | None, Query(ge=1, le=MAX_SITE_PAGES)] = None,
+    max_bytes: Annotated[
+        int | None,
+        Query(ge=1, description="Byte cap up to the operator-configured maximum."),
+    ] = None,
 ) -> CrawlJobResultPage:
     try:
         return await get_deps().crawl_jobs.results(
@@ -397,7 +398,7 @@ async def crawl_job_results(
     except CrawlJobExpired as exc:
         return _expired_response(exc)
     except Exception as exc:
-        _job_error(exc)
+        raise _job_error(exc) from exc
 
 
 @app.post(
@@ -409,14 +410,14 @@ async def crawl_job_results(
 )
 async def cancel_crawl_job(
     job_id: str,
-    job_scope: str = Header(alias="X-Thorondor-Job-Scope"),
+    job_scope: Annotated[str, Header(alias="X-Thorondor-Job-Scope")],
 ) -> CrawlJobStatus:
     try:
         return await get_deps().crawl_jobs.cancel(job_id, scope=job_scope)
     except CrawlJobExpired as exc:
         return _expired_response(exc)
     except Exception as exc:
-        _job_error(exc)
+        raise _job_error(exc) from exc
 
 
 async def _check_url(
