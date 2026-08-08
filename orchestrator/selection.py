@@ -1,13 +1,11 @@
 """Pure URL selection policy."""
-from dataclasses import dataclass
 import math
 import re
+from dataclasses import dataclass
 
 from .normalize import canonical_host, host_for
 from .types import DiscoveryResult
 
-
-MAX_SELECTION_DIAGNOSTICS = 50
 Candidate = tuple[DiscoveryResult, str, float]
 
 
@@ -104,13 +102,32 @@ def _can_select(state: _SelectionState, result: DiscoveryResult, host: str, per_
     return result.url not in state.selected_keys and state.host_counts.get(host, 0) < per_domain_limit
 
 
-def _add_selection(state: _SelectionState, result: DiscoveryResult, host: str, reason: str) -> None:
+def _result_engines(result: DiscoveryResult) -> set[str]:
+    engines = {item.engine for item in result.contributions if item.engine}
+    if result.engine:
+        engines.add(result.engine)
+    return engines
+
+
+def _add_selection(
+    state: _SelectionState,
+    result: DiscoveryResult,
+    host: str,
+    reason: str,
+    lexical_score: float,
+) -> None:
     state.selected.append(result)
     state.selected_keys.add(result.url)
     state.host_counts[host] = state.host_counts.get(host, 0) + 1
-    if result.engine:
-        state.seen_engines.add(result.engine)
-    state.decisions.append(SelectionDecision(result, selected=True, selection_reason=reason))
+    state.seen_engines.update(_result_engines(result))
+    state.decisions.append(
+        SelectionDecision(
+            result,
+            selected=True,
+            selection_reason=reason,
+            lexical_score=lexical_score,
+        )
+    )
 
 
 def _select_pass(
@@ -121,11 +138,11 @@ def _select_pass(
     reason: str,
     predicate,
 ) -> None:
-    for result, host, _score in ordered:
+    for result, host, lexical_score in ordered:
         if len(state.selected) >= max_urls:
             break
         if predicate(result, host, state) and _can_select(state, result, host, per_domain_limit):
-            _add_selection(state, result, host, reason)
+            _add_selection(state, result, host, reason, lexical_score)
 
 
 def _append_unselected(
@@ -175,7 +192,7 @@ class SelectionPolicyImpl:
             max_urls,
             per_domain_limit,
             "engine_diversity",
-            lambda result, _host, current: bool(result.engine and result.engine not in current.seen_engines),
+            lambda result, _host, current: bool(_result_engines(result) - current.seen_engines),
         )
         _select_pass(
             ordered,
@@ -188,7 +205,7 @@ class SelectionPolicyImpl:
         _select_pass(ordered, state, max_urls, per_domain_limit, "score", lambda _result, _host, _current: True)
         _append_unselected(ordered, state, per_domain_limit)
 
-        return state.selected, state.decisions[:MAX_SELECTION_DIAGNOSTICS]
+        return state.selected, state.decisions
 
     def select(
         self,

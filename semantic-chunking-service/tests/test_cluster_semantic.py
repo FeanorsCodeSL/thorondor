@@ -2,6 +2,7 @@ import chunking.cluster_semantic as cs
 import numpy as np
 import pytest
 from chunking.cluster_semantic import ClusterSemanticChunker
+from chunking.recursive_splitter import RecursiveCharacterTextSplitter
 from chunking.strategies import resolve_strategy
 from tests.conftest import fake_embed
 
@@ -20,6 +21,19 @@ def test_single_segment_returns_one_chunk():
     assert len(out) == 1
 
 
+def test_single_segment_preserves_exact_source_span():
+    text = "one short line"
+
+    out = ClusterSemanticChunker(fake_embed, max_chunk_size=400).split_text_with_metadata(
+        text,
+        preserve_offsets=True,
+    )
+
+    assert len(out) == 1
+    assert out[0].text == text[out[0].start_index:out[0].end_index] == text
+    assert out[0].verbatim is True
+
+
 def test_determinism():
     ch = ClusterSemanticChunker(fake_embed, max_chunk_size=40)
     text = "Alpha beta gamma. " * 50
@@ -30,10 +44,14 @@ def test_determinism():
 
 def test_oom_guard_uses_greedy_semantic(monkeypatch):
     monkeypatch.setattr(cs, "MAX_SEGMENTS_FOR_DP", 3)
+    text = "word " * 200
     out = ClusterSemanticChunker(fake_embed, max_chunk_size=40).split_text_with_metadata(
-        "word " * 200
+        text,
+        preserve_offsets=True,
     )
     assert len(out) >= 1
+    assert all(item.text == text[item.start_index:item.end_index] for item in out)
+    assert all(item.verbatim is True for item in out)
 
 
 def test_embedding_failure_falls_back_to_token_chunking():
@@ -44,6 +62,46 @@ def test_embedding_failure_falls_back_to_token_chunking():
         "word " * 100
     )
     assert len(out) >= 1
+
+
+def test_offset_invariant_failure_degrades_to_non_verbatim(monkeypatch):
+    def fail(_self, _text):
+        raise ValueError("not contiguous")
+
+    monkeypatch.setattr(RecursiveCharacterTextSplitter, "split_text_with_spans", fail)
+
+    out = ClusterSemanticChunker(fake_embed, max_chunk_size=40).split_text_with_metadata(
+        "Alpha beta gamma. " * 20,
+        preserve_offsets=True,
+    )
+
+    assert out
+    assert all(item.verbatim is False for item in out)
+
+
+def test_exact_chunk_token_count_matches_the_emitted_slice():
+    text = "abcdefghij"
+    out = ClusterSemanticChunker(
+        fake_embed,
+        max_chunk_size=20,
+        min_chunk_size=1,
+        initial_segment_size=3,
+    ).split_text_with_metadata(text, preserve_offsets=True)
+
+    assert out
+    assert all(item.token_count == len(item.text.split()) for item in out)
+
+
+def test_exact_chunk_builder_discards_whitespace_only_groups():
+    out = ClusterSemanticChunker(fake_embed)._build_chunk_results(
+        ["\n\n"],
+        [(0, 1)],
+        [(0, 2)],
+        [0],
+        "\n\n",
+    )
+
+    assert out == []
 
 
 def test_dynamic_programming_valve_3_uses_greedy_fallback_for_pathological_lengths():

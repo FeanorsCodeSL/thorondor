@@ -16,12 +16,19 @@ class IdentityPlanner:
 
 
 class LlmPlanner:
-    def __init__(self, endpoint: str, model: str, client: httpx.AsyncClient | None = None, api_key: str | None = None):
+    def __init__(
+        self,
+        endpoint: str,
+        model: str,
+        client: httpx.AsyncClient | None = None,
+        api_key: str | None = None,
+        timeout_s: float = 20.0,
+    ):
         self.endpoint = endpoint.rstrip("/")
         self.model = model
         self.api_key = api_key
         self._client = client or httpx.AsyncClient(
-            timeout=15.0,
+            timeout=timeout_s,
             limits=httpx.Limits(max_connections=5, max_keepalive_connections=5),
         )
         self._owns_client = client is None

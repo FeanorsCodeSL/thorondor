@@ -31,11 +31,67 @@ All environment variables must be present in `.env` (and `.env.llamacpp` or `.en
 | `HEALTHCHECK_MAX_CONNECTIONS` | Required / `8` | int (≥ 1) | Max connections in the healthcheck HTTP client pool. | `HEALTHCHECK_MAX_KEEPALIVE_CONNECTIONS` |
 | `HEALTHCHECK_MAX_KEEPALIVE_CONNECTIONS` | Required / `4` | int (≥ 1) | Max keepalive connections in the healthcheck client pool. | `HEALTHCHECK_MAX_CONNECTIONS` |
 
+### Resource Envelope
+
+| Variable | Required / Default | Type | Description | Related |
+|---|---|---|---|---|
+| `MAX_REQUEST_BODY_BYTES` | Required / `32768` | int (≥ 1) | Maximum REST or in-process MCP request payload. Oversize HTTP requests return 413. | `MAX_RESPONSE_BODY_BYTES` |
+| `MAX_RESPONSE_BODY_BYTES` | Required / `2097152` | int (≥ 1) | Maximum serialized response and Crawl4AI or stdio-proxy response body. | `MAX_CONTENT_BYTES` |
+| `SEARCH_ROUTE_DEADLINE_S` | Required / `120` | float (> 0) | End-to-end search deadline; expiry returns a closed 504 error. | `MAX_INFLIGHT_SEARCHES` |
+| `FETCH_ROUTE_DEADLINE_S` | Required / `60` | float (> 0) | End-to-end known-URL fetch deadline; expiry returns a closed 504 error. | `MAX_INFLIGHT_FETCHES` |
+| `MAP_ROUTE_DEADLINE_S` | Required / `90` | float (> 0) | End-to-end site-map deadline; expiry returns a closed 504 error. | `MAX_INFLIGHT_MAPS` |
+| `SITE_CRAWL_ROUTE_DEADLINE_S` | Required / `120` | float (> 0) | End-to-end bounded site-crawl deadline; expiry returns a closed 504 error. | `MAX_INFLIGHT_CRAWLS` |
+| `DISCOVERY_TIMEOUT_S` | Required / `20` | float (> 0) | Query-planning and per-subquery discovery stage deadline. | `MAX_SUBQUERIES` |
+| `CHUNK_TIMEOUT_S` | Required / `45` | float (> 0) | Total chunking stage deadline. | `CHUNK_CONCURRENCY` |
+| `MAX_INFLIGHT_SEARCHES` | Required / `4` | int (≥ 1) | Process-wide search admission slots. | `ADMISSION_WAIT_S` |
+| `MAX_INFLIGHT_FETCHES` | Required / `8` | int (≥ 1) | Process-wide known-URL fetch admission slots. | `ADMISSION_WAIT_S` |
+| `MAX_INFLIGHT_MAPS` | Required / `4` | int (≥ 1) | Process-wide site-map admission slots. | `ADMISSION_WAIT_S` |
+| `MAX_INFLIGHT_CRAWLS` | Required / `2` | int (≥ 1) | Process-wide bounded site-crawl admission slots. | `ADMISSION_WAIT_S` |
+| `ADMISSION_WAIT_S` | Required / `0.05` | float (≥ 0) | Maximum wait for route or crawler capacity before rejection. | `ADMISSION_RETRY_AFTER_S` |
+| `ADMISSION_RETRY_AFTER_S` | Required / `1` | int (≥ 1) | `Retry-After` seconds returned with capacity HTTP 429 responses. | `ADMISSION_WAIT_S` |
+| `MAX_INTERNAL_FANOUT` | Required / `20` | int (≥ 1) | Shared cap that must cover URL, subquery, crawl, chunk, and profile limits. | `MAX_URLS`, `MAX_SUBQUERIES` |
+| `MAX_CONTENT_BYTES` | Required / `262144` | int (≥ 1) | Maximum combined Markdown and HTML bytes retained per fetched page. Must not exceed `MAX_RESPONSE_BODY_BYTES`. | `MAX_RESPONSE_BODY_BYTES` |
+| `CHUNK_CONCURRENCY` | Required / `4` | int (≥ 1) | Process-owned concurrent chunk-service requests. | `CHUNK_TIMEOUT_S` |
+
+### Page Cache and Change Detection
+
+| Variable | Required / Default | Type | Description | Related |
+|---|---|---|---|---|
+| `PAGE_CACHE_ENABLED` | Required / `false` | bool | Enable persistent records only for known-URL fetch. Search, map, and crawl remain live. | `PAGE_CACHE_PATH` |
+| `PAGE_CACHE_PATH` | Required / `/var/lib/thorondor/page-cache.sqlite3` | absolute container path | SQLite page-cache path inside the dedicated Compose volume. | `PAGE_CACHE_ENABLED` |
+| `PAGE_CACHE_TTL_S` | Required / `300` | int (≥ 1) | Fresh lifetime from fetch time. Cache reads do not extend it. | `PAGE_CACHE_STALE_S` |
+| `PAGE_CACHE_STALE_S` | Required / `900` | int (≥ 0) | Additional stale-while-revalidate window accepted only by explicit non-watch requests. | `PAGE_CACHE_TTL_S` |
+| `PAGE_CACHE_RETENTION_S` | Required / `604800` | int (≥ TTL + stale) | Absolute retention from the full content fetch. Reads and `304` responses do not extend it. | `PAGE_CACHE_TTL_S` |
+| `PAGE_CACHE_RAW_HTML_ENABLED` | Required / `false` | bool | Permit raw HTML persistence only when a fetch also requests `raw_html`. | `PAGE_CACHE_ENABLED` |
+| `PAGE_DIFF_MAX_INPUT_LINES` | Required / `2000` | int (≥ 1) | Per-document line cap for detailed comparison. | `PAGE_DIFF_MAX_OPERATIONS` |
+| `PAGE_DIFF_MAX_OPERATIONS` | Required / `1000000` | int (≥ 1) | Maximum old-line × new-line comparison work. | `PAGE_DIFF_MAX_INPUT_LINES` |
+| `PAGE_DIFF_MAX_OUTPUT_LINES` | Required / `24` | int (1–24) | Maximum added and removed lines returned. | `MAX_RESPONSE_BODY_BYTES` |
+
+### Durable Crawl Jobs
+
+| Variable | Required / Default | Type | Description | Related |
+|---|---|---|---|---|
+| `CRAWL_JOBS_ENABLED` | Required / `false` | bool | Enable the REST-only SQLite crawl-job worker. Run one orchestrator replica. | `CRAWL_JOB_PATH` |
+| `CRAWL_JOB_PATH` | Required / `/var/lib/thorondor/crawl-jobs.sqlite3` | absolute container path | Job state and result database in the existing persistent volume. | `CRAWL_JOBS_ENABLED` |
+| `CRAWL_SYNC_MAX_PAGES` | Required / `10` | int (1–20) | Advertised default boundary for synchronous crawl; callers may still choose durable mode explicitly at any size. | `MAX_SITE_PAGES` |
+| `CRAWL_JOB_RETENTION_S` | Required / `86400` | int (≥ 1) | Absolute result lifetime from terminal transition. Polling never extends it. | `CRAWL_JOB_EXPIRED_TOMBSTONE_S` |
+| `CRAWL_JOB_EXPIRED_TOMBSTONE_S` | Required / `3600` | int (≥ 1) | Time an expired status remains available after results and the idempotency claim are removed. | `CRAWL_JOB_RETENTION_S` |
+| `CRAWL_JOB_MAX_ATTEMPTS` | Required / `3` | int (1–5) | Total attempts for retryable capacity, deadline, rate-limit, timeout, or upstream failures. | `CRAWL_JOB_RETRY_BASE_S` |
+| `CRAWL_JOB_RETRY_BASE_S` | Required / `1` | float (0–60) | Exponential retry base, capped internally at 30 seconds. | `CRAWL_JOB_MAX_ATTEMPTS` |
+| `CRAWL_JOB_ATTEMPT_DEADLINE_S` | Required / `600` | float (1–3600) | Wall-clock limit for each durable attempt, independent of the synchronous route deadline. | `CRAWL_JOB_MAX_ATTEMPTS` |
+| `CRAWL_JOB_MAX_RECORDS` | Required / `100` | int (1–10000) | Maximum retained job records across active, terminal, and expired states. New claims return 429 at the cap. | `CRAWL_JOB_RETENTION_S` |
+| `CRAWL_JOB_RAW_HTML_ENABLED` | Required / `false` | bool | Permit durable serialization only when a crawl also requests `raw_html`. | `CRAWL_JOBS_ENABLED` |
+| `CRAWL_JOB_MAX_INFLIGHT_REQUESTS` | Required / `16` | int (1–128) | Concurrent create, status, result-page, and cancellation store operations before bounded 429 admission. | `ADMISSION_WAIT_S` |
+| `CRAWL_JOB_RESULT_PAGE_MAX_ITEMS` | Required / `10` | int (1–20) | Maximum result items accepted per cursor-page request. | `MAX_SITE_PAGES` |
+| `CRAWL_JOB_RESULT_PAGE_MAX_BYTES` | Required / `524288` | int (1–half response cap) | Maximum stored result item and requested cursor-page payload. | `MAX_RESPONSE_BODY_BYTES` |
+
+The worker wakes immediately when this process creates a job. While idle it performs expiry maintenance at most once per minute rather than polling SQLite continuously.
+
 ### Search Profiles
 
 | Variable | Required / Default | Type | Description | Related |
 |---|---|---|---|---|
-| `MAX_SUBQUERIES` | Required / `3` | int (≥ 1) | Cap on sub-queries the LLM planner may return. Also caps the list even if decompose=true. | `LLM_ENDPOINT` |
+| `MAX_SUBQUERIES` | Required / `3` | int (1–8) | Cap on sub-queries the LLM planner may return. Also caps the list even if decompose=true. | `LLM_ENDPOINT` |
 | `DEFAULT_TOKEN_BUDGET` | Required / `4000` | int (≥ 1) | Token budget when no profile and no explicit `token_budget` in the request. | `SEARCH_PROFILE_*_TOKEN_BUDGET` |
 | `SEARCH_PROFILE_QUICK_TOKEN_BUDGET` | Required / `2000` | int (≥ 1) | Token budget for the `quick` search profile. | `SEARCH_PROFILE_QUICK_MAX_URLS` |
 | `SEARCH_PROFILE_QUICK_MAX_URLS` | Required / `5` | int (≥ 1) | Max URLs to crawl for the `quick` profile. | `SEARCH_PROFILE_QUICK_TOKEN_BUDGET` |
@@ -56,8 +112,16 @@ All environment variables must be present in `.env` (and `.env.llamacpp` or `.en
 | `CRAWL_PER_HOST_CONCURRENCY` | Required / `1` | int (≥ 1) | Concurrent requests to the same hostname. | `CRAWL_CONCURRENCY` |
 | `CRAWL_TIMEOUT_S` | Required / `15` | int (> 0) | Per-URL crawl timeout in seconds. Also the asyncio.wait timeout for the batch. | `CRAWL_CONCURRENCY` |
 | `CRAWL_RESPECT_ROBOTS_TXT` | Required / `true` | bool | Pass `check_robots_txt` to Crawl4AI. | — |
-| `CRAWL_VALIDATE_REDIRECTS` | Required / `true` | bool | Perform preflight HEAD requests to follow and validate redirect chains before crawling. | `CRAWL_MAX_PREFLIGHT_REDIRECTS` |
-| `CRAWL_MAX_PREFLIGHT_REDIRECTS` | Required / `5` | int (≥ 1) | Max redirect hops to follow during preflight validation. | `CRAWL_VALIDATE_REDIRECTS` |
+| `CRAWLER_USER_AGENT` | Required / `ThorondorBot/1.0 (+https://github.com/FeanorsCodeSL/thorondor)` | string | Stable outbound Crawl4AI browser identity. Must contain an HTTP(S) contact URL and no newline characters. | `CRAWLER_ROBOTS_USER_AGENT` |
+| `CRAWLER_ROBOTS_USER_AGENT` | Required / `ThorondorBot` | token | Stable robots matching token. Must use letters, digits, `.`, `_`, or `-` and appear in `CRAWLER_USER_AGENT`. | `CRAWLER_USER_AGENT` |
+| `SITE_DEFAULT_DELAY_S` | Required / `0.5` | float (≥ 0) | Minimum spacing between map/crawl target requests to one host. | `SITE_MAX_JITTER_S` |
+| `SITE_MAX_JITTER_S` | Required / `0.25` | float (≥ 0) | Maximum deterministic per-host spacing jitter. | `SITE_DEFAULT_DELAY_S` |
+| `SITE_MAX_COOLDOWN_S` | Required / `300` | int (≥ 1) | Maximum adaptive 403/429 and parsed `Retry-After` cooldown in seconds. | — |
+| `ROBOTS_CACHE_TTL_S` | Required / `86400` | int (1–86400) | Absolute process-local robots snapshot TTL in seconds. Reads do not extend it. | `MAX_ROBOTS_BYTES` |
+| `MAX_ROBOTS_BYTES` | Required / `262144` | int (≥ 1) | Maximum robots body parsed per origin. Must not exceed `MAX_CONTENT_BYTES`. | `ROBOTS_CACHE_TTL_S` |
+| `MAX_SITEMAP_BYTES` | Required / `262144` | int (≥ 1) | Maximum body parsed for one sitemap document. Must not exceed `MAX_CONTENT_BYTES`. | `MAX_SITEMAP_ENTRIES` |
+| `MAX_SITEMAP_ENTRIES` | Required / `500` | int (1–500) | Maximum entries retained from one sitemap document. | `MAX_SITEMAP_DOCUMENTS` |
+| `MAX_SITEMAP_DOCUMENTS` | Required / `16` | int (1–`MAX_INTERNAL_FANOUT`) | Maximum sitemap documents fetched by one map or crawl operation. | `MAX_SITEMAP_ENTRIES` |
 
 ### Markdown Extraction
 
@@ -102,14 +166,23 @@ All environment variables must be present in `.env` (and `.env.llamacpp` or `.en
 | `RERANKER_BATCH_SIZE` | Required / `32` | int (≥ 1) | Chunks per reranker API call. | `RERANKER_TIMEOUT_S` |
 | `RERANKER_TIMEOUT_S` | Required / `30` | int (≥ 1) | Reranker request timeout in seconds. | `RERANKER_BATCH_SIZE` |
 | `RELEVANCE_SCORE_FLOOR` | Required / `0.0` | float | Passages with reranker score ≤ this value are dropped post-reranking. `0.0` disables the floor. Has no effect when `stats.reranked=false`. | `RERANKER_ENDPOINT` |
+| `EVIDENCE_QUALITY_ENABLED` | Required / `false` | bool | Enable the `evidence-quality@1` structural filter. It remains disabled by default pending broader independent-corpus measurement. | `RELEVANCE_SCORE_FLOOR` |
 
-### Optional LLM Planner
+### Optional LLM Operations
 
 | Variable | Required / Default | Type | Description | Related |
 |---|---|---|---|---|
-| `LLM_ENDPOINT` | Optional (blank) | URL | OpenAI-compatible chat completions base URL. Blank activates `IdentityPlanner` (no decomposition). | `LLM_MODEL` |
-| `LLM_MODEL` | Optional (blank) | string | Model name for the LLM planner. Required when `LLM_ENDPOINT` is set. | `LLM_ENDPOINT` |
-| `LLM_API_KEY` | Optional (blank) | string | Bearer token for the LLM planner. | `LLM_ENDPOINT` |
+| `LLM_ENDPOINT` | Optional (blank) | URL | OpenAI-compatible chat completions base URL for query decomposition and explicit JSON-Schema extraction. Blank activates `IdentityPlanner` and makes model extraction unsupported. | `LLM_MODEL` |
+| `LLM_MODEL` | Optional (blank) | string | Model name for query decomposition and explicit JSON-Schema extraction. Required when `LLM_ENDPOINT` is set. | `LLM_ENDPOINT` |
+| `LLM_API_KEY` | Optional (blank) | string | Bearer token for configured LLM operations. | `LLM_ENDPOINT` |
+
+`json_schema` extraction reuses these same three settings; it does not add a
+separate model endpoint or environment variable. The extraction client applies
+a 20-second model deadline and a process-owned four-request concurrency limit.
+The request contract independently bounds the schema to 16 KiB, five levels,
+32 properties, four URLs/pages, 128 KiB of prompt input, 64 KiB of model output,
+and 32 scalar leaves. Structured requests are explicit live fetches and bypass
+page-cache persistence.
 
 ### URL Safety and SSRF Protection
 
@@ -151,14 +224,13 @@ All environment variables must be present in `.env` (and `.env.llamacpp` or `.en
 | `PROXY_SIX_TO_FOUR_NETWORKS` | Required / `2002::/16` | comma-separated IPv6 CIDRs | 6-to-4 networks for proxy IP expansion. | — |
 | `PROXY_IPV4_COMPAT_NETWORKS` | Required / `::/96` | comma-separated IPv6 CIDRs | IPv4-compat networks for proxy IP expansion. | — |
 
-### Crawl4AI Proxy Pass-Through
+### Crawl4AI Egress Safety
 
 | Variable | Required / Default | Type | Description | Related |
 |---|---|---|---|---|
-| `CRAWL4AI_HTTP_PROXY` | Required / `http://egress-proxy:8888` | URL | HTTP proxy for Crawl4AI outbound connections. Routes traffic through the SSRF proxy. | `CRAWL4AI_HTTPS_PROXY` |
-| `CRAWL4AI_HTTPS_PROXY` | Required / `http://egress-proxy:8888` | URL | HTTPS proxy for Crawl4AI outbound connections. | `CRAWL4AI_HTTP_PROXY` |
-| `CRAWL4AI_ALL_PROXY` | Required / `http://egress-proxy:8888` | URL | All-protocol proxy fallback for Crawl4AI. | `CRAWL4AI_HTTP_PROXY` |
-| `CRAWL4AI_NO_PROXY` | Optional (blank) | comma-separated hostnames | Hosts Crawl4AI bypasses the proxy for. | `CRAWL4AI_ALL_PROXY` |
+| `CRAWL4AI_ALLOW_INTERNAL_URLS` | Required / `false` | bool | Keeps Crawl4AI 0.9.2's connect-time DNS-pinning proxy restricted to globally routable targets. Managed deployments must not enable the internal-target escape hatch. | `URL_SAFETY_BLOCKED_IP_CATEGORIES` |
+
+The `PROXY_*` settings above configure the retained first-party proxy service. Crawl4AI 0.9.2 does not consume them and must not receive standard HTTP proxy environment variables.
 
 ### API Keys and Secrets
 
@@ -170,7 +242,7 @@ All environment variables must be present in `.env` (and `.env.llamacpp` or `.en
 | `CHUNKER_API_KEY` | Optional (blank) | string | Bearer token for the chunking service. | `CHUNKER_URL` |
 | `RERANKER_API_KEY` | Optional (blank) | string | Bearer token for the reranker. | `RERANKER_ENDPOINT` |
 | `EMBEDDING_API_KEY` | Optional (blank) | string | Bearer token for the embedding server (read by the chunker service). | `EMBEDDING_ENDPOINT` |
-| `LLM_API_KEY` | Optional (blank) | string | Bearer token for the optional LLM planner. | `LLM_ENDPOINT` |
+| `LLM_API_KEY` | Optional (blank) | string | Bearer token for configured LLM operations. | `LLM_ENDPOINT` |
 
 ### llama.cpp Overrides (`.env.llamacpp` only)
 
@@ -209,14 +281,15 @@ The settings loader enforces the following constraints at startup time:
 |---|---|
 | `CRAWL_CONCURRENCY` must be between 1 and 20 | `RuntimeError: CRAWL_CONCURRENCY must be between 1 and {MAX_CRAWL_CONCURRENCY}` |
 | `CRAWL_PER_HOST_CONCURRENCY` ≥ 1 | `RuntimeError` |
-| `CRAWL_MAX_PREFLIGHT_REDIRECTS` ≥ 1 | `RuntimeError` |
+| `CRAWLER_USER_AGENT` contains a contact URL and no newlines | `RuntimeError` |
+| `CRAWLER_ROBOTS_USER_AGENT` is a valid token included in the outbound identity | `RuntimeError` |
 | `RERANKER_BATCH_SIZE` ≥ 1 | `RuntimeError` |
 | `RERANKER_TIMEOUT_S` ≥ 1 | `RuntimeError` |
 | `HEALTHCHECK_TIMEOUT_S` > 0 | `RuntimeError` |
 | `HEALTHCHECK_MAX_CONNECTIONS` ≥ 1 | `RuntimeError` |
 | `HEALTHCHECK_MAX_KEEPALIVE_CONNECTIONS` ≥ 1 | `RuntimeError` |
 | `MARKDOWN_EXTRACTOR` must equal `trafilatura` (case-insensitive) | `RuntimeError: MARKDOWN_EXTRACTOR must be trafilatura` |
-| `MAX_SUBQUERIES` ≥ 1 | `RuntimeError` |
+| `MAX_SUBQUERIES` between 1 and 8 | `RuntimeError: MAX_SUBQUERIES must be between 1 and 8` |
 | `SEARCH_PROFILE_*_TOKEN_BUDGET` ≥ 1 | `RuntimeError: search profile token_budget must be >= 1` |
 | `SEARCH_PROFILE_*_MAX_URLS` ≥ 1 | `RuntimeError: search profile max_urls must be >= 1` |
 | `SEARCH_PROFILE_*_MAX_PASSAGES` ≥ 1 | `RuntimeError: search profile max_passages must be >= 1` |

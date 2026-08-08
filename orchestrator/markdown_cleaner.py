@@ -1,10 +1,22 @@
 """Generic HTML-to-Markdown extraction before semantic chunking."""
+from collections import Counter
 from collections.abc import Callable
 from dataclasses import replace
 
 from .types import CleanedPage, Page
 
 Extractor = Callable[..., str | None]
+
+
+def _removed_line_count(original: str, cleaned: str) -> int:
+    remaining = Counter(line.strip() for line in cleaned.splitlines() if line.strip())
+    removed = 0
+    for line in (line.strip() for line in original.splitlines() if line.strip()):
+        if remaining[line]:
+            remaining[line] -= 1
+        else:
+            removed += 1
+    return removed
 
 
 class MarkdownCleanerImpl:
@@ -34,16 +46,19 @@ class MarkdownCleanerImpl:
         original = page.original_markdown or page.markdown
         source = page.html
         if source:
-            extracted = self._extractor(
-                source,
-                url=page.url,
-                output_format="markdown",
-                favor_recall=self._favor_recall,
-                include_comments=self._include_comments,
-                include_tables=self._include_tables,
-                deduplicate=self._deduplicate,
-            )
-            cleaned = extracted.strip() if extracted else ""
+            try:
+                extracted = self._extractor(
+                    source,
+                    url=page.url,
+                    output_format="markdown",
+                    favor_recall=self._favor_recall,
+                    include_comments=self._include_comments,
+                    include_tables=self._include_tables,
+                    deduplicate=self._deduplicate,
+                )
+            except Exception:
+                extracted = None
+            cleaned = extracted.strip() if extracted else page.markdown.strip()
         else:
             cleaned = page.markdown.strip()
 
@@ -52,6 +67,6 @@ class MarkdownCleanerImpl:
             page=cleaned_page,
             chars_before=len(page.markdown),
             chars_after=len(cleaned),
-            blocks_dropped=0,
+            blocks_dropped=_removed_line_count(original, cleaned),
             cleaner_version=self.cleaner_version,
         )

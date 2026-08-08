@@ -6,11 +6,11 @@ Thorondor operates at the boundary between an agent's query and the open web. Th
 
 | Threat | Description | Mitigation |
 |---|---|---|
-| **SSRF via crawl** | An attacker or a compromised upstream search engine returns URLs pointing to internal network resources, cloud metadata endpoints, or localhost. Crawl4AI fetches them, leaking data or enabling internal service access. | Pre-crawl URL safety filter (orchestrator) + SSRF egress proxy (Crawl4AI traffic) + redirect validation. |
+| **SSRF via crawl** | An attacker, page link, sitemap, robots declaration, or compromised search engine returns URLs pointing to internal network resources, cloud metadata endpoints, or localhost. | Safety checks at seed and candidate admission + Crawl4AI 0.9.2 connect-time DNS pinning and non-global-address rejection + changed-final-URL revalidation. |
 | **Credential leakage in logs** | API keys, query text, raw page content, or URL query strings appear in structured logs and are shipped to a log aggregation system. | `redact_url()` strips userinfo and query strings; `query_hash()` hashes queries before logging; markdown and secrets are never logged. |
-| **Prompt injection via crawled content** | Crawled page text contains adversarial instructions that reach an agent's context and alter its behavior. | All passage text is tagged `trust: "untrusted"` and `provenance: "external_web"` in the response envelope; agents must treat it accordingly. Thorondor does not interpret or execute crawled content. |
+| **Prompt injection via crawled content** | Crawled page text or structured field values contain adversarial instructions that reach an agent's context and alter its behavior. | All passages and structured values are tagged `trust: "untrusted"` and `provenance: "external_web"`. Model extraction puts bounded page Markdown only in the untrusted-data portion of a fixed prompt, validates the output locally, and requires value-bearing exact evidence excerpts. Caller-supplied schema text is bounded and cannot alter the fixed system role; callers cannot supply model configuration, code, references, regex, or schema combinators. |
 | **Query injection to SearXNG** | The user query is forwarded to SearXNG as a URL parameter. SearXNG handles escaping; Thorondor does not construct raw SQL or shell commands from the query. | SearXNG handles search-query sanitization. Thorondor passes the query as a URL parameter value only. |
-| **Denial of service via large inputs** | Excessively large queries, high `max_urls`, or pages with huge segment counts cause resource exhaustion. | `MAX_QUERY_CHARS=500` input cap; `MAX_SELECTED_URLS=20` URL cap; `CHUNKER_MAX_SEGMENTS_DP` OOM guard; `CHUNKER_MEM_LIMIT` container memory limit; `CRAWL_CONCURRENCY` and `CRAWL_TIMEOUT_S` bound crawl parallelism. |
+| **Denial of service via large inputs** | Excessively large queries, fan-out, sitemaps, robots files, or pages with huge segment counts cause resource exhaustion. | Request and response byte limits; URL, depth, page, sitemap, robots, and document caps; route deadlines and process admission; chunker OOM guard and container limits. |
 
 ## 2. SSRF Protection
 
@@ -18,33 +18,34 @@ SSRF protection is implemented at two independent layers:
 
 ### Layer 1 — Orchestrator pre-crawl URL safety filter (`orchestrator/url_safety.py`)
 
-Before any URL is sent to Crawl4AI, the orchestrator resolves it and validates the resolved IPs:
+Before any seed, search result, sitemap entry, robots declaration, or page link is sent to Crawl4AI, the orchestrator resolves it and validates the resolved IPs:
 
 1. The URL scheme must be `http` or `https`.
 2. If the hostname is an IP literal (including legacy octal/hex IPv4 forms), it is parsed directly.
-3. Otherwise the hostname is resolved via `socket.getaddrinfo` (all address families).
+3. Otherwise the hostname is resolved via `socket.getaddrinfo` (all address families) in a worker thread so DNS cannot block the event loop.
 4. **Every** resolved IP is checked against the `UrlSafetyPolicy`:
    - Blocked IP categories: `loopback`, `link_local`, `private`, `reserved`, `multicast`, `unspecified` (configurable via `URL_SAFETY_BLOCKED_IP_CATEGORIES`).
    - Blocked special IPs: `169.254.169.254` (AWS EC2 metadata), `fd00:ec2::254` (IPv6 EC2 metadata) — configurable via `URL_SAFETY_BLOCKED_SPECIAL_IPS`.
 5. IPv6 addresses are expanded to their embedded IPv4 equivalents for NAT64 (`64:ff9b::/96`), 6-to-4 (`2002::/16`), and IPv4-compatible (`::/96`) networks. Each candidate is re-checked.
 6. If the host resolves to any unsafe IP, the URL is silently dropped from the candidate set.
 
-The filter also applies during redirect validation: when `CRAWL_VALIDATE_REDIRECTS=true`, the orchestrator follows redirect chains up to `CRAWL_MAX_PREFLIGHT_REDIRECTS` hops using HEAD requests, re-validating the target URL at each hop.
+The orchestrator does not issue a duplicate target-site preflight request. Crawl4AI validates and pins target connections and redirects, and the orchestrator applies the same policy to every differing final URL before the page crosses the internal fetch boundary. The pinned Docker `/crawl` contract does not expose a redirect-hop setting, so Thorondor bounds traversal with the route deadline rather than claiming an exact hop cap.
 
-### Layer 2 — SSRF Egress Proxy (`ssrf-proxy/proxy.py`)
+### Layer 2 — Crawl4AI connect-time DNS pinning
 
-A minimal Python asyncio HTTP CONNECT proxy that sits between Crawl4AI and the internet. Crawl4AI's proxy environment variables (`CRAWL4AI_HTTP_PROXY`, `CRAWL4AI_HTTPS_PROXY`, `CRAWL4AI_ALL_PROXY`) route all outbound traffic through it.
+Crawl4AI 0.9.2 starts a localhost forward proxy and forces Chromium through it. External proxy variables are not used because the hardened server replaces caller proxy configuration with this internal proxy.
 
-On every CONNECT request (and plain HTTP forwarding):
+On every CONNECT request or plain HTTP target:
 
-1. The target hostname is normalised (strip brackets, IDNA-encode).
-2. If it is an IP literal, it is checked immediately.
-3. Otherwise the hostname is resolved asynchronously via `asyncio.to_thread(socket.getaddrinfo)`.
-4. The same IP expansion logic (NAT64, 6-to-4, IPv4-compat) and blocked category/special-IP checks apply.
-5. If any resolved IP is unsafe, the proxy returns `403 Forbidden` and logs the blocked target.
-6. If the host is safe, the proxy opens a TCP connection to the resolved IP and establishes a bidirectional relay.
+1. The target must use HTTP or HTTPS.
+2. The proxy resolves the hostname once and rejects the destination if any resolved or transition-embedded address is not globally routable.
+3. The proxy opens the connection to the selected pinned IP while preserving the original hostname for HTTP Host and TLS SNI.
+4. Chromium never resolves the target independently, closing the validation-to-connect DNS-rebinding gap.
+5. Redirect targets are subjected to the same policy before connection.
 
-The proxy lives on the internal Docker network (`internal`) and has a second attachment to the `egress` network. Crawl4AI communicates with it over the internal network; the proxy reaches the internet over the egress network.
+Crawl4AI's API is attached to `crawl-control`, an internal network shared only with the orchestrator. A separate `crawl-egress` network is selected explicitly as the default gateway, gives the pinning proxy outbound routing, and is not shared with another service. No Crawl4AI port is published. `CRAWL4AI_ALLOW_INTERNAL_URLS=false` keeps the upstream internal-target escape hatch disabled.
+
+The first-party `ssrf-proxy` service remains packaged temporarily for deployment compatibility but is not in Crawl4AI 0.9.2's target-site path.
 
 ## 3. URL Safety Policy
 
@@ -58,7 +59,7 @@ The following variables configure the orchestrator-level URL safety policy:
 | `URL_SAFETY_SIX_TO_FOUR_NETWORKS` | `2002::/16` | IPv6 6-to-4 networks where bits 17–48 are an embedded IPv4 address. |
 | `URL_SAFETY_IPV4_COMPAT_NETWORKS` | `::/96` | IPv4-compatible IPv6 networks where the low 32 bits are an IPv4 address. |
 
-The same variables with `PROXY_` prefix configure the egress proxy layer independently, so both layers can be tuned separately.
+The same variables with `PROXY_` prefix configure the retained first-party proxy independently. They do not alter Crawl4AI 0.9.2's built-in global-address policy.
 
 ## 4. Domain Allow/Block Lists
 
@@ -99,13 +100,13 @@ The `JsonFormatter` in `orchestrator/observability.py` is the sole structured lo
 
 ## 7. Network Isolation
 
-All five core services and both model containers attach to the `internal` Docker network, which is declared `internal: true` — it has no default route to the external network. Services cannot initiate outbound connections from this network.
+The orchestrator, chunker, SearXNG, retained egress proxy, and bundled model containers attach to the general `internal` network, which has no default route. Crawl4AI is intentionally excluded from that shared network.
 
-Two services additionally attach to the `egress` network (which has a default route):
-- `egress-proxy` — the SSRF proxy, which enforces the IP blocklist before forwarding.
+Services with provider-plane routing attach to `egress`:
+- `egress-proxy` — retained for deployment compatibility.
 - `searxng` — SearXNG must reach upstream search engines directly.
-- `crawl4ai` — Crawl4AI must reach the web, but all its outbound traffic is forced through the SSRF proxy via the `CRAWL4AI_HTTP_PROXY` / `CRAWL4AI_HTTPS_PROXY` environment variables.
-- `orchestrator` — the orchestrator attaches to `egress` for healthcheck probes to external services if configured, but in the default Compose setup all its operational traffic is internal.
+
+Crawl4AI attaches to exactly two dedicated networks: internal `crawl-control`, shared only with the orchestrator, and outbound `crawl-egress`, shared with no other service and selected as the default gateway. The release guard rejects the internal-target escape hatch, external proxy variables, shared or missing networks, an ambiguous default route, a published API port, missing container hardening, and a non-digest image.
 
 The orchestrator's port `ORCHESTRATOR_PORT` is the only published port; all other service ports are internal-only. Compose binds that published port to `ORCHESTRATOR_HOST`, which is `127.0.0.1` in `.env.example` for local-only access by default.
 
@@ -114,16 +115,20 @@ The orchestrator's port `ORCHESTRATOR_PORT` is the only published port; all othe
 Thorondor provides SSRF protection, log sanitization, and network isolation. The following are operator responsibilities:
 
 - **TLS termination** — the orchestrator does not serve HTTPS. A reverse proxy with a valid TLS certificate must be placed in front.
-- **Access control** — there is no authentication on `POST /v1/search`, `POST /search`, or the MCP endpoint. Restrict access at the network or reverse-proxy layer.
+- **Access control** — there is no authentication on `POST /v1/search`, `POST /search`, `POST /v1/fetch`, `POST /v1/map`, `POST /v1/crawl`, the crawl-job routes, or the MCP endpoint. Restrict access at the network or reverse-proxy layer. `X-Thorondor-Job-Scope` is an ownership partition only: a protected ingress must authenticate the caller, strip any caller-supplied value, and assign the trusted scope.
 - **Host binding and firewall** — keep `ORCHESTRATOR_HOST=127.0.0.1` for personal/local deployments. Use `ORCHESTRATOR_HOST=0.0.0.0` only behind firewall, TLS, authentication, and rate limiting.
 - **Secret hygiene** — `.env` contains sensitive values. Do not commit it to version control. Inject secrets from a secrets manager at deploy time.
 - **`ALLOWLIST_ONLY=false` responsibility** — with the default setting, the service will crawl any URL that passes the IP safety filter. Set `ALLOWLIST_ONLY=true` and populate `DOMAIN_ALLOWLIST` in high-risk environments.
-- **robots.txt compliance** — `CRAWL_RESPECT_ROBOTS_TXT=true` by default. Changing this to `false` may violate the terms of service of crawled sites. The operator is responsible for compliance with applicable ToS and legal requirements.
+- **robots.txt compliance** — `CRAWL_RESPECT_ROBOTS_TXT=true` by default for Crawl4AI page requests. Map and crawl additionally enforce Thorondor's RFC 9309 policy with the configured stable identity and do not expose a per-request bypass. The operator remains responsible for applicable terms and law.
+- **Page-cache privacy and retention** — leave `PAGE_CACHE_ENABLED=false` unless persistent copies of fetched URLs, query strings, cleaned content, metadata, and links are acceptable. Keep `PAGE_CACHE_RAW_HTML_ENABLED=false` unless raw DOM retention is explicitly required. Protect and exclude the `thorondor-page-cache` volume from broad backups when its content is not meant to be retained, choose the shortest useful absolute retention, and use the local scoped-clear command for sensitive URLs. Runtime cleanup removes untouched records at their retention deadline, and reads plus `304` responses never extend it. Disabling the feature stops new writes but does not erase an existing volume.
+- **Crawl-job privacy and retention** — leave `CRAWL_JOBS_ENABLED=false` unless persisted crawl requests, full typed page results, URLs, query strings, and bounded failures are acceptable. Keep `CRAWL_JOB_RAW_HTML_ENABLED=false` unless raw DOM retention is explicitly required, and bound retained records with `CRAWL_JOB_MAX_RECORDS`. The job database shares the protected `/var/lib/thorondor` volume. Result retention is absolute from terminal transition; reads do not extend it. Expiry removes results and releases the idempotency claim before retaining a short status tombstone. Disabling jobs stops new writes but does not erase the existing database.
 
 ## 9. Known Limitations
 
-- **No authentication on orchestrator endpoints** — `POST /v1/search` and the MCP endpoint accept any request without authentication. This is by design for development convenience; operators must add auth at the reverse-proxy layer.
-- **No rate limiting** — the service does not enforce per-client rate limits. A high-volume client can exhaust SearXNG or Crawl4AI capacity.
+- **No authentication on orchestrator endpoints** — search, fetch, map, crawl, crawl jobs, and MCP accept any request without authentication. This is by design for development convenience; operators must add auth at the reverse-proxy layer.
+- **Crawl jobs are single-replica and REST-only** — the local SQLite worker is not a distributed queue, adds no MCP tool, and provides no schedule or webhook. Multiple orchestrator replicas are unsupported while jobs are enabled.
+- **No per-client quota** — process-wide admission rejects excess search, fetch, map, or crawl work with bounded HTTP 429 responses. Durable job store operations have their own bounded admission, and creation rejects new claims at the retained-record cap, but neither mechanism identifies callers nor allocates fair per-client quotas. Operators exposing the service to multiple clients must add authenticated rate limiting at the reverse proxy.
 - **Crawled content is untrusted but not sandboxed** — page text is tagged `trust: "untrusted"` in the response, but it is not executed, sandboxed at the OS level, or scanned for malicious patterns. Prompt injection via crawled content is a risk that agents consuming the passages must mitigate.
 - **SearXNG has no per-request auth by default** — `SEARXNG_API_KEY` is optional. Without it, the SearXNG `/search` endpoint is accessible to any service on the internal Docker network.
-- **Single-layer redirect validation** — the orchestrator pre-validates redirects via HEAD requests, but Crawl4AI may follow additional redirects internally after the preflight. The SSRF proxy provides the second line of defence for these cases.
+- **Pinned egress enforcement depends on Compose topology** — custom deployments must preserve Crawl4AI's isolated control network, dedicated egress network, disabled internal-target escape hatch, and absence of external proxy overrides. The release guard checks the first-party local, CLI, and production Compose configurations.
+- **Target watches are invocation-time checks, not schedules** — selectors are bounded and declarative, no caller JavaScript or regular expression runs, and missing or ambiguous targets fail closed. The caller remains responsible for schedule frequency and actions after `condition_met=true`.

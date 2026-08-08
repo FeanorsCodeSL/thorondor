@@ -1,12 +1,31 @@
 """MCP web_search tool for Thorondor."""
+import json
 import os
 from typing import Literal
 
+import anyio
 from mcp.server.mcpserver import MCPServer
 from mcp.server.transport_security import TransportSecuritySettings
+from thorondor_contracts import (
+    CRAWL_TOOL_DESCRIPTION,
+    FETCH_TOOL_DESCRIPTION,
+    MAP_TOOL_DESCRIPTION,
+    SEARCH_TOOL_DESCRIPTION,
+    FetchCapability,
+    StructuredFormat,
+    TargetWatch,
+)
 
-from .models import SearchRequest
+from .fetch_pipeline import run_fetch
+from .models import (
+    CrawlRequest,
+    FetchRequest,
+    MapRequest,
+    SearchRequest,
+)
 from .pipeline import run_search
+from .resource_policy import CapacityUnavailable, RouteDeadlineExceeded
+from .site_pipeline import run_crawl, run_map
 
 DEFAULT_MCP_ALLOWED_HOSTS = (
     "127.0.0.1:*",
@@ -33,8 +52,6 @@ def _csv_env(name: str, default: tuple[str, ...]) -> list[str]:
 
 mcp = MCPServer("thorondor")
 deps_override = None
-
-
 def set_deps(deps) -> None:
     global deps_override
     deps_override = deps
@@ -48,7 +65,45 @@ def _get_deps():
     return get_deps()
 
 
-@mcp.tool()
+def _operation_error(exc: CapacityUnavailable | RouteDeadlineExceeded) -> dict:
+    if isinstance(exc, CapacityUnavailable):
+        return {
+            "error": "capacity_unavailable",
+            "status_code": 429,
+            "route": exc.route,
+            "retry_after_s": exc.retry_after_s,
+        }
+    return {
+        "error": exc.reason,
+        "status_code": 504,
+        "route": exc.route,
+    }
+
+
+def _request_limit_error(payload: dict, deps) -> dict | None:
+    size = len(
+        json.dumps(payload, ensure_ascii=True, separators=(",", ":")).encode("utf-8")
+    )
+    max_bytes = deps.resource_policy.max_request_body_bytes
+    if size <= max_bytes:
+        return None
+    return {
+        "error": "request_body_too_large",
+        "status_code": 413,
+        "max_bytes": max_bytes,
+    }
+
+
+def _bounded_response(response, deps) -> dict:
+    if (
+        len(response.model_dump_json().encode("utf-8"))
+        > deps.resource_policy.max_response_body_bytes
+    ):
+        return {"error": "response_body_too_large", "status_code": 500}
+    return response.model_dump()
+
+
+@mcp.tool(description=SEARCH_TOOL_DESCRIPTION)
 async def web_search(
     query: str,
     search_profile: Literal["quick", "research", "deep"] | None = None,
@@ -61,41 +116,12 @@ async def web_search(
     max_passages: int | None = None,
     include_raw_markdown: bool | None = None,
 ) -> dict:
-    """Search the live web for evidence-bearing passages.
+    """Search the live web and return source-cited evidence passages.
 
-    Use this when an agent needs current web evidence with citations rather
-    than a prose summary. The tool is a thin twin of REST `POST /v1/search`:
-    defaults are resolved by the shared pipeline, and the returned envelope is
-    the same `SearchResponse` shape.
-
-    Args:
-        query: The user's original information need. Reranking always scores
-            against this query, not any discovery sub-query.
-        search_profile: Optional default profile. `quick` is for narrow factual
-            lookup, `research` broadens URL/passages/token defaults for normal
-            investigation, and `deep` uses the largest bounded defaults.
-        token_budget: Optional maximum returned passage budget. If omitted,
-            the profile or server default is used. This controls assembly, not
-            crawling.
-        max_urls: Optional cap on selected URLs before crawl. If omitted, the
-            profile or server default is used.
-        freshness: Optional discovery freshness hint: day, week, month, year.
-        domains: Optional domain allowlist for this call.
-        exclude_domains: Optional domain blocklist for this call.
-        decompose: Whether to let the optional query planner split/expand the
-            query. If omitted, the REST default is used.
-        max_passages: Optional returned chunk/passage count cap after token
-            budgeting. It is not a page count.
-        include_raw_markdown: Include raw markdown for returned citations when
-            the caller needs source-preserving evidence.
-
-    Returns:
-        A versioned response envelope with `query`, `passages`, `citations`,
-        `stats`, optional `raw_markdown`, and `schema_version`. Each passage has
-        `text`, `score`, `token_count`, and `citation_id`;
-        `stats.discovery_status` and `stats.unresponsive_engines` report search
-        engine degradation, while `stats.reason` is a closed enum when the call
-        returns an empty 200 response.
+    Use for current or external information that requires verification.
+    search_profile selects quick, research, or deep bounded search. decompose
+    controls query expansion. include_raw_markdown adds source Markdown when
+    exact source context is needed.
     """
     request_data = {
         "query": query,
@@ -109,9 +135,156 @@ async def web_search(
         "max_passages": max_passages,
         "include_raw_markdown": include_raw_markdown,
     }
-    request = SearchRequest(**{key: value for key, value in request_data.items() if value is not None})
-    response = await run_search(request, _get_deps())
-    return response.model_dump()
+    request_data = {key: value for key, value in request_data.items() if value is not None}
+    deps = _get_deps()
+    if error := _request_limit_error(request_data, deps):
+        return error
+    request = SearchRequest(**request_data)
+    try:
+        response = await run_search(request, deps)
+    except (CapacityUnavailable, RouteDeadlineExceeded) as exc:
+        return _operation_error(exc)
+    return _bounded_response(response, deps)
+
+
+@mcp.tool(description=FETCH_TOOL_DESCRIPTION)
+async def web_fetch(
+    urls: list[str],
+    capabilities: list[FetchCapability] | None = None,
+    structured_formats: list[StructuredFormat] | None = None,
+    extraction_schema: dict[str, object] | None = None,
+    force_refresh: bool | None = None,
+    stale_while_revalidate: bool | None = None,
+    watch: TargetWatch | None = None,
+) -> dict:
+    """Fetch evidence from one to four known URLs.
+
+    Use this when an agent already knows the target URLs. Each URL returns a
+    typed terminal outcome, retryability, final URL, status, content type,
+    bounded metadata and links, and untrusted provenance. Raw HTML is returned
+    only when explicitly requested. Server-configured shared byte limits,
+    route and stage deadlines, process-wide admission slots, per-host crawl
+    limits, and internal fan-out caps apply.
+
+    Args:
+        urls: Unique HTTP or HTTPS targets to fetch.
+        capabilities: Required output capabilities. Omit for Markdown,
+            JavaScript rendering, links, and metadata. Unsupported capability
+            combinations fail closed per URL.
+        structured_formats: Optional source-addressed structured profiles.
+        extraction_schema: Required bounded schema for json_schema extraction.
+
+    Returns:
+        The versioned `thorondor.fetch.v1` envelope with bounded per-URL
+        results and aggregate terminal-outcome counts.
+    """
+    request_data = {
+        "urls": urls,
+        "capabilities": capabilities,
+        "structured_formats": structured_formats,
+        "extraction_schema": extraction_schema,
+        "force_refresh": force_refresh,
+        "stale_while_revalidate": stale_while_revalidate,
+        "watch": watch.model_dump() if watch is not None else None,
+    }
+    request_data = {key: value for key, value in request_data.items() if value is not None}
+    deps = _get_deps()
+    if error := _request_limit_error(request_data, deps):
+        return error
+    request = FetchRequest(**request_data)
+    try:
+        response = await run_fetch(request, deps)
+    except (CapacityUnavailable, RouteDeadlineExceeded) as exc:
+        return _operation_error(exc)
+    return _bounded_response(response, deps)
+
+
+@mcp.tool(description=MAP_TOOL_DESCRIPTION)
+async def web_map(
+    url: str,
+    sitemap: Literal["include", "only", "skip"] | None = None,
+    max_depth: int | None = None,
+    max_pages: int | None = None,
+    max_discovered_urls: int | None = None,
+    include_parent_paths: bool | None = None,
+    include_subdomains: bool | None = None,
+    include_paths: list[str] | None = None,
+    exclude_paths: list[str] | None = None,
+    query_parameters: Literal["preserve", "strip", "exclude"] | None = None,
+    allowed_file_extensions: list[str] | None = None,
+    include_search: bool | None = None,
+) -> dict:
+    """Discover a bounded, robots-aware URL map for one site."""
+    request_data = {
+        "url": url,
+        "sitemap": sitemap,
+        "max_depth": max_depth,
+        "max_pages": max_pages,
+        "max_discovered_urls": max_discovered_urls,
+        "include_parent_paths": include_parent_paths,
+        "include_subdomains": include_subdomains,
+        "include_paths": include_paths,
+        "exclude_paths": exclude_paths,
+        "query_parameters": query_parameters,
+        "allowed_file_extensions": allowed_file_extensions,
+        "include_search": include_search,
+    }
+    request_data = {key: value for key, value in request_data.items() if value is not None}
+    deps = _get_deps()
+    if error := _request_limit_error(request_data, deps):
+        return error
+    try:
+        response = await run_map(MapRequest(**request_data), deps)
+    except (CapacityUnavailable, RouteDeadlineExceeded) as exc:
+        return _operation_error(exc)
+    return _bounded_response(response, deps)
+
+
+@mcp.tool(description=CRAWL_TOOL_DESCRIPTION)
+async def web_crawl(
+    url: str,
+    sitemap: Literal["include", "only", "skip"] | None = None,
+    max_depth: int | None = None,
+    max_pages: int | None = None,
+    max_discovered_urls: int | None = None,
+    include_parent_paths: bool | None = None,
+    include_subdomains: bool | None = None,
+    include_paths: list[str] | None = None,
+    exclude_paths: list[str] | None = None,
+    query_parameters: Literal["preserve", "strip", "exclude"] | None = None,
+    allowed_file_extensions: list[str] | None = None,
+    include_search: bool | None = None,
+    capabilities: list[FetchCapability] | None = None,
+    structured_formats: list[StructuredFormat] | None = None,
+    extraction_schema: dict[str, object] | None = None,
+) -> dict:
+    """Crawl a small, bounded part of one site and return typed evidence."""
+    request_data = {
+        "url": url,
+        "sitemap": sitemap,
+        "max_depth": max_depth,
+        "max_pages": max_pages,
+        "max_discovered_urls": max_discovered_urls,
+        "include_parent_paths": include_parent_paths,
+        "include_subdomains": include_subdomains,
+        "include_paths": include_paths,
+        "exclude_paths": exclude_paths,
+        "query_parameters": query_parameters,
+        "allowed_file_extensions": allowed_file_extensions,
+        "include_search": include_search,
+        "capabilities": capabilities,
+        "structured_formats": structured_formats,
+        "extraction_schema": extraction_schema,
+    }
+    request_data = {key: value for key, value in request_data.items() if value is not None}
+    deps = _get_deps()
+    if error := _request_limit_error(request_data, deps):
+        return error
+    try:
+        response = await run_crawl(CrawlRequest(**request_data), deps)
+    except (CapacityUnavailable, RouteDeadlineExceeded) as exc:
+        return _operation_error(exc)
+    return _bounded_response(response, deps)
 
 
 mcp_http_app = mcp.streamable_http_app(
@@ -125,5 +298,14 @@ mcp_http_app = mcp.streamable_http_app(
 )
 
 
+async def _run_stdio() -> None:
+    deps = _get_deps()
+    await deps.start()
+    try:
+        await mcp.run_stdio_async()
+    finally:
+        await deps.aclose()
+
+
 def main() -> None:
-    mcp.run(transport="stdio")
+    anyio.run(_run_stdio)

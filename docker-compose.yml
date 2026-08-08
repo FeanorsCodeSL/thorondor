@@ -27,7 +27,7 @@ services:
   orchestrator:
     <<: *internal
     init: true
-    networks: [internal, egress]
+    networks: [internal, egress, crawl-control]
     build:
       context: .
       dockerfile: orchestrator/Dockerfile
@@ -51,10 +51,11 @@ services:
       CRAWL_TIMEOUT_S: "${CRAWL_TIMEOUT_S}"
       CRAWL_PER_HOST_CONCURRENCY: "${CRAWL_PER_HOST_CONCURRENCY}"
       CRAWL_RESPECT_ROBOTS_TXT: "${CRAWL_RESPECT_ROBOTS_TXT}"
-      CRAWL_VALIDATE_REDIRECTS: "${CRAWL_VALIDATE_REDIRECTS}"
-      CRAWL_MAX_PREFLIGHT_REDIRECTS: "${CRAWL_MAX_PREFLIGHT_REDIRECTS}"
+      CRAWLER_USER_AGENT: "${CRAWLER_USER_AGENT}"
+      CRAWLER_ROBOTS_USER_AGENT: "${CRAWLER_ROBOTS_USER_AGENT}"
       DEFAULT_TOKEN_BUDGET: "${DEFAULT_TOKEN_BUDGET}"
       RELEVANCE_SCORE_FLOOR: "${RELEVANCE_SCORE_FLOOR}"
+      EVIDENCE_QUALITY_ENABLED: "${EVIDENCE_QUALITY_ENABLED}"
       DOMAIN_BLOCKLIST: "${DOMAIN_BLOCKLIST?}"
       DOMAIN_ALLOWLIST: "${DOMAIN_ALLOWLIST?}"
       ALLOWLIST_ONLY: "${ALLOWLIST_ONLY}"
@@ -72,6 +73,53 @@ services:
       MARKDOWN_EXTRACTOR_INCLUDE_TABLES: "${MARKDOWN_EXTRACTOR_INCLUDE_TABLES}"
       MARKDOWN_EXTRACTOR_DEDUPLICATE: "${MARKDOWN_EXTRACTOR_DEDUPLICATE}"
       MAX_SUBQUERIES: "${MAX_SUBQUERIES}"
+      MAX_REQUEST_BODY_BYTES: "${MAX_REQUEST_BODY_BYTES}"
+      MAX_RESPONSE_BODY_BYTES: "${MAX_RESPONSE_BODY_BYTES}"
+      SEARCH_ROUTE_DEADLINE_S: "${SEARCH_ROUTE_DEADLINE_S}"
+      FETCH_ROUTE_DEADLINE_S: "${FETCH_ROUTE_DEADLINE_S}"
+      MAP_ROUTE_DEADLINE_S: "${MAP_ROUTE_DEADLINE_S}"
+      SITE_CRAWL_ROUTE_DEADLINE_S: "${SITE_CRAWL_ROUTE_DEADLINE_S}"
+      DISCOVERY_TIMEOUT_S: "${DISCOVERY_TIMEOUT_S}"
+      CHUNK_TIMEOUT_S: "${CHUNK_TIMEOUT_S}"
+      MAX_INFLIGHT_SEARCHES: "${MAX_INFLIGHT_SEARCHES}"
+      MAX_INFLIGHT_FETCHES: "${MAX_INFLIGHT_FETCHES}"
+      MAX_INFLIGHT_MAPS: "${MAX_INFLIGHT_MAPS}"
+      MAX_INFLIGHT_CRAWLS: "${MAX_INFLIGHT_CRAWLS}"
+      ADMISSION_WAIT_S: "${ADMISSION_WAIT_S}"
+      ADMISSION_RETRY_AFTER_S: "${ADMISSION_RETRY_AFTER_S}"
+      MAX_INTERNAL_FANOUT: "${MAX_INTERNAL_FANOUT}"
+      MAX_CONTENT_BYTES: "${MAX_CONTENT_BYTES}"
+      CHUNK_CONCURRENCY: "${CHUNK_CONCURRENCY}"
+      SITE_DEFAULT_DELAY_S: "${SITE_DEFAULT_DELAY_S}"
+      SITE_MAX_JITTER_S: "${SITE_MAX_JITTER_S}"
+      SITE_MAX_COOLDOWN_S: "${SITE_MAX_COOLDOWN_S}"
+      ROBOTS_CACHE_TTL_S: "${ROBOTS_CACHE_TTL_S}"
+      MAX_ROBOTS_BYTES: "${MAX_ROBOTS_BYTES}"
+      MAX_SITEMAP_BYTES: "${MAX_SITEMAP_BYTES}"
+      MAX_SITEMAP_ENTRIES: "${MAX_SITEMAP_ENTRIES}"
+      MAX_SITEMAP_DOCUMENTS: "${MAX_SITEMAP_DOCUMENTS}"
+      PAGE_CACHE_ENABLED: "${PAGE_CACHE_ENABLED}"
+      PAGE_CACHE_PATH: "${PAGE_CACHE_PATH}"
+      PAGE_CACHE_TTL_S: "${PAGE_CACHE_TTL_S}"
+      PAGE_CACHE_STALE_S: "${PAGE_CACHE_STALE_S}"
+      PAGE_CACHE_RETENTION_S: "${PAGE_CACHE_RETENTION_S}"
+      PAGE_CACHE_RAW_HTML_ENABLED: "${PAGE_CACHE_RAW_HTML_ENABLED}"
+      PAGE_DIFF_MAX_INPUT_LINES: "${PAGE_DIFF_MAX_INPUT_LINES}"
+      PAGE_DIFF_MAX_OPERATIONS: "${PAGE_DIFF_MAX_OPERATIONS}"
+      PAGE_DIFF_MAX_OUTPUT_LINES: "${PAGE_DIFF_MAX_OUTPUT_LINES}"
+      CRAWL_JOBS_ENABLED: "${CRAWL_JOBS_ENABLED}"
+      CRAWL_JOB_PATH: "${CRAWL_JOB_PATH}"
+      CRAWL_SYNC_MAX_PAGES: "${CRAWL_SYNC_MAX_PAGES}"
+      CRAWL_JOB_RETENTION_S: "${CRAWL_JOB_RETENTION_S}"
+      CRAWL_JOB_EXPIRED_TOMBSTONE_S: "${CRAWL_JOB_EXPIRED_TOMBSTONE_S}"
+      CRAWL_JOB_MAX_ATTEMPTS: "${CRAWL_JOB_MAX_ATTEMPTS}"
+      CRAWL_JOB_RETRY_BASE_S: "${CRAWL_JOB_RETRY_BASE_S}"
+      CRAWL_JOB_ATTEMPT_DEADLINE_S: "${CRAWL_JOB_ATTEMPT_DEADLINE_S}"
+      CRAWL_JOB_MAX_RECORDS: "${CRAWL_JOB_MAX_RECORDS}"
+      CRAWL_JOB_RAW_HTML_ENABLED: "${CRAWL_JOB_RAW_HTML_ENABLED}"
+      CRAWL_JOB_MAX_INFLIGHT_REQUESTS: "${CRAWL_JOB_MAX_INFLIGHT_REQUESTS}"
+      CRAWL_JOB_RESULT_PAGE_MAX_ITEMS: "${CRAWL_JOB_RESULT_PAGE_MAX_ITEMS}"
+      CRAWL_JOB_RESULT_PAGE_MAX_BYTES: "${CRAWL_JOB_RESULT_PAGE_MAX_BYTES}"
       SEARCH_PROFILE_QUICK_TOKEN_BUDGET: "${SEARCH_PROFILE_QUICK_TOKEN_BUDGET}"
       SEARCH_PROFILE_QUICK_MAX_URLS: "${SEARCH_PROFILE_QUICK_MAX_URLS}"
       SEARCH_PROFILE_QUICK_MAX_PASSAGES: "${SEARCH_PROFILE_QUICK_MAX_PASSAGES}"
@@ -88,6 +136,8 @@ services:
       URL_SAFETY_IPV4_COMPAT_NETWORKS: "${URL_SAFETY_IPV4_COMPAT_NETWORKS}"
       MCP_ALLOWED_HOSTS: "${MCP_ALLOWED_HOSTS}"
       MCP_ALLOWED_ORIGINS: "${MCP_ALLOWED_ORIGINS}"
+    volumes:
+      - thorondor-page-cache:/var/lib/thorondor
     depends_on:
       - searxng
       - crawl4ai
@@ -123,31 +173,35 @@ services:
 
   crawl4ai:
     <<: *internal
-    networks: [internal, egress]
+    networks:
+      crawl-control:
+      crawl-egress:
+        gw_priority: 1
     # Public upstream self-hosted Docker API. Keep this as an image dependency
     # and integrate over HTTP; do not vendor or build Crawl4AI in this repo.
     image: unclecode/crawl4ai@sha256:bd36741e7bdd35ddc1a05d9183e1d6d8cefb61dd640d944a25d026b76e917690
     environment:
       CRAWL4AI_API_TOKEN: "${CRAWL4AI_API_KEY?}"
-      HTTP_PROXY: "${CRAWL4AI_HTTP_PROXY}"
-      HTTPS_PROXY: "${CRAWL4AI_HTTPS_PROXY}"
-      ALL_PROXY: "${CRAWL4AI_ALL_PROXY}"
-      http_proxy: "${CRAWL4AI_HTTP_PROXY}"
-      https_proxy: "${CRAWL4AI_HTTPS_PROXY}"
-      all_proxy: "${CRAWL4AI_ALL_PROXY}"
-      NO_PROXY: "${CRAWL4AI_NO_PROXY?}"
-      no_proxy: "${CRAWL4AI_NO_PROXY?}"
+      CRAWL4AI_ALLOW_INTERNAL_URLS: "${CRAWL4AI_ALLOW_INTERNAL_URLS}"
+    user: "appuser"
+    read_only: true
+    tmpfs:
+      - /tmp
+      - /var/lib/redis:uid=999,gid=999,mode=0700
+      - /var/lib/crawl4ai/outputs:uid=999,gid=999,mode=0700
+      - /home/appuser/.crawl4ai:uid=999,gid=999,mode=0700
+      - /home/appuser/.cache/url_seeder:uid=999,gid=999,mode=0700
+      - /home/appuser/.gunicorn:uid=999,gid=999,mode=0700
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    pids_limit: 512
     shm_size: "1g"
     healthcheck:
-      test:
-        - "CMD-SHELL"
-        - "redis-cli ping > /dev/null && NO_PROXY=localhost,127.0.0.1,::1 no_proxy=localhost,127.0.0.1,::1 curl -f http://localhost:11235/health"
+      test: ["CMD", "curl", "-f", "http://localhost:11235/health"]
       interval: 30s
       timeout: 10s
       retries: 3
-      start_period: 5s
-    depends_on:
-      - egress-proxy
+      start_period: 40s
 
   embedding:
     <<: *internal
@@ -167,3 +221,9 @@ networks:
   internal:
     internal: true
   egress: {}
+  crawl-control:
+    internal: true
+  crawl-egress: {}
+
+volumes:
+  thorondor-page-cache: {}

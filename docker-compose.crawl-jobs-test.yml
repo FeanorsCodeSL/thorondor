@@ -1,0 +1,21 @@
+services:
+  crawl-job-probe:
+    build:
+      context: .
+      dockerfile: orchestrator/Dockerfile
+    command:
+      - python
+      - -m
+      - orchestrator.tests.crawl_job_compose_probe
+      - recover
+      - /var/lib/thorondor/crawl-jobs-test.sqlite3
+      - /var/lib/thorondor/crawl-jobs-test.json
+    network_mode: none
+    read_only: true
+    tmpfs:
+      - /tmp
+    volumes:
+      - crawl-job-test-state:/var/lib/thorondor
+
+volumes:
+  crawl-job-test-state: {}

@@ -1,6 +1,8 @@
 """Protocols for orchestrator pipeline stages."""
 from typing import Protocol
 
+from .clients.structured_extractor import StructuredModelResult
+from .page_cache import CacheRepositoryStats, PageCacheRecord, StoredTargetSnapshot
 from .types import (
     AssembledCitation,
     AssembledPassage,
@@ -8,8 +10,10 @@ from .types import (
     CleanedPage,
     DiscoveryOutcome,
     DiscoveryResult,
+    FetchStageOutcome,
     Page,
     PrefilteredChunks,
+    RerankOutcome,
     ScoredChunk,
 )
 
@@ -36,6 +40,59 @@ class SelectionPolicy(Protocol):
 class ContentExtractor(Protocol):
     async def extract(self, urls: list[str]) -> list[Page]: ...
 
+    async def fetch(
+        self,
+        urls: list[str],
+        capabilities: frozenset[str],
+        include_raw_html: bool,
+    ) -> list[FetchStageOutcome]: ...
+
+
+class StructuredDataExtractor(Protocol):
+    async def extract(
+        self,
+        markdown: str,
+        schema: dict[str, object],
+    ) -> StructuredModelResult: ...
+
+
+class PageCacheRepository(Protocol):
+    enabled: bool
+
+    async def get(self, cache_key: str) -> PageCacheRecord | None: ...
+
+    async def put(self, record: PageCacheRecord) -> None: ...
+
+    async def put_with_target(
+        self,
+        record: PageCacheRecord,
+        locator_hash: str,
+        snapshot: StoredTargetSnapshot,
+    ) -> None: ...
+
+    async def get_target(
+        self, cache_key: str, locator_hash: str
+    ) -> StoredTargetSnapshot | None: ...
+
+    async def put_target(
+        self,
+        cache_key: str,
+        locator_hash: str,
+        snapshot: StoredTargetSnapshot,
+    ) -> None: ...
+
+    async def delete(self, cache_key: str) -> None: ...
+
+    async def clear_url(self, url_identity: str) -> int: ...
+
+    async def cleanup(self, now: float | None = None) -> int: ...
+
+    async def stats(self) -> CacheRepositoryStats: ...
+
+    async def aclose(self) -> None: ...
+
+    async def start(self) -> None: ...
+
 
 class MarkdownCleaner(Protocol):
     def clean(self, page: Page) -> CleanedPage: ...
@@ -50,7 +107,7 @@ class CandidatePrefilter(Protocol):
 
 
 class Reranker(Protocol):
-    async def rerank(self, query: str, chunks: list[Chunk]) -> list[ScoredChunk]: ...
+    async def rerank(self, query: str, chunks: list[Chunk]) -> RerankOutcome: ...
 
 
 class ResultAssembler(Protocol):

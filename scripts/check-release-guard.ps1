@@ -146,10 +146,20 @@ if (Select-String -Path (Join-Path $Root "thorondor_cli/assets/docker-compose.ym
     exit 1
 }
 
-docker compose `
+$composeJson = docker compose `
     --env-file thorondor_cli/templates/env.example `
     -f thorondor_cli/assets/docker-compose.yml `
-    config | Out-Null
+    config --format json
+$composeJson | & $Python scripts/check_compose_egress.py --crawl-service crawl4ai --control-peer-service orchestrator --provider-service searxng
+if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+$productionJson = docker compose `
+    --env-file .env.example `
+    --env-file .env.production.example `
+    -f docker-compose.production.yml `
+    config --format json
+$productionJson | & $Python scripts/check_compose_egress.py --crawl-service crawl4ai --control-peer-service thorondor --provider-service searxng
+if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
 $installCommand = "uv tool install --force git+https://github.com/FeanorsCodeSL/thorondor"
 if ((Get-Content (Join-Path $Root "scripts/install.sh") -Raw) -notmatch [regex]::Escape($installCommand)) {
@@ -177,7 +187,9 @@ $overlay = Join-Path $overlayDir "docker-compose.host-endpoints.yml"
 try {
     New-Item -ItemType Directory -Force $overlayDir | Out-Null
     & $Python -c "import sys; from thorondor_cli.state import write_host_endpoints_overlay; write_host_endpoints_overlay(sys.argv[1], host_rewritten=True)" $overlayDir
-    docker compose --env-file .env.example -f docker-compose.yml -f $overlay config | Out-Null
+    $localJson = docker compose --env-file .env.example -f docker-compose.yml -f $overlay config --format json
+    $localJson | & $Python scripts/check_compose_egress.py --crawl-service crawl4ai --control-peer-service orchestrator --provider-service searxng
+    if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 }
 finally {
     if (Test-Path $overlayDir) {

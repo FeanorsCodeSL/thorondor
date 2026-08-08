@@ -1,0 +1,13 @@
+{
+  "variants": [
+    {
+      "url": "https://fixtures.thorondor.test/search?tag=one&tag=two&utm_source=fixture#section"
+    },
+    {
+      "url": "https://fixtures.thorondor.test/search?tag=two&tag=one&utm_source=fixture"
+    },
+    {
+      "url": "https://fixtures.thorondor.test/search?tag=one&tag=two&view=compact"
+    }
+  ]
+}

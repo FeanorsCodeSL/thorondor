@@ -1,4 +1,5 @@
 """Impure URL safety checks for crawl candidates."""
+import asyncio
 from collections.abc import Iterable
 from dataclasses import dataclass
 import ipaddress
@@ -16,6 +17,7 @@ IP_CATEGORY_CHECKS = {
     "multicast": lambda ip: ip.is_multicast,
     "unspecified": lambda ip: ip.is_unspecified,
 }
+MAX_URL_SAFETY_CONCURRENCY = 20
 
 
 @dataclass(frozen=True)
@@ -40,10 +42,33 @@ def filter_safe_discovery_results(
     return [result for result in results if is_safe_crawl_url(result.url, policy)]
 
 
+async def filter_safe_discovery_results_async(
+    results: Iterable[DiscoveryResult],
+    policy: UrlSafetyPolicy,
+    max_concurrency: int,
+) -> list[DiscoveryResult]:
+    candidates = list(results)
+    if not candidates or max_concurrency < 1:
+        return []
+    safe = [False] * len(candidates)
+    next_index = 0
+
+    async def worker() -> None:
+        nonlocal next_index
+        while next_index < len(candidates):
+            index = next_index
+            next_index += 1
+            safe[index] = await is_safe_crawl_url_async(candidates[index].url, policy)
+
+    worker_count = min(len(candidates), max_concurrency, MAX_URL_SAFETY_CONCURRENCY)
+    await asyncio.gather(*(worker() for _ in range(worker_count)))
+    return [result for result, is_safe in zip(candidates, safe) if is_safe]
+
+
 def is_safe_crawl_url(url: str, policy: UrlSafetyPolicy) -> bool:
     try:
         parsed = urlparse(url)
-    except ValueError:
+    except Exception:
         return False
 
     if parsed.scheme not in {"http", "https"}:
@@ -59,10 +84,17 @@ def is_safe_crawl_url(url: str, policy: UrlSafetyPolicy) -> bool:
 
     try:
         resolved = resolve_host_ips(host)
-    except OSError:
+    except Exception:
         return False
 
     return bool(resolved) and all(_is_safe_ip(ip, policy) for ip in resolved)
+
+
+async def is_safe_crawl_url_async(url: str, policy: UrlSafetyPolicy) -> bool:
+    try:
+        return await asyncio.to_thread(is_safe_crawl_url, url, policy)
+    except Exception:
+        return False
 
 
 def resolve_host_ips(host: str) -> list[ipaddress.IPv4Address | ipaddress.IPv6Address]:

@@ -1,0 +1,38 @@
+{
+  "success": true,
+  "results": [
+    {
+      "success": true,
+      "url": "https://fixtures.thorondor.test/articles/requested",
+      "redirected_url": "https://fixtures.thorondor.test/articles/final",
+      "status_code": 200,
+      "response_headers": {
+        "content-type": "text/html; charset=utf-8",
+        "etag": "\"fixture-v1\"",
+        "last-modified": "Tue, 04 Aug 2026 10:15:00 GMT"
+      },
+      "links": {
+        "internal": [
+          {
+            "href": "/articles/next",
+            "text": "Next fixture"
+          }
+        ],
+        "external": [
+          {
+            "href": "https://external.fixture.test/reference",
+            "text": "External fixture"
+          }
+        ]
+      },
+      "metadata": {
+        "title": "Final fixture article",
+        "description": "Original local Crawl4AI metadata fixture.",
+        "canonical": "https://fixtures.thorondor.test/articles/final"
+      },
+      "markdown": {
+        "fit_markdown": "# Final fixture article\n\nCaptured metadata is local fixture data."
+      }
+    }
+  ]
+}

@@ -6,7 +6,16 @@ A self-hosted, data-sovereign semantic web-search service for agents — discove
 
 ## What It Is
 
-Thorondor is a local semantic web-search stack designed to replace hosted search-for-agents APIs (Exa, Tavily, and equivalents) with an on-premises, operator-controlled pipeline. It uses SearXNG for multi-engine URL discovery, Crawl4AI for JavaScript-capable page crawling, a first-party `ClusterSemanticChunker` backed by BGE-M3 embeddings for globally-optimal chunk boundaries, and BGE-reranker-v2-m3 to score passages against the original query before assembly. The orchestrator exposes both `POST /v1/search` (REST) and an MCP `web_search` tool; both surfaces return the same versioned `SearchResponse` envelope with `passages`, `citations`, and `stats`. No persistent corpus, vector store, or implemented cache exists — all content is fetched live, processed, returned, and discarded.
+Thorondor is a local semantic web-search stack designed to replace hosted search-for-agents APIs (Exa, Tavily, and equivalents) with an on-premises, operator-controlled pipeline. It uses SearXNG for multi-engine URL discovery, Crawl4AI for JavaScript-capable page crawling, a first-party `ClusterSemanticChunker` backed by BGE-M3 embeddings for globally-optimal chunk boundaries, and BGE-reranker-v2-m3 to score passages against the original query before assembly. The orchestrator exposes versioned search, known-URL fetch, site-map, and bounded site-crawl contracts through REST and MCP. Search remains live and non-persistent; operators may separately enable a bounded local page cache for known-URL fetches and change monitoring.
+
+The result is an agent-facing web intelligence layer rather than only a search
+endpoint: an agent can discover cited evidence, inspect a known page, request
+bounded links/tables/typed metadata or schema-shaped fields, detect that a
+page changed, and evaluate a specific target transition such as “out of stock”
+to “available”. Whole-page noise such as advertisements may still produce a
+general change signal, but cannot satisfy a target watch. Scheduling, alerts,
+and follow-up actions remain the responsibility of Tengwar or the calling
+agent runtime.
 
 ## Architecture Overview
 
@@ -26,34 +35,34 @@ query
   -> SearchResponse (REST or MCP)
 ```
 
-All inter-service traffic travels over an internal Compose network. Crawl4AI's outbound HTTP exits through the embedded SSRF egress proxy.
+All inter-service traffic travels over internal Compose networks. Crawl4AI's outbound HTTP exits through its built-in DNS-pinning proxy on a dedicated egress network.
 
 ## Repository Layout
 
 | Path | Type | Description |
 |---|---|---|
-| `orchestrator/` | service | FastAPI app: `/v1/search`, `/search` (compat), `/livez`, `/healthz`, MCP `/mcp` |
+| `orchestrator/` | service | FastAPI app: `/v1/search`, `/search` (compat), `/v1/fetch`, `/v1/map`, `/v1/crawl`, `/livez`, `/healthz`, MCP `/mcp` |
 | `semantic-chunking-service/` | service | FastAPI chunker: `/chunk`, `/healthz` — ClusterSemanticChunker + OpenAI-compatible embedding client |
 | `thorondor_cli/` | tool | Textual configurator, env/deploy helpers, native `thorondor-mcp` proxy, and harness writers |
-| `ssrf-proxy/` | service | Minimal async HTTP CONNECT proxy that blocks RFC-1918 and embedded-IPv4 IPv6 targets |
+| `ssrf-proxy/` | service | Retained async HTTP CONNECT proxy for deployment compatibility; Crawl4AI 0.9.2 uses its own DNS-pinning egress |
 | `searxng/` | config | SearXNG `settings.yml` mounted read-only by Compose |
 | `models/` | artifact | Local GGUF model files consumed by the llama.cpp profile (not committed) |
 | `scripts/` | scripts | `install.*`, `deploy.ps1`, `deploy-llamacpp.ps1`, `smoke.ps1`, `check-release-guard.ps1` (PowerShell) + Bash equivalents |
-| `docker-compose.yml` | config | Core stack: orchestrator, chunker, SearXNG, Crawl4AI, egress-proxy; `bundled-models` profile adds TEI embedding + reranker |
+| `docker-compose.yml` | config | Core stack: orchestrator, chunker, SearXNG, Crawl4AI, and the retained first-party egress-proxy service; `bundled-models` profile adds TEI embedding + reranker |
 | `docker-compose.llamacpp.yml` | config | Override: swaps embedding and reranker to local llama.cpp containers using GGUF files under `models/` |
 | `docker-compose.production.yml` | config | Image-only production slice for Tengwar-style deployments; no `build:` blocks or model containers |
 | `.env.example` | config | Template for `.env` — every key the Python settings loader requires |
 | `.env.llamacpp.example` | config | Template for `.env.llamacpp` — llama.cpp image SHA, GGUF paths, and batch sizes |
 | `.env.production.example` | config | Template overlay for released GHCR image refs and production service names |
 | `docs/architecture/` | docs | Operational architecture reference (overview, pipeline, deployment, deps, security, config) |
-| `docs/plans/` | docs | Active remediation and implementation plans |
+| `docs/plans/` | docs | Remaining operational plans, such as release-image work |
 | `.agents/skills/thorondor-web-search/` | skill | Repo-local agent skill for calling the running service |
 | `LICENSE` | license | MIT |
 | `THIRD-PARTY-NOTICES.md` | license | Third-party runtime image and package notices |
 
 ## Prerequisites
 
-- **Docker Desktop** — installed, running, and configured for Linux containers.
+- **Docker Engine 28+ with Docker Compose 2.33.1+**, or a Docker Desktop release containing them — installed, running, and configured for Linux containers. Thorondor uses Compose gateway priority to select Crawl4AI's isolated outbound network deterministically.
 - **GGUF model files** (llama.cpp profile only) — `bge-m3.gguf` and `bge-reranker-v2-m3.gguf` placed under `models/`. Verify model license terms before downloading weights.
 - **Hardware** — tested on Windows 10/11 with Docker Desktop (WSL2 backend) and on ARM64 (NVIDIA DGX Spark). The llama.cpp image is pinned to a SHA known to work on both architectures and supports CPU inference. The bundled TEI image requires an AMD64 NVIDIA CUDA host.
 - **PowerShell 7+** for the deploy and smoke scripts. Bash equivalents exist under `scripts/`.
@@ -88,7 +97,7 @@ status and harness status:
 | Action | Purpose |
 |---|---|
 | `Mode` | Choose BYO endpoints, bundled TEI containers, or llama.cpp GGUF containers. Picking `llamacpp` auto-downloads missing GGUF files into `models/` with a progress bar. |
-| `Endpoints` | Edit embedding, reranker, and optional LLM planner endpoints. |
+| `Endpoints` | Edit embedding, reranker, and optional LLM-operation endpoints. |
 | `Search/crawl` | Tune ports, budgets, crawl limits, robots, and domain filters. |
 | `Validate` | Check env completeness and show the exact Compose command. |
 | `Deploy` | Run `config`, `build`, `up -d`, `/healthz`, and smoke search. |
@@ -104,9 +113,9 @@ and `scripts/deploy-llamacpp.sh` so a fresh clone can deploy the llamacpp
 profile with no manual file placement.
 
 `thorondor doctor` is the non-interactive status path. `thorondor-mcp` is a
-native stdio MCP proxy that forwards `web_search` to the running
-`POST /v1/search` endpoint. The Dockerized HTTP MCP surface remains available at
-`http://localhost:8080/mcp`.
+native stdio MCP proxy that forwards `web_search`, `web_fetch`, `web_map`, and
+`web_crawl` to their matching versioned REST endpoints. The Dockerized HTTP MCP
+surface remains available at `http://localhost:8080/mcp`.
 
 `thorondor uninstall` stops the managed stack, removes `~/.thorondor`, and then
 removes the installed `thorondor` tool. Use `thorondor uninstall --keep-tool`
@@ -222,8 +231,7 @@ The recipe builds the three first-party `:local` images from the sibling
 Thorondor checkout when selected, attaches the Thorondor orchestrator and
 chunker to `tengwar-shared`, points them at Tengwar's `embedding` and `reranker`
 services, and waits for Thorondor `/healthz`. It also generates and preserves
-`CRAWL4AI_API_KEY`, which Crawl4AI 0.9.2 requires before accepting network
-traffic. The recipe recreates only the Thorondor Compose project; do not use
+the managed `CRAWL4AI_API_KEY`. The recipe recreates only the Thorondor Compose project; do not use
 `down -v` or remove the shared network when switching versions.
 
 Use `/livez` for recurring process liveness and `/healthz` for dependency
@@ -292,7 +300,7 @@ curl -s -X POST http://localhost:8080/v1/search \
 | `freshness` | `"day"` \| `"week"` \| `"month"` \| `"year"` | `null` | Discovery time-range hint passed to SearXNG. |
 | `domains` | `list[str]` | `null` | Per-call domain allowlist. Combined with `ALLOWLIST_ONLY` if set. |
 | `exclude_domains` | `list[str]` | `null` | Per-call domain blocklist merged with `DOMAIN_BLOCKLIST`. |
-| `include_raw_markdown` | bool | `false` | Attach raw crawled markdown for cited pages in `raw_markdown[]`. |
+| `include_raw_markdown` | bool | `false` | Attach original and exact cleaned Markdown plus document identity for cited pages in `raw_markdown[]`. |
 
 ### Response envelope (`SearchResponse`)
 
@@ -306,21 +314,69 @@ curl -s -X POST http://localhost:8080/v1/search \
       "score": 0.87,
       "token_count": 134,
       "citation_id": 1,
+      "start_index": 412,
+      "end_index": 1187,
+      "verbatim": true,
+      "document_id": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+      "evidence_id": "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789",
+      "section_heading": "Implementation timeline",
       "provenance": "external_web",
-      "trust": "untrusted"
+      "trust": "untrusted",
+      "score_components": [
+        {
+          "name": "reranker",
+          "score": 0.87,
+          "strategy": "external-reranker@1"
+        }
+      ]
     }
   ],
   "citations": [
-    { "id": 1, "url": "https://...", "title": "..." }
+    {
+      "id": 1,
+      "url": "https://...",
+      "title": "...",
+      "published": "2026-08-04T10:15:00Z",
+      "modified_at": null,
+      "document_id": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+      "evidence_spans": [
+        {
+          "start_index": 412,
+          "end_index": 1187,
+          "verbatim": true,
+          "evidence_id": "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789",
+          "section_heading": "Implementation timeline"
+        }
+      ],
+      "metadata": {
+        "published_at": {
+          "value": "2026-08-04T10:15:00Z",
+          "source": "json_ld",
+          "confidence": "high"
+        },
+        "conflicts": []
+      }
+    }
   ],
   "stats": {
     "sub_queries": ["..."],
+    "subquery_diagnostics": [
+      {
+        "query": "...",
+        "status": "ok",
+        "elapsed_ms": 124,
+        "result_count": 10,
+        "failure_reason": null
+      }
+    ],
     "discovery_status": "degraded",
     "unresponsive_engines": [
       { "engine": "mojeek", "reason": "access denied" }
     ],
     "urls_discovered": 18,
     "urls_selected": 6,
+    "evidence_quality_strategy": null,
+    "evidence_quality_chunks_dropped": 0,
     "urls_crawled_ok": 5,
     "urls_crawled_failed": 1,
     "chunks_produced": 43,
@@ -340,14 +396,58 @@ Key `stats` fields:
 |---|---|
 | `discovery_status` | `ok` when SearXNG reports no engine failures, `degraded` when results remain usable despite failed engines, or `unavailable` when engine failures leave no usable discovery results. |
 | `unresponsive_engines` | SearXNG engine names and reported failure or suspension reasons. |
+| `subquery_diagnostics` | Bounded status, elapsed time, and result count for each SearXNG sub-query attempt. A failed attempt does not discard successful sibling attempts. |
+| `engine_contributions` | Result contributions before URL merging, counted per sub-query and plural SearXNG engine. One URL found in three sub-queries contributes three times. SearXNG does not expose true per-engine latency, so Thorondor does not invent it. |
 | `reranked` | `false` when the reranker was unreachable; passages are still returned sorted by position. |
-| `reason` | Non-null closed enum when the search ended before normal assembly: `search_provider_unavailable`, `no_results_from_discovery`, `no_urls_after_selection`, `all_crawls_failed`, `no_chunks_after_dedup`, `no_chunks_after_rerank`. |
+| `reason` | Non-null closed enum when the search ended before normal assembly: `search_provider_unavailable`, `no_results_from_discovery`, `no_urls_after_selection`, `all_crawls_failed`, `no_chunks_after_dedup`, `no_chunks_after_rerank`, `no_evidence_after_quality_gate`, or `no_evidence_after_output_budget`. |
 | `embedding_degraded` | `true` when the chunker fell back to token-based splitting because embeddings failed. |
-| `url_diagnostics` | Per-URL selection decisions (populated when `include_raw_markdown` is true or the investigation smoke test is used). |
+| `url_diagnostics` | Selected-first URL decisions with contributing sub-queries, plural engines, positions, best upstream score, lexical score, and selection/filter reason. The list is bounded to 50 items and 64 KiB. |
+| `url_diagnostics_omitted` | Counts of decisions omitted from the URL diagnostic item/byte budget, grouped by reason. |
+| `evidence_quality_drops` | Bounded counts for deterministic navigation, footer, and generic-link evidence rejection when `EVIDENCE_QUALITY_ENABLED=true`. The gate is disabled by default pending broader quality measurement. |
+| `evidence_items_omitted` / `evidence_bytes_omitted` | Evidence rejected by the independent 50-item, 64-KiB-serialized-item, and 256-KiB-serialized-list response envelope. A top-ranked oversized item is shortened safely before omission is considered. |
+| `raw_markdown_omitted` | Cited raw-Markdown entries omitted by the independent 20-item, 256-KiB-per-item, and 512-KiB-total envelope. |
 
 An empty-passage response with `stats.reason` set is a normal 200, not an error. The caller should read `reason` rather than interpreting `passages.length == 0` alone. `search_provider_unavailable` means SearXNG reported at least one failed engine and returned no usable discovery results; a healthy empty search remains `no_results_from_discovery`.
 
+For `verbatim=true`, `start_index` and `end_index` are Unicode code-point offsets into the exact cleaned Markdown and the end is exclusive. `evidence_id` is emitted only when `passage.text == cleaned_markdown[start_index:end_index]` has been verified. `document_id` remains stable across ranking and chunk ordering when the final URL and exact cleaned document bytes are unchanged. Citation metadata keeps publication and modification separate, identifies the selected field source/confidence, and retains bounded conflicts instead of silently discarding them. `passage.score` remains the final ordering score; `score_components` identifies only the reranker, partial-batch floor, or position fallback actually used to produce it.
+
 `POST /search` is a backwards-compatible alias for `POST /v1/search`.
+
+### POST /v1/fetch
+
+Use `POST /v1/fetch` when the agent already knows one to four target URLs. The response is a `thorondor.fetch.v1` envelope with one bounded result per URL, aggregate terminal-outcome counts, retryability, final URL, status, content type, allowlisted validators, metadata, and links. Markdown, JavaScript rendering, links, and metadata are requested by default; PDF, document, and raw HTML capabilities are explicit. Raw HTML is size-capped and never appears in ordinary search responses.
+
+Optional `structured_formats` accepts the closed values `links`, `tables`, `json_ld`, and `json_schema`. Each format has its own result entry, status, omissions, untrusted labels, and source-document identity. Links and table elements carry exact source-HTML spans; each typed JSON-LD field addresses the exact `<script>` element that declared it. `json_ld` emits only Article-family and Product documents. `json_schema` requires a bounded `extraction_schema`, validates model output against a small local subset, and accepts a leaf only when its value occurs in an exact cleaned-Markdown evidence span. Extraction is all-or-nothing: any schema or evidence failure suppresses model data and returns only closed validation diagnostics. It rejects remote references, combinators, arbitrary keywords, schemas over 16 KiB, depth over five, more than 32 properties, prompts over 128 KiB, outputs over 64 KiB, and crawl requests over four pages. Model work has a 20-second deadline and a process-owned four-request concurrency limit, using the configured `LLM_ENDPOINT`, `LLM_MODEL`, and optional `LLM_API_KEY`.
+
+`links` requires the links capability, `tables` and `json_schema` require Markdown, and `json_ld` requires metadata. Duplicate, incompatible, or schema-less formats are rejected. Deterministic structured requests fetch live source HTML; schema-only requests use current cleaned Markdown without requesting an additional raw-HTML copy. Every structured request bypasses the page cache so a cached record without the addressed source cannot produce structured evidence. Consequently, `watch`, `change`, `diff`, stale reads, and revalidation are unavailable on the same request. All four profiles are explicit opt-ins. Omission counts are profile-specific: eligible HTTP links, table cells, JSON-LD blocks or fields, and schema leaves suppressed by response budgeting.
+
+Terminal outcomes distinguish content from challenge or empty shells, robots refusal, timeout, rate limiting, unsafe redirects or targets, unsupported content or capabilities, oversized content, malformed upstream data, and local processing failures. Returned web content is always marked `provenance: "external_web"` and `trust: "untrusted"`.
+
+When `PAGE_CACHE_ENABLED=true`, each result also reports `cache.state` (`fresh`, `stale`, `revalidated`, or `bypass`), a `new`/`same`/`changed`/`removed` page transition, and bounded changed-section and line summaries when content changed. `force_refresh=true` performs a live comparison. `stale_while_revalidate=true` may return bounded stale content while refreshing only for ordinary non-watch reads. Background refreshes reacquire fetch admission and run under the fetch deadline. Browser-rendered requests use a full refetch and hash comparison because the hardened Crawl4AI API cannot accept request-supplied validators; an extractor that explicitly supports conditional revalidation may reuse the stored document after `304 Not Modified` without extending its absolute retention deadline.
+
+An optional `watch` evaluates one declarative target by a bounded compound CSS selector, role/name, or normalized text inside a named section. It compares text or one declared attribute and sets `condition_met=true` only for a uniquely resolved transition from the expected state to the desired state. Missing, ambiguous, unsupported, fetch-failure, and first-observation cases fail closed. No caller JavaScript or regular expression is accepted. Whole-page changes such as advertisements may still set `change.state=changed`, but cannot satisfy a target watch.
+
+### POST /v1/map and POST /v1/crawl
+
+Use `POST /v1/map` to discover a deterministic, robots-aware URL set for one site. Use `POST /v1/crawl` for the same bounded traversal plus typed page results. Both resolve the seed first, scope the operation to its effective origin and seed directory by default, combine declared and common sitemaps with bounded breadth-first link traversal, and optionally add SearXNG `site:` discovery. Parent paths and subdomains require explicit opt-in; arbitrary external-origin crawling is not supported.
+
+The shared request policy supports `sitemap` modes `include`, `only`, and `skip`; path include/exclude globs; query preservation, stripping, or exclusion; file-extension allowlists; and explicit depth, page, and discovered-URL limits. Crawl requests may use the same `structured_formats` contract for each successful page. Responses report every retained URL's sources, state transitions, terminal reason, untrusted sitemap modification metadata, aggregate fetch outcomes, robots state and network/cache source, warnings, and omissions. These operations are synchronous and intentionally limited to small site slices.
+
+### Durable crawl jobs
+
+When `CRAWL_JOBS_ENABLED=true`, `POST /v1/crawl/jobs` runs the same bounded crawl policy through one durable local worker. The caller must send `Idempotency-Key` and `X-Thorondor-Job-Scope`; an identical scoped replay returns the existing job, while the same key with a different request returns 409. The scope is an ownership label for an already authenticated internal ingress, not authentication by itself.
+
+Use `GET /v1/crawl/jobs/{job_id}` for status, `GET /v1/crawl/jobs/{job_id}/results` for byte-and-item-bounded cursor pages, and `POST /v1/crawl/jobs/{job_id}/cancel` for cooperative cancellation. All reads and cancellation require the same scope. Results survive an orchestrator restart, are deduplicated, and expire at an absolute deadline that polling does not extend. Recovery repeats the bounded crawl from its seed and suppresses already stored final-URL results; it is not checkpointed frontier resumption. A job attempt has its own bounded deadline and consumes one shared `MAX_INFLIGHT_CRAWLS` slot while running. The default advertised synchronous boundary is 10 pages; durable mode remains explicit and can be selected for any crawl when recovery or polling matters.
+
+```bash
+curl -s -X POST http://localhost:8080/v1/crawl/jobs \
+  -H 'Content-Type: application/json' \
+  -H 'Idempotency-Key: product-catalog-2026-08-07' \
+  -H 'X-Thorondor-Job-Scope: internal-agent' \
+  -d '{"url":"https://example.com/docs","max_pages":20}'
+```
+
+This REST-only job API does not add MCP tools, schedules, or webhooks. Status exposes bounded progress, observed failure summaries, warnings, and page results, but not the synchronous crawl route's full frontier URL records or aggregate statistics. The feature is disabled by default and uses SQLite under `/var/lib/thorondor`; enable only one orchestrator replica. New jobs return 429 when the configured record cap is full. Raw HTML requests are rejected unless `CRAWL_JOB_RAW_HTML_ENABLED=true` explicitly permits persistence.
 
 ## MCP
 
@@ -359,7 +459,7 @@ http://localhost:8080/mcp
 
 Transport: streamable HTTP (`stateless_http=True`). The server ID is `thorondor`.
 
-The single exposed tool is `web_search`. Its parameters mirror the REST request exactly. Returns the same `SearchResponse` dict shape as the REST endpoint, serialised by `model_dump()`.
+The exposed tools are `web_search`, `web_fetch`, `web_map`, and `web_crawl`. Each mirrors its versioned REST request and response contract. `web_map` returns URL-only discovery outcomes; `web_crawl` adds typed page evidence for the bounded site slice.
 
 Example MCP tool call (Claude SDK style):
 
@@ -410,7 +510,7 @@ pipeline tolerates their absence with reduced quality.
 
 ### X-Request-ID
 
-Every REST and MCP request generates or accepts `X-Request-ID`. The same ID is returned to the caller and forwarded to all downstream seams (SearXNG, Crawl4AI, chunker, embedding, reranker, LLM planner).
+Every REST and MCP request generates or accepts `X-Request-ID`. The same ID is returned to the caller and forwarded to all downstream seams (SearXNG, Crawl4AI, chunker, embedding, reranker, and configured LLM operations).
 
 ### Structured logging
 
@@ -468,11 +568,33 @@ All keys must be present in `.env` (leave optional keys blank rather than deleti
 | `HEALTHCHECK_MAX_CONNECTIONS` | `8` | Max connections in the healthcheck HTTP client pool. |
 | `HEALTHCHECK_MAX_KEEPALIVE_CONNECTIONS` | `4` | Max keepalive connections in the healthcheck client pool. |
 
+### Resource Envelope
+
+| Variable | Default | Description |
+|---|---|---|
+| `MAX_REQUEST_BODY_BYTES` | `32768` | Maximum REST or in-process MCP request payload. |
+| `MAX_RESPONSE_BODY_BYTES` | `2097152` | Maximum serialized REST, MCP, Crawl4AI, or stdio-proxy response payload. |
+| `SEARCH_ROUTE_DEADLINE_S` | `120` | End-to-end search deadline. |
+| `FETCH_ROUTE_DEADLINE_S` | `60` | End-to-end known-URL fetch deadline. |
+| `MAP_ROUTE_DEADLINE_S` | `90` | End-to-end site-map deadline. |
+| `SITE_CRAWL_ROUTE_DEADLINE_S` | `120` | End-to-end bounded site-crawl deadline. |
+| `DISCOVERY_TIMEOUT_S` | `20` | Query-planning and per-subquery discovery stage deadline. |
+| `CHUNK_TIMEOUT_S` | `45` | Total chunking stage deadline. |
+| `MAX_INFLIGHT_SEARCHES` | `4` | Process-wide search admission slots. |
+| `MAX_INFLIGHT_FETCHES` | `8` | Process-wide fetch admission slots. |
+| `MAX_INFLIGHT_MAPS` | `4` | Process-wide site-map admission slots. |
+| `MAX_INFLIGHT_CRAWLS` | `2` | Process-wide bounded site-crawl admission slots. |
+| `ADMISSION_WAIT_S` | `0.05` | Maximum wait for a route or crawler slot before rejection. |
+| `ADMISSION_RETRY_AFTER_S` | `1` | Bounded `Retry-After` value returned with HTTP 429. |
+| `MAX_INTERNAL_FANOUT` | `20` | Shared cap covering URL, subquery, crawl, chunk, and profile fan-out. |
+| `MAX_CONTENT_BYTES` | `262144` | Maximum combined Markdown and HTML bytes retained per fetched page. |
+| `CHUNK_CONCURRENCY` | `4` | Process-owned concurrent chunk-service requests. |
+
 ### Search Profiles
 
 | Variable | Default | Description |
 |---|---|---|
-| `MAX_SUBQUERIES` | `3` | Maximum sub-queries the planner may produce. |
+| `MAX_SUBQUERIES` | `3` | Maximum sub-queries the planner may produce (1–8). |
 | `DEFAULT_TOKEN_BUDGET` | `4000` | Token budget used when no profile and no explicit `token_budget` is given. |
 | `SEARCH_PROFILE_QUICK_TOKEN_BUDGET` | `2000` | Token budget for the `quick` profile. |
 | `SEARCH_PROFILE_QUICK_MAX_URLS` | `5` | Max URLs for `quick`. |
@@ -493,8 +615,48 @@ All keys must be present in `.env` (leave optional keys blank rather than deleti
 | `CRAWL_PER_HOST_CONCURRENCY` | `1` | Concurrent requests per hostname. |
 | `CRAWL_TIMEOUT_S` | `15` | Per-URL crawl timeout in seconds. |
 | `CRAWL_RESPECT_ROBOTS_TXT` | `true` | Whether Crawl4AI observes robots.txt. |
-| `CRAWL_VALIDATE_REDIRECTS` | `true` | Preflight-check redirect chains for SSRF targets before sending to Crawl4AI. |
-| `CRAWL_MAX_PREFLIGHT_REDIRECTS` | `5` | Max redirect hops to follow during preflight validation. |
+| `CRAWLER_USER_AGENT` | `ThorondorBot/1.0 (+https://github.com/FeanorsCodeSL/thorondor)` | Honest outbound crawler identity with a contact URL. |
+| `CRAWLER_ROBOTS_USER_AGENT` | `ThorondorBot` | Token reserved for robots policy matching and required to appear in the outbound identity. |
+| `SITE_DEFAULT_DELAY_S` | `0.5` | Minimum spacing between target requests to one host. |
+| `SITE_MAX_JITTER_S` | `0.25` | Maximum deterministic per-host spacing jitter. |
+| `SITE_MAX_COOLDOWN_S` | `300` | Maximum adaptive or `Retry-After` cooldown in seconds. |
+| `ROBOTS_CACHE_TTL_S` | `86400` | Absolute in-memory robots snapshot TTL, capped at 24 hours. |
+| `MAX_ROBOTS_BYTES` | `262144` | Maximum robots response bytes parsed by map/crawl. |
+| `MAX_SITEMAP_BYTES` | `262144` | Maximum bytes parsed from one sitemap document. |
+| `MAX_SITEMAP_ENTRIES` | `500` | Maximum retained entries per sitemap document. |
+| `MAX_SITEMAP_DOCUMENTS` | `16` | Maximum sitemap documents fetched per operation. |
+
+### Optional Page Cache and Change Detection
+
+| Variable | Default | Description |
+|---|---|---|
+| `PAGE_CACHE_ENABLED` | `false` | Enable persistent caching for `/v1/fetch` and `web_fetch`; ordinary search is never persisted. |
+| `PAGE_CACHE_PATH` | `/var/lib/thorondor/page-cache.sqlite3` | SQLite file in the dedicated `thorondor-page-cache` volume. |
+| `PAGE_CACHE_TTL_S` | `300` | Fresh lifetime from fetch time; reads never extend it. |
+| `PAGE_CACHE_STALE_S` | `900` | Additional bounded stale-while-revalidate window. |
+| `PAGE_CACHE_RETENTION_S` | `604800` | Absolute page and target-snapshot retention from the full content fetch; reads and `304` responses do not extend it. |
+| `PAGE_CACHE_RAW_HTML_ENABLED` | `false` | Permit raw HTML persistence when the request also asks for `raw_html`. |
+| `PAGE_DIFF_MAX_INPUT_LINES` | `2000` | Per-document line cap before returning summary-only truncated diff metadata. |
+| `PAGE_DIFF_MAX_OPERATIONS` | `1000000` | Maximum old-line × new-line comparison work. |
+| `PAGE_DIFF_MAX_OUTPUT_LINES` | `24` | Maximum added and removed lines returned; hard cap 24. |
+
+### Optional Durable Crawl Jobs
+
+| Variable | Default | Description |
+|---|---|---|
+| `CRAWL_JOBS_ENABLED` | `false` | Enable the REST-only, single-replica SQLite worker. |
+| `CRAWL_JOB_PATH` | `/var/lib/thorondor/crawl-jobs.sqlite3` | Durable job and result database. |
+| `CRAWL_SYNC_MAX_PAGES` | `10` | Advertised synchronous/durable product boundary. |
+| `CRAWL_JOB_RETENTION_S` | `86400` | Absolute terminal-result lifetime. |
+| `CRAWL_JOB_EXPIRED_TOMBSTONE_S` | `3600` | Typed expired-status lifetime after result removal. |
+| `CRAWL_JOB_MAX_ATTEMPTS` | `3` | Total attempts for retryable whole-job failures. |
+| `CRAWL_JOB_RETRY_BASE_S` | `1` | Exponential retry base in seconds. |
+| `CRAWL_JOB_ATTEMPT_DEADLINE_S` | `600` | Maximum wall time for one durable attempt. |
+| `CRAWL_JOB_MAX_RECORDS` | `100` | Maximum retained jobs, including terminal and expired records. |
+| `CRAWL_JOB_RAW_HTML_ENABLED` | `false` | Permit raw HTML in durable results when requested. |
+| `CRAWL_JOB_MAX_INFLIGHT_REQUESTS` | `16` | Concurrent job create/status/results/cancel database operations. |
+| `CRAWL_JOB_RESULT_PAGE_MAX_ITEMS` | `10` | Maximum items per cursor page. |
+| `CRAWL_JOB_RESULT_PAGE_MAX_BYTES` | `524288` | Maximum stored result item and cursor-page bytes. |
 
 ### Markdown Extraction
 
@@ -539,14 +701,15 @@ All keys must be present in `.env` (leave optional keys blank rather than deleti
 | `RERANKER_BATCH_SIZE` | `32` | Chunks per reranker API call. |
 | `RERANKER_TIMEOUT_S` | `30` | Reranker request timeout in seconds. |
 | `RELEVANCE_SCORE_FLOOR` | `0.0` | Passages with reranker score ≤ this value are dropped after reranking (0.0 disables the filter). |
+| `EVIDENCE_QUALITY_ENABLED` | `false` | Enable the measured `evidence-quality@1` structural filter. Disabled by default until a broader independent corpus supports activation. |
 
-### Optional LLM Planner
+### Optional LLM Operations
 
 | Variable | Default | Description |
 |---|---|---|
-| `LLM_ENDPOINT` | _(blank)_ | Optional OpenAI-compatible chat completions server for query decomposition. Leave blank to use `IdentityPlanner` (no decomposition). |
-| `LLM_MODEL` | _(blank)_ | Model name sent to the LLM planner. Required when `LLM_ENDPOINT` is set. |
-| `LLM_API_KEY` | _(blank)_ | Optional bearer token for the LLM planner. |
+| `LLM_ENDPOINT` | _(blank)_ | Optional OpenAI-compatible chat completions server for query decomposition and explicit JSON-Schema extraction. Leave blank to use `IdentityPlanner` and report model extraction as unsupported. |
+| `LLM_MODEL` | _(blank)_ | Model name sent for configured LLM operations. Required when `LLM_ENDPOINT` is set. |
+| `LLM_API_KEY` | _(blank)_ | Optional bearer token for configured LLM operations. |
 
 ### URL Safety and SSRF Protection
 
@@ -588,14 +751,13 @@ All keys must be present in `.env` (leave optional keys blank rather than deleti
 | `PROXY_SIX_TO_FOUR_NETWORKS` | `2002::/16` | 6-to-4 networks for the proxy's IP expansion. |
 | `PROXY_IPV4_COMPAT_NETWORKS` | `::/96` | IPv4-compat networks for the proxy's IP expansion. |
 
-### Crawl4AI Proxy Pass-Through
+### Crawl4AI Egress Safety
 
 | Variable | Default | Description |
 |---|---|---|
-| `CRAWL4AI_HTTP_PROXY` | `http://egress-proxy:8888` | HTTP proxy for Crawl4AI outbound connections. |
-| `CRAWL4AI_HTTPS_PROXY` | `http://egress-proxy:8888` | HTTPS proxy for Crawl4AI outbound connections. |
-| `CRAWL4AI_ALL_PROXY` | `http://egress-proxy:8888` | All-protocol proxy fallback. |
-| `CRAWL4AI_NO_PROXY` | _(blank)_ | Comma-separated hosts to bypass the proxy. |
+| `CRAWL4AI_ALLOW_INTERNAL_URLS` | `false` | Keeps Crawl4AI 0.9.2's DNS-pinning proxy restricted to globally routable targets. Do not enable it in managed deployments. |
+
+Crawl4AI 0.9.2 owns its browser's connect-time DNS pinning and therefore has a dedicated outbound network selected explicitly as its default gateway. Its API remains unpublished on a separate internal control network shared only with the orchestrator. External proxy variables are intentionally absent because the hardened server replaces caller proxy configuration with its loopback pinning proxy.
 
 ### API Keys
 
@@ -607,7 +769,7 @@ All keys must be present in `.env` (leave optional keys blank rather than deleti
 | `CHUNKER_API_KEY` | _(blank)_ | Optional bearer token for the chunking service. |
 | `RERANKER_API_KEY` | _(blank)_ | Optional bearer token for the reranker. |
 | `EMBEDDING_API_KEY` | _(blank)_ | Optional bearer token for the embedding server (read by chunker). |
-| `LLM_API_KEY` | _(blank)_ | Optional bearer token for the LLM planner. |
+| `LLM_API_KEY` | _(blank)_ | Optional bearer token for configured LLM operations. |
 
 ### llama.cpp Overrides (`.env.llamacpp`)
 
@@ -680,10 +842,10 @@ Compose binds the orchestrator to `127.0.0.1` by default. To expose it to anothe
 Run `.\scripts\deploy.ps1` (or `deploy-llamacpp.ps1`) rather than `docker compose up` directly — the deploy script generates the secret when the field is blank.
 
 **Crawl4AI returns 401 or is unreachable**
-Run the deploy script so `CRAWL4AI_API_KEY` is generated and passed to both services. Crawl4AI 0.9.2 binds only to loopback and creates an ephemeral unknown token when the configured token is blank.
+Run the deploy script so `CRAWL4AI_API_KEY` is generated and passed to both services. Keep `CRAWL4AI_ALLOW_INTERNAL_URLS=false`; the API is reachable only through the dedicated internal control network.
 
 **All crawls failing (`urls_crawled_ok=0`)**
-Check Crawl4AI logs: `docker compose logs crawl4ai`. Common causes: slow network, robots.txt refusals (`CRAWL_RESPECT_ROBOTS_TXT=true`), or proxy misconfiguration. Increase `CRAWL_TIMEOUT_S` for slow sites.
+Check Crawl4AI logs: `docker compose logs crawl4ai`. Common causes are missing `crawl-egress` routing, DNS failures, robots.txt refusals (`CRAWL_RESPECT_ROBOTS_TXT=true`), or slow sites. Increase `CRAWL_TIMEOUT_S` only after confirming outbound routing and DNS.
 
 **No results from SearXNG**
 SearXNG may be rate-limited or blocking engines may be unavailable. Check `docker compose logs searxng`. The SearXNG web UI is not published by the default Compose stack; inspect it from inside the Compose network or add a temporary local-only port mapping during debugging.

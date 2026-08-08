@@ -1,13 +1,20 @@
 """Deterministic fakes for orchestrator tests."""
 import asyncio
 
+from .assembly import ResultAssemblerImpl
 from .clients.chunker_client import ChunkerUnavailable
 from .clients.reranker_client import RerankerUnavailable
 from .clients.searxng_client import DiscoveryUnavailable
-from .pipeline import PipelineDeps
-from .assembly import ResultAssemblerImpl
+from .clients.structured_extractor import DisabledStructuredExtractor
+from .crawl_jobs import disabled_crawl_jobs
 from .markdown_cleaner import MarkdownCleanerImpl
+from .outcome_codes import FetchOutcomeCode
+from .page_cache import DisabledPageCache, PageRefreshCoordinator
+from .pipeline import PipelineDeps
+from .politeness import HostPoliteness
 from .prefilter import CandidatePrefilterImpl
+from .resource_policy import ResourcePolicy, RuntimeAdmission
+from .robots_policy import RobotsCache
 from .selection import SelectionPolicyImpl
 from .types import (
     AssembledCitation,
@@ -16,13 +23,18 @@ from .types import (
     DiscoveryEngineFailure,
     DiscoveryOutcome,
     DiscoveryResult,
+    FetchStageOutcome,
     Page,
     PrefilteredChunks,
+    RerankerTelemetry,
+    RerankOutcome,
+    ScoreComponent,
     ScoredChunk,
 )
-
+from .url_identity import build_document_identity, evidence_id_for
 
 FAKE_ARTICLE_URL = "https://a.test/article"
+FAKE_RERANKER_VERSION = "fake-reranker@1"
 
 
 def _fake_extract(html: str, **_kwargs) -> str:
@@ -158,9 +170,32 @@ class DownSelector:
 
 
 class FakeExtractor:
+    supported_capabilities = frozenset(
+        {"markdown", "javascript", "links", "metadata", "raw_html", "pdf", "document"}
+    )
+
     async def extract(self, urls: list[str]) -> list[Page]:
         await _async_boundary()
         return [Page(url, url.split("//", 1)[-1], f"Markdown for {url}") for url in urls]
+
+    async def fetch(self, urls, _capabilities, _include_raw_html):
+        pages = await self.extract(urls)
+        return [
+            FetchStageOutcome(
+                requested_url=page.url,
+                final_url=page.url,
+                code=FetchOutcomeCode.CONTENT,
+                retrieval_method="fake_browser",
+                elapsed_ms=0,
+                status_code=200,
+                content_type="text/html",
+                title=page.title,
+                links=page.links,
+                metadata=page.metadata,
+                page=page,
+            )
+            for page in pages
+        ]
 
 
 class EmptyExtractor:
@@ -182,11 +217,36 @@ class DownExtractor:
         raise RuntimeError("extractor down")
 
 
+def _chunk_page(page: Page, position: int) -> Chunk:
+    identity = build_document_identity(page.final_url or page.url, page.markdown)
+    return Chunk(
+        text=page.markdown,
+        token_count=len(page.markdown.split()),
+        source_url=identity.final_url,
+        title=page.title,
+        position=position,
+        source_id=page.source_id,
+        start_index=0,
+        end_index=len(page.markdown),
+        verbatim=True,
+        document_id=identity.document_id,
+        evidence_id=evidence_id_for(
+            identity.final_url,
+            identity.cleaned_markdown_sha256,
+            0,
+            len(page.markdown),
+        ),
+        final_url=identity.final_url,
+        cleaned_markdown_sha256=identity.cleaned_markdown_sha256,
+        evidence_metadata=page.evidence_metadata,
+    )
+
+
 class FakeChunker:
     async def chunk(self, pages: list[Page]) -> list[Chunk]:
         await _async_boundary()
         return [
-            Chunk(page.markdown, len(page.markdown.split()), page.url, page.title, index, page.source_id)
+            _chunk_page(page, index)
             for page in pages
             for index in [0]
         ]
@@ -203,7 +263,7 @@ class PartialChunker:
         await _async_boundary()
         kept = pages[: max(1, len(pages) - 1)]
         return [
-            Chunk(page.markdown, len(page.markdown.split()), page.url, page.title, index, page.source_id)
+            _chunk_page(page, index)
             for page in kept
             for index in [0]
         ]
@@ -237,21 +297,48 @@ class DownCandidatePrefilter:
 
 
 class FakeReranker:
-    async def rerank(self, _query: str, chunks: list[Chunk]) -> list[ScoredChunk]:
+    async def rerank(self, _query: str, chunks: list[Chunk]) -> RerankOutcome:
         await _async_boundary()
-        return [ScoredChunk(chunk, 1.0 - (index * 0.1)) for index, chunk in enumerate(chunks)]
+        scored = [
+            ScoredChunk(
+                chunk,
+                1.0 - (index * 0.1),
+                (ScoreComponent("reranker", 1.0 - (index * 0.1), FAKE_RERANKER_VERSION),),
+            )
+            for index, chunk in enumerate(chunks)
+        ]
+        return RerankOutcome(
+            scored,
+            RerankerTelemetry(
+                batches=1 if chunks else 0,
+                scored_count=len(scored),
+            ),
+            FAKE_RERANKER_VERSION,
+        )
 
 
 class EmptyReranker:
-    async def rerank(self, _query: str, _chunks: list[Chunk]) -> list[ScoredChunk]:
+    async def rerank(self, _query: str, _chunks: list[Chunk]) -> RerankOutcome:
         await _async_boundary()
-        return []
+        return RerankOutcome([], RerankerTelemetry(), FAKE_RERANKER_VERSION)
 
 
 class PartialReranker:
-    async def rerank(self, _query: str, chunks: list[Chunk]) -> list[ScoredChunk]:
+    async def rerank(self, _query: str, chunks: list[Chunk]) -> RerankOutcome:
         await _async_boundary()
-        return [ScoredChunk(chunk, 1.0 - (index * 0.1)) for index, chunk in enumerate(chunks[:1])]
+        scored = [
+            ScoredChunk(
+                chunk,
+                1.0,
+                (ScoreComponent("reranker", 1.0, FAKE_RERANKER_VERSION),),
+            )
+            for chunk in chunks[:1]
+        ]
+        return RerankOutcome(
+            scored,
+            RerankerTelemetry(batches=1 if chunks else 0, scored_count=len(scored)),
+            FAKE_RERANKER_VERSION,
+        )
 
 
 class DownReranker:
@@ -291,6 +378,7 @@ class FakeAssembler:
                     score=item.score,
                     token_count=item.chunk.token_count,
                     citation_id=citation_id,
+                    score_components=item.score_components,
                 )
             )
             total_tokens += item.chunk.token_count
@@ -329,11 +417,13 @@ class DownAssembler:
 
 
 def deps(**overrides) -> PipelineDeps:
+    resource_policy = overrides.pop("resource_policy", ResourcePolicy())
     values = {
         "planner": FakePlanner(),
         "discovery": FakeDiscovery(),
         "selector": SelectionPolicyImpl(),
         "extractor": FakeExtractor(),
+        "structured_extractor": DisabledStructuredExtractor(),
         "markdown_cleaner": MarkdownCleanerImpl(
             extractor=_fake_extract,
             extractor_name="fake-extractor",
@@ -357,9 +447,36 @@ def deps(**overrides) -> PipelineDeps:
         },
         "blocklist": set(),
         "relevance_score_floor": 0.0,
+        "evidence_quality_enabled": False,
         "domain_allowlist": set(),
         "allowlist_only": False,
         "url_safety": list,
+        "crawl_url_safety": lambda _url: True,
+        "resource_policy": resource_policy,
+        "admission": RuntimeAdmission(resource_policy),
+        "crawler_robots_user_agent": "ThorondorBot",
+        "robots_cache": RobotsCache(86400),
+        "site_politeness": HostPoliteness(
+            default_delay_s=0,
+            max_jitter_s=0,
+            max_cooldown_s=60,
+        ),
+        "site_max_cooldown_s": 60,
+        "max_robots_bytes": 262144,
+        "max_sitemap_bytes": 262144,
+        "max_sitemap_entries": 500,
+        "max_sitemap_documents": 16,
+        "crawl_respect_robots_txt": True,
+        "page_cache": DisabledPageCache(),
+        "page_refresh": PageRefreshCoordinator(),
+        "page_cache_ttl_s": 300,
+        "page_cache_stale_s": 900,
+        "page_cache_retention_s": 604800,
+        "page_cache_raw_html_enabled": False,
+        "page_diff_max_input_lines": 2000,
+        "page_diff_max_operations": 1_000_000,
+        "page_diff_max_output_lines": 24,
+        "crawl_jobs": disabled_crawl_jobs(),
     }
     values.update(overrides)
     return PipelineDeps(**values)

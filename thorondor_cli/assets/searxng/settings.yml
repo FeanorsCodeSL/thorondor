@@ -2,6 +2,8 @@ use_default_settings:
   engines:
     keep_only:
       - bing
+      - brave
+      - duckduckgo
       - mojeek
       - qwant
       - startpage
@@ -18,6 +20,10 @@ server:
 
 engines:
   - name: bing
+    disabled: false
+  - name: brave
+    disabled: false
+  - name: duckduckgo
     disabled: false
   - name: mojeek
     disabled: false

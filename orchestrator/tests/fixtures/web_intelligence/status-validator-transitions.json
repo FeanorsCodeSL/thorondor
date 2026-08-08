@@ -1,0 +1,29 @@
+{
+  "requested_url": "https://fixtures.thorondor.test/articles/change-log",
+  "observations": [
+    {
+      "label": "initial",
+      "status": 200,
+      "etag": "\"fixture-v1\"",
+      "last_modified": "Mon, 03 Aug 2026 09:00:00 GMT"
+    },
+    {
+      "label": "not-modified",
+      "status": 304,
+      "etag": "\"fixture-v1\"",
+      "last_modified": "Mon, 03 Aug 2026 09:00:00 GMT"
+    },
+    {
+      "label": "changed",
+      "status": 200,
+      "etag": "\"fixture-v2\"",
+      "last_modified": "Tue, 04 Aug 2026 10:30:00 GMT"
+    },
+    {
+      "label": "removed",
+      "status": 404,
+      "etag": null,
+      "last_modified": null
+    }
+  ]
+}

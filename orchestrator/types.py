@@ -1,5 +1,17 @@
 """Internal pipeline data types."""
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+
+from .outcome_codes import FetchOutcomeCode
+
+type JsonValue = str | int | float | bool | None | list[JsonValue] | dict[str, JsonValue]
+
+
+@dataclass(frozen=True)
+class DiscoveryContribution:
+    subquery: str
+    engine: str
+    position: int | None
+    score: float
 
 
 @dataclass
@@ -9,6 +21,8 @@ class DiscoveryResult:
     snippet: str
     engine: str
     score: float
+    published_at: str | None = None
+    contributions: tuple[DiscoveryContribution, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -23,6 +37,32 @@ class DiscoveryOutcome:
     unresponsive_engines: list[DiscoveryEngineFailure]
 
 
+@dataclass(frozen=True)
+class MetadataCandidate:
+    field: str
+    value: str
+    source: str
+    confidence: str
+
+
+@dataclass(frozen=True)
+class MetadataConflict:
+    field: str
+    candidates: tuple[MetadataCandidate, ...]
+
+
+@dataclass(frozen=True)
+class DocumentMetadata:
+    selected: tuple[MetadataCandidate, ...] = ()
+    conflicts: tuple[MetadataConflict, ...] = ()
+
+    def get(self, field_name: str) -> MetadataCandidate | None:
+        return next(
+            (candidate for candidate in self.selected if candidate.field == field_name),
+            None,
+        )
+
+
 @dataclass
 class Page:
     url: str
@@ -31,6 +71,36 @@ class Page:
     source_id: int | None = None
     original_markdown: str | None = None
     html: str | None = None
+    raw_html: str | None = None
+    requested_url: str | None = None
+    final_url: str | None = None
+    status_code: int | None = None
+    content_type: str | None = None
+    etag: str | None = None
+    last_modified: str | None = None
+    retry_after: str | None = None
+    metadata: dict[str, JsonValue] = field(default_factory=dict)
+    links: dict[str, JsonValue] = field(default_factory=dict)
+    discovery_published_at: str | None = None
+    evidence_metadata: DocumentMetadata | None = None
+
+
+@dataclass
+class FetchStageOutcome:
+    requested_url: str
+    final_url: str | None
+    code: FetchOutcomeCode
+    retrieval_method: str
+    elapsed_ms: int
+    status_code: int | None = None
+    content_type: str | None = None
+    title: str | None = None
+    links: dict[str, JsonValue] = field(default_factory=dict)
+    metadata: dict[str, JsonValue] = field(default_factory=dict)
+    etag: str | None = None
+    last_modified: str | None = None
+    retry_after: str | None = None
+    page: Page | None = None
 
 
 @dataclass
@@ -52,12 +122,53 @@ class Chunk:
     source_id: int | None = None
     chunk_strategy: str | None = None
     embedding_degraded: bool = False
+    start_index: int | None = None
+    end_index: int | None = None
+    verbatim: bool = False
+    document_id: str | None = None
+    evidence_id: str | None = None
+    final_url: str | None = None
+    cleaned_markdown_sha256: str | None = None
+    section_heading: str | None = None
+    evidence_metadata: DocumentMetadata | None = None
+
+
+@dataclass(frozen=True)
+class ScoreComponent:
+    name: str
+    score: float
+    strategy: str
 
 
 @dataclass
 class ScoredChunk:
     chunk: Chunk
     score: float
+    score_components: tuple[ScoreComponent, ...] = ()
+
+
+@dataclass(frozen=True)
+class RerankerTelemetry:
+    batches: int = 0
+    batches_failed: int = 0
+    floor_filled: bool = False
+    scored_count: int = 0
+
+
+@dataclass
+class RerankOutcome:
+    scored: list[ScoredChunk]
+    telemetry: RerankerTelemetry
+    strategy: str
+
+    def __getitem__(self, index):
+        return self.scored[index]
+
+    def __iter__(self):
+        return iter(self.scored)
+
+    def __len__(self) -> int:
+        return len(self.scored)
 
 
 @dataclass
@@ -74,6 +185,22 @@ class AssembledPassage:
     score: float
     token_count: int
     citation_id: int
+    start_index: int | None = None
+    end_index: int | None = None
+    verbatim: bool = False
+    document_id: str | None = None
+    evidence_id: str | None = None
+    section_heading: str | None = None
+    score_components: tuple[ScoreComponent, ...] = ()
+
+
+@dataclass(frozen=True)
+class EvidenceSpan:
+    start_index: int | None
+    end_index: int | None
+    verbatim: bool
+    evidence_id: str | None
+    section_heading: str | None = None
 
 
 @dataclass
@@ -82,3 +209,6 @@ class AssembledCitation:
     url: str
     title: str
     source_id: int | None = None
+    document_id: str | None = None
+    evidence_spans: list[EvidenceSpan] = field(default_factory=list)
+    evidence_metadata: DocumentMetadata | None = None

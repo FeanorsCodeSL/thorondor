@@ -8,8 +8,8 @@ _SPACE = re.compile(r"\s+")
 
 
 def _fingerprint(markdown: str) -> str:
-    normalized = _SPACE.sub(" ", markdown.lower()).strip()
-    return hashlib.sha256(normalized[:2000].encode("utf-8")).hexdigest()
+    normalized = _SPACE.sub(" ", markdown).strip()
+    return hashlib.sha256(normalized.encode("utf-8")).hexdigest()
 
 
 def content_dedup(pages: list[Page]) -> list[Page]:

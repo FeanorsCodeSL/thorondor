@@ -99,6 +99,61 @@ def test_web_markdown_preclean_strips_image_lines(client):
     assert "![alt]" not in r.json()["chunks"][0]["text"]
 
 
+@pytest.mark.parametrize(
+    "text",
+    [
+        "Alpha beta gamma.\n\nDelta epsilon.",
+        "Español naïve e\u0301lan 東京.\n\nПривет мир.",
+        "# Heading\r\n\r\nFirst paragraph.\r\n\r\nSecond paragraph.",
+        "![diagram](https://example.test/image.png)\n\nEvidence below the image.",
+        "Repeated paragraph.\n\nRepeated paragraph.\n\nDifferent ending.",
+        "First paragraph.\n\nSecond paragraph.\n\nThird paragraph.",
+    ],
+)
+def test_orchestrator_markdown_returns_exact_source_slices(client, text):
+    response = client.post(
+        "/chunk",
+        json={
+            "text": text,
+            "source_type": "ORCHESTRATOR_MARKDOWN",
+            "params": {"initial_segment_tokens": 3, "min_chunk_tokens": 1, "max_chunk_tokens": 6},
+        },
+    )
+
+    assert response.status_code == 200
+    chunks = response.json()["chunks"]
+    assert chunks
+    assert "".join(chunk["text"] for chunk in chunks) == text
+    for chunk in chunks:
+        assert chunk["verbatim"] is True
+        assert chunk["text"] == text[chunk["start_index"]:chunk["end_index"]]
+
+
+def test_orchestrator_markdown_fallback_preserves_exact_source_slices(monkeypatch):
+    class DownEmbedder:
+        def __call__(self, _texts):
+            raise RuntimeError("embedding refused")
+
+        def health_check(self):
+            return False
+
+    monkeypatch.setattr(appmod, "_embedder", DownEmbedder())
+    client = TestClient(appmod.app)
+    text = "Alpha beta gamma. " * 80
+
+    response = client.post(
+        "/chunk",
+        json={"text": text, "source_type": "ORCHESTRATOR_MARKDOWN"},
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["embedding_degraded"] is True
+    for chunk in body["chunks"]:
+        assert chunk["verbatim"] is True
+        assert chunk["text"] == text[chunk["start_index"]:chunk["end_index"]]
+
+
 def test_healthz_reports_embedding(client):
     assert client.get("/healthz").json() == {"status": "ok", "embedding": True}
 

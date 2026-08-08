@@ -72,8 +72,7 @@ def test_stage_clients_reuse_one_async_client_per_instance(monkeypatch):
             1,
             respect_robots_txt=True,
             per_host_concurrency=1,
-            validate_redirects=False,
-            max_preflight_redirects=5,
+            crawler_user_agent="ThorondorBot/1.0 (+https://example.test/contact)",
             url_safety=lambda _url: True,
         )
         chunker = ChunkerClient("http://chunker:8000")

@@ -2,11 +2,16 @@
 import httpx
 
 from ..observability import request_id_headers
-from ..types import Chunk, ScoredChunk
+from ..types import Chunk, RerankerTelemetry, RerankOutcome, ScoreComponent, ScoredChunk
+
+RERANKER_STRATEGY = "external-reranker@1"
+RERANKER_FLOOR_STRATEGY = "reranker-partial-floor@1"
 
 
 class RerankerUnavailable(Exception):
-    pass
+    def __init__(self, message: str, telemetry: RerankerTelemetry | None = None):
+        super().__init__(message)
+        self.telemetry = telemetry or RerankerTelemetry()
 
 
 class RerankerClient:
@@ -29,10 +34,6 @@ class RerankerClient:
         self.path = path if path.startswith("/") else f"/{path}"
         self.api_key = api_key
         self.batch_size = batch_size
-        self.last_batches = 0
-        self.last_batches_failed = 0
-        self.last_floor_filled = False
-        self.last_scored_count = 0
         self._client = client or httpx.AsyncClient(
             timeout=timeout_s,
             limits=httpx.Limits(max_connections=10, max_keepalive_connections=5),
@@ -43,22 +44,20 @@ class RerankerClient:
         if self._owns_client:
             await self._client.aclose()
 
-    async def rerank(self, query: str, chunks: list[Chunk]) -> list[ScoredChunk]:
-        self.last_batches = 0
-        self.last_batches_failed = 0
-        self.last_floor_filled = False
-        self.last_scored_count = 0
+    async def rerank(self, query: str, chunks: list[Chunk]) -> RerankOutcome:
         if not chunks:
-            return []
+            return RerankOutcome([], RerankerTelemetry(), RERANKER_STRATEGY)
         headers = {"Authorization": f"Bearer {self.api_key}"} if self.api_key else None
         headers = request_id_headers(headers)
         scored: list[ScoredChunk] = []
         scored_indexes: set[int] = set()
         scored_values: list[float] = []
+        batches = 0
+        batches_failed = 0
 
         for offset in range(0, len(chunks), self.batch_size):
             batch = chunks[offset : offset + self.batch_size]
-            self.last_batches += 1
+            batches += 1
             try:
                 response = await self._client.post(
                     f"{self.endpoint}{self.path}",
@@ -77,21 +76,46 @@ class RerankerClient:
                 scored_indexes.update(batch_indexes)
                 scored_values.extend(batch_scores)
             except Exception:
-                self.last_batches_failed += 1
+                batches_failed += 1
 
         if not scored:
-            raise RerankerUnavailable("no usable reranker results")
+            raise RerankerUnavailable(
+                "no usable reranker results",
+                RerankerTelemetry(
+                    batches=batches,
+                    batches_failed=batches_failed,
+                ),
+            )
 
+        floor_filled = False
         if len(scored) < len(chunks):
             floor_score = min(scored_values) - 1.0
             scored.extend(
-                ScoredChunk(chunk, floor_score)
+                ScoredChunk(
+                    chunk,
+                    floor_score,
+                    (
+                        ScoreComponent(
+                            "reranker_floor",
+                            floor_score,
+                            RERANKER_FLOOR_STRATEGY,
+                        ),
+                    ),
+                )
                 for index, chunk in enumerate(chunks)
                 if index not in scored_indexes
             )
-            self.last_floor_filled = True
-        self.last_scored_count = len(scored_indexes)
-        return scored
+            floor_filled = True
+        return RerankOutcome(
+            scored,
+            RerankerTelemetry(
+                batches=batches,
+                batches_failed=batches_failed,
+                floor_filled=floor_filled,
+                scored_count=len(scored_indexes),
+            ),
+            RERANKER_STRATEGY,
+        )
 
     def _parse_payload(
         self,
@@ -117,7 +141,13 @@ class RerankerClient:
             if index in scored_indexes:
                 continue
             score = float(item.get("score", item.get("relevance_score", item.get("rank_score", 0.0))))
-            scored.append(ScoredChunk(chunks[index], score))
+            scored.append(
+                ScoredChunk(
+                    chunks[index],
+                    score,
+                    (ScoreComponent("reranker", score, RERANKER_STRATEGY),),
+                )
+            )
             scored_indexes.add(index)
             scored_values.append(score)
 

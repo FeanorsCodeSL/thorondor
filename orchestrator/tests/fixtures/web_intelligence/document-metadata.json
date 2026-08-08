@@ -1,0 +1,26 @@
+{
+  "documents": [
+    {
+      "requested_url": "https://fixtures.thorondor.test/reports/phase0.pdf",
+      "final_url": "https://fixtures.thorondor.test/reports/phase0.pdf",
+      "status": 200,
+      "content_type": "application/pdf",
+      "content_length": 1234,
+      "metadata": {
+        "title": "Phase 0 PDF fixture",
+        "filename": "phase0.pdf"
+      }
+    },
+    {
+      "requested_url": "https://fixtures.thorondor.test/reports/phase0.docx",
+      "final_url": "https://fixtures.thorondor.test/reports/phase0.docx",
+      "status": 200,
+      "content_type": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+      "content_length": 2345,
+      "metadata": {
+        "title": "Phase 0 document fixture",
+        "filename": "phase0.docx"
+      }
+    }
+  ]
+}

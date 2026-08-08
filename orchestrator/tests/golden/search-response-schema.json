@@ -2,17 +2,52 @@
   "$defs": {
     "Citation": {
       "properties": {
+        "document_id": {
+          "anyOf": [
+            {
+              "pattern": "^[0-9a-f]{64}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Document Id"
+        },
+        "evidence_spans": {
+          "items": {
+            "$ref": "#/$defs/EvidenceSpan"
+          },
+          "title": "Evidence Spans",
+          "type": "array"
+        },
         "id": {
           "title": "Id",
           "type": "integer"
         },
-        "url": {
-          "title": "Url",
-          "type": "string"
+        "metadata": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/CitationMetadata"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
         },
-        "title": {
-          "title": "Title",
-          "type": "string"
+        "modified_at": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Modified At"
         },
         "published": {
           "anyOf": [
@@ -25,6 +60,14 @@
           ],
           "default": null,
           "title": "Published"
+        },
+        "title": {
+          "title": "Title",
+          "type": "string"
+        },
+        "url": {
+          "title": "Url",
+          "type": "string"
         }
       },
       "required": [
@@ -35,23 +78,482 @@
       "title": "Citation",
       "type": "object"
     },
-    "Passage": {
+    "CitationMetadata": {
       "properties": {
-        "text": {
-          "title": "Text",
-          "type": "string"
+        "author": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/MetadataValue"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
         },
-        "score": {
-          "title": "Score",
-          "type": "number"
+        "conflicts": {
+          "items": {
+            "$ref": "#/$defs/MetadataConflict"
+          },
+          "maxItems": 7,
+          "title": "Conflicts",
+          "type": "array"
         },
-        "token_count": {
-          "title": "Token Count",
+        "declared_canonical_url": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/MetadataValue"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "description": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/MetadataValue"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "language": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/MetadataValue"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "modified_at": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/MetadataValue"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "published_at": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/MetadataValue"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "title": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/MetadataValue"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        }
+      },
+      "title": "CitationMetadata",
+      "type": "object"
+    },
+    "DiagnosticOmission": {
+      "properties": {
+        "count": {
+          "minimum": 1,
+          "title": "Count",
           "type": "integer"
         },
+        "reason": {
+          "maxLength": 64,
+          "title": "Reason",
+          "type": "string"
+        }
+      },
+      "required": [
+        "reason",
+        "count"
+      ],
+      "title": "DiagnosticOmission",
+      "type": "object"
+    },
+    "EngineContribution": {
+      "properties": {
+        "contribution_count": {
+          "minimum": 1,
+          "title": "Contribution Count",
+          "type": "integer"
+        },
+        "engine": {
+          "maxLength": 128,
+          "title": "Engine",
+          "type": "string"
+        }
+      },
+      "required": [
+        "engine",
+        "contribution_count"
+      ],
+      "title": "EngineContribution",
+      "type": "object"
+    },
+    "EvidenceQualityDrop": {
+      "properties": {
+        "count": {
+          "minimum": 1,
+          "title": "Count",
+          "type": "integer"
+        },
+        "reason": {
+          "maxLength": 64,
+          "title": "Reason",
+          "type": "string"
+        }
+      },
+      "required": [
+        "reason",
+        "count"
+      ],
+      "title": "EvidenceQualityDrop",
+      "type": "object"
+    },
+    "EvidenceSpan": {
+      "properties": {
+        "end_index": {
+          "anyOf": [
+            {
+              "exclusiveMinimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "End Index"
+        },
+        "evidence_id": {
+          "anyOf": [
+            {
+              "pattern": "^[0-9a-f]{64}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Evidence Id"
+        },
+        "section_heading": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Section Heading"
+        },
+        "start_index": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Start Index"
+        },
+        "verbatim": {
+          "default": false,
+          "title": "Verbatim",
+          "type": "boolean"
+        }
+      },
+      "title": "EvidenceSpan",
+      "type": "object"
+    },
+    "FetchDiagnostic": {
+      "properties": {
+        "content_type": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Content Type"
+        },
+        "elapsed_ms": {
+          "minimum": 0,
+          "title": "Elapsed Ms",
+          "type": "integer"
+        },
+        "final_url": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Final Url"
+        },
+        "outcome": {
+          "enum": [
+            "content",
+            "empty_shell",
+            "challenge",
+            "robots_refused",
+            "upstream_timeout",
+            "deadline_cancelled",
+            "unsafe_redirect",
+            "unsupported_content",
+            "unsupported_capability",
+            "content_too_large",
+            "extraction_empty",
+            "malformed_upstream_response",
+            "upstream_failure",
+            "rate_limited",
+            "capacity_unavailable",
+            "unsafe_target",
+            "local_processing_failure"
+          ],
+          "title": "Outcome",
+          "type": "string"
+        },
+        "requested_url": {
+          "title": "Requested Url",
+          "type": "string"
+        },
+        "retrieval_method": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Retrieval Method"
+        },
+        "retryable": {
+          "title": "Retryable",
+          "type": "boolean"
+        },
+        "status_code": {
+          "anyOf": [
+            {
+              "maximum": 599,
+              "minimum": 100,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Status Code"
+        },
+        "title": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Title"
+        }
+      },
+      "required": [
+        "requested_url",
+        "outcome",
+        "retryable",
+        "elapsed_ms"
+      ],
+      "title": "FetchDiagnostic",
+      "type": "object"
+    },
+    "FetchOutcomeCount": {
+      "properties": {
+        "count": {
+          "minimum": 1,
+          "title": "Count",
+          "type": "integer"
+        },
+        "outcome": {
+          "enum": [
+            "content",
+            "empty_shell",
+            "challenge",
+            "robots_refused",
+            "upstream_timeout",
+            "deadline_cancelled",
+            "unsafe_redirect",
+            "unsupported_content",
+            "unsupported_capability",
+            "content_too_large",
+            "extraction_empty",
+            "malformed_upstream_response",
+            "upstream_failure",
+            "rate_limited",
+            "capacity_unavailable",
+            "unsafe_target",
+            "local_processing_failure"
+          ],
+          "title": "Outcome",
+          "type": "string"
+        }
+      },
+      "required": [
+        "outcome",
+        "count"
+      ],
+      "title": "FetchOutcomeCount",
+      "type": "object"
+    },
+    "MetadataConflict": {
+      "properties": {
+        "candidates": {
+          "items": {
+            "$ref": "#/$defs/MetadataValue"
+          },
+          "maxItems": 8,
+          "title": "Candidates",
+          "type": "array"
+        },
+        "field": {
+          "enum": [
+            "title",
+            "description",
+            "published_at",
+            "modified_at",
+            "author",
+            "language",
+            "declared_canonical_url"
+          ],
+          "title": "Field",
+          "type": "string"
+        }
+      },
+      "required": [
+        "field",
+        "candidates"
+      ],
+      "title": "MetadataConflict",
+      "type": "object"
+    },
+    "MetadataValue": {
+      "properties": {
+        "confidence": {
+          "enum": [
+            "high",
+            "medium",
+            "low"
+          ],
+          "title": "Confidence",
+          "type": "string"
+        },
+        "source": {
+          "enum": [
+            "html_title",
+            "html_canonical",
+            "html_lang",
+            "json_ld",
+            "html_meta",
+            "page_metadata",
+            "discovery",
+            "sitemap",
+            "fetch_title"
+          ],
+          "title": "Source",
+          "type": "string"
+        },
+        "value": {
+          "maxLength": 8192,
+          "title": "Value",
+          "type": "string"
+        }
+      },
+      "required": [
+        "value",
+        "source",
+        "confidence"
+      ],
+      "title": "MetadataValue",
+      "type": "object"
+    },
+    "Passage": {
+      "properties": {
         "citation_id": {
           "title": "Citation Id",
           "type": "integer"
+        },
+        "document_id": {
+          "anyOf": [
+            {
+              "pattern": "^[0-9a-f]{64}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Document Id"
+        },
+        "end_index": {
+          "anyOf": [
+            {
+              "exclusiveMinimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "End Index"
+        },
+        "evidence_id": {
+          "anyOf": [
+            {
+              "pattern": "^[0-9a-f]{64}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Evidence Id"
         },
         "provenance": {
           "const": "external_web",
@@ -59,11 +561,61 @@
           "title": "Provenance",
           "type": "string"
         },
+        "score": {
+          "title": "Score",
+          "type": "number"
+        },
+        "score_components": {
+          "items": {
+            "$ref": "#/$defs/ScoreComponent"
+          },
+          "maxItems": 4,
+          "title": "Score Components",
+          "type": "array"
+        },
+        "section_heading": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Section Heading"
+        },
+        "start_index": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Start Index"
+        },
+        "text": {
+          "title": "Text",
+          "type": "string"
+        },
+        "token_count": {
+          "title": "Token Count",
+          "type": "integer"
+        },
         "trust": {
           "const": "untrusted",
           "default": "untrusted",
           "title": "Trust",
           "type": "string"
+        },
+        "verbatim": {
+          "default": false,
+          "title": "Verbatim",
+          "type": "boolean"
         }
       },
       "required": [
@@ -81,6 +633,31 @@
           "title": "Citation Id",
           "type": "integer"
         },
+        "cleaned_markdown": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Cleaned Markdown"
+        },
+        "document_id": {
+          "anyOf": [
+            {
+              "pattern": "^[0-9a-f]{64}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Document Id"
+        },
         "markdown": {
           "title": "Markdown",
           "type": "string"
@@ -93,14 +670,64 @@
       "title": "RawMarkdown",
       "type": "object"
     },
+    "ScoreComponent": {
+      "properties": {
+        "name": {
+          "maxLength": 64,
+          "title": "Name",
+          "type": "string"
+        },
+        "score": {
+          "title": "Score",
+          "type": "number"
+        },
+        "strategy": {
+          "maxLength": 128,
+          "title": "Strategy",
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "score",
+        "strategy"
+      ],
+      "title": "ScoreComponent",
+      "type": "object"
+    },
     "SearchStats": {
       "properties": {
-        "sub_queries": {
-          "items": {
-            "type": "string"
-          },
-          "title": "Sub Queries",
-          "type": "array"
+        "chunk_strategy": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Chunk Strategy"
+        },
+        "chunks_prefiltered": {
+          "default": 0,
+          "title": "Chunks Prefiltered",
+          "type": "integer"
+        },
+        "chunks_produced": {
+          "default": 0,
+          "title": "Chunks Produced",
+          "type": "integer"
+        },
+        "chunks_reranked": {
+          "default": 0,
+          "title": "Chunks Reranked",
+          "type": "integer"
+        },
+        "chunks_sent_to_reranker": {
+          "default": 0,
+          "title": "Chunks Sent To Reranker",
+          "type": "integer"
         },
         "discovery_status": {
           "default": "ok",
@@ -112,58 +739,78 @@
           "title": "Discovery Status",
           "type": "string"
         },
-        "unresponsive_engines": {
+        "elapsed_ms": {
+          "default": 0,
+          "title": "Elapsed Ms",
+          "type": "integer"
+        },
+        "embedding_degraded": {
+          "default": false,
+          "title": "Embedding Degraded",
+          "type": "boolean"
+        },
+        "engine_contributions": {
           "items": {
-            "$ref": "#/$defs/UnresponsiveEngine"
+            "$ref": "#/$defs/EngineContribution"
           },
-          "title": "Unresponsive Engines",
+          "maxItems": 32,
+          "title": "Engine Contributions",
           "type": "array"
         },
-        "urls_discovered": {
+        "evidence_bytes_omitted": {
           "default": 0,
-          "title": "Urls Discovered",
+          "title": "Evidence Bytes Omitted",
           "type": "integer"
         },
-        "urls_selected": {
+        "evidence_items_omitted": {
           "default": 0,
-          "title": "Urls Selected",
+          "title": "Evidence Items Omitted",
           "type": "integer"
         },
-        "url_diagnostics": {
+        "evidence_quality_chunks_dropped": {
+          "default": 0,
+          "title": "Evidence Quality Chunks Dropped",
+          "type": "integer"
+        },
+        "evidence_quality_drops": {
           "items": {
-            "$ref": "#/$defs/UrlDiagnostic"
+            "$ref": "#/$defs/EvidenceQualityDrop"
           },
-          "title": "Url Diagnostics",
+          "maxItems": 8,
+          "title": "Evidence Quality Drops",
           "type": "array"
         },
-        "urls_crawled_ok": {
-          "default": 0,
-          "title": "Urls Crawled Ok",
-          "type": "integer"
+        "evidence_quality_strategy": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Evidence Quality Strategy"
         },
-        "urls_crawled_failed": {
-          "default": 0,
-          "title": "Urls Crawled Failed",
-          "type": "integer"
+        "fetch_outcome_counts": {
+          "items": {
+            "$ref": "#/$defs/FetchOutcomeCount"
+          },
+          "maxItems": 16,
+          "title": "Fetch Outcome Counts",
+          "type": "array"
         },
-        "pages_after_dedup": {
-          "default": 0,
-          "title": "Pages After Dedup",
-          "type": "integer"
+        "fetch_outcomes": {
+          "items": {
+            "$ref": "#/$defs/FetchDiagnostic"
+          },
+          "maxItems": 20,
+          "title": "Fetch Outcomes",
+          "type": "array"
         },
-        "pages_deduped": {
+        "markdown_blocks_dropped": {
           "default": 0,
-          "title": "Pages Deduped",
-          "type": "integer"
-        },
-        "pages_cleaned": {
-          "default": 0,
-          "title": "Pages Cleaned",
-          "type": "integer"
-        },
-        "markdown_chars_before": {
-          "default": 0,
-          "title": "Markdown Chars Before",
+          "title": "Markdown Blocks Dropped",
           "type": "integer"
         },
         "markdown_chars_after": {
@@ -171,9 +818,9 @@
           "title": "Markdown Chars After",
           "type": "integer"
         },
-        "markdown_blocks_dropped": {
+        "markdown_chars_before": {
           "default": 0,
-          "title": "Markdown Blocks Dropped",
+          "title": "Markdown Chars Before",
           "type": "integer"
         },
         "markdown_cleaner_version": {
@@ -188,19 +835,24 @@
           "default": null,
           "title": "Markdown Cleaner Version"
         },
-        "chunks_produced": {
+        "pages_after_dedup": {
           "default": 0,
-          "title": "Chunks Produced",
+          "title": "Pages After Dedup",
           "type": "integer"
         },
-        "chunks_prefiltered": {
+        "pages_cleaned": {
           "default": 0,
-          "title": "Chunks Prefiltered",
+          "title": "Pages Cleaned",
           "type": "integer"
         },
-        "chunks_sent_to_reranker": {
+        "pages_deduped": {
           "default": 0,
-          "title": "Chunks Sent To Reranker",
+          "title": "Pages Deduped",
+          "type": "integer"
+        },
+        "passages_dropped_below_threshold": {
+          "default": 0,
+          "title": "Passages Dropped Below Threshold",
           "type": "integer"
         },
         "prefilter_strategy": {
@@ -214,6 +866,50 @@
           ],
           "default": null,
           "title": "Prefilter Strategy"
+        },
+        "raw_markdown_omitted": {
+          "default": 0,
+          "title": "Raw Markdown Omitted",
+          "type": "integer"
+        },
+        "reason": {
+          "anyOf": [
+            {
+              "enum": [
+                "search_provider_unavailable",
+                "no_results_from_discovery",
+                "no_urls_after_selection",
+                "all_crawls_failed",
+                "no_chunks_after_dedup",
+                "no_chunks_after_rerank",
+                "no_evidence_after_quality_gate",
+                "no_evidence_after_output_budget"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Reason"
+        },
+        "relevance_threshold_policy": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Relevance Threshold Policy"
+        },
+        "reranked": {
+          "default": false,
+          "title": "Reranked",
+          "type": "boolean"
         },
         "reranker_batches": {
           "default": 0,
@@ -230,70 +926,88 @@
           "title": "Reranker Floor Filled",
           "type": "boolean"
         },
-        "chunks_reranked": {
-          "default": 0,
-          "title": "Chunks Reranked",
-          "type": "integer"
+        "sub_queries": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Sub Queries",
+          "type": "array"
         },
-        "passages_dropped_below_threshold": {
-          "default": 0,
-          "title": "Passages Dropped Below Threshold",
-          "type": "integer"
-        },
-        "relevance_threshold_policy": {
-          "anyOf": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Relevance Threshold Policy"
-        },
-        "chunk_strategy": {
-          "anyOf": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Chunk Strategy"
-        },
-        "embedding_degraded": {
-          "default": false,
-          "title": "Embedding Degraded",
-          "type": "boolean"
-        },
-        "reranked": {
-          "default": false,
-          "title": "Reranked",
-          "type": "boolean"
+        "subquery_diagnostics": {
+          "items": {
+            "$ref": "#/$defs/SubqueryDiagnostic"
+          },
+          "maxItems": 8,
+          "title": "Subquery Diagnostics",
+          "type": "array"
         },
         "tokens_returned": {
           "default": 0,
           "title": "Tokens Returned",
           "type": "integer"
         },
-        "elapsed_ms": {
+        "unresponsive_engines": {
+          "items": {
+            "$ref": "#/$defs/UnresponsiveEngine"
+          },
+          "title": "Unresponsive Engines",
+          "type": "array"
+        },
+        "url_diagnostics": {
+          "items": {
+            "$ref": "#/$defs/UrlDiagnostic"
+          },
+          "title": "Url Diagnostics",
+          "type": "array"
+        },
+        "url_diagnostics_omitted": {
+          "items": {
+            "$ref": "#/$defs/DiagnosticOmission"
+          },
+          "maxItems": 16,
+          "title": "Url Diagnostics Omitted",
+          "type": "array"
+        },
+        "urls_crawled_failed": {
           "default": 0,
+          "title": "Urls Crawled Failed",
+          "type": "integer"
+        },
+        "urls_crawled_ok": {
+          "default": 0,
+          "title": "Urls Crawled Ok",
+          "type": "integer"
+        },
+        "urls_discovered": {
+          "default": 0,
+          "title": "Urls Discovered",
+          "type": "integer"
+        },
+        "urls_selected": {
+          "default": 0,
+          "title": "Urls Selected",
+          "type": "integer"
+        }
+      },
+      "title": "SearchStats",
+      "type": "object"
+    },
+    "SubqueryDiagnostic": {
+      "properties": {
+        "elapsed_ms": {
+          "minimum": 0,
           "title": "Elapsed Ms",
           "type": "integer"
         },
-        "reason": {
+        "failure_reason": {
           "anyOf": [
             {
               "enum": [
-                "search_provider_unavailable",
-                "no_results_from_discovery",
-                "no_urls_after_selection",
-                "all_crawls_failed",
-                "no_chunks_after_dedup",
-                "no_chunks_after_rerank"
+                "timeout",
+                "transport_error",
+                "upstream_status_error",
+                "malformed_response",
+                "unavailable"
               ],
               "type": "string"
             },
@@ -302,10 +1016,34 @@
             }
           ],
           "default": null,
-          "title": "Reason"
+          "title": "Failure Reason"
+        },
+        "query": {
+          "maxLength": 500,
+          "title": "Query",
+          "type": "string"
+        },
+        "result_count": {
+          "minimum": 0,
+          "title": "Result Count",
+          "type": "integer"
+        },
+        "status": {
+          "enum": [
+            "ok",
+            "failed"
+          ],
+          "title": "Status",
+          "type": "string"
         }
       },
-      "title": "SearchStats",
+      "required": [
+        "query",
+        "status",
+        "elapsed_ms",
+        "result_count"
+      ],
+      "title": "SubqueryDiagnostic",
       "type": "object"
     },
     "UnresponsiveEngine": {
@@ -328,21 +1066,78 @@
     },
     "UrlDiagnostic": {
       "properties": {
-        "url": {
-          "title": "Url",
-          "type": "string"
+        "best_upstream_score": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Best Upstream Score"
         },
-        "title": {
-          "title": "Title",
-          "type": "string"
+        "contributing_subqueries": {
+          "items": {
+            "type": "string"
+          },
+          "maxItems": 8,
+          "title": "Contributing Subqueries",
+          "type": "array"
+        },
+        "contribution_count": {
+          "default": 1,
+          "minimum": 1,
+          "title": "Contribution Count",
+          "type": "integer"
+        },
+        "discovery_score": {
+          "title": "Discovery Score",
+          "type": "number"
         },
         "engine": {
           "title": "Engine",
           "type": "string"
         },
-        "discovery_score": {
-          "title": "Discovery Score",
+        "engines": {
+          "items": {
+            "type": "string"
+          },
+          "maxItems": 16,
+          "title": "Engines",
+          "type": "array"
+        },
+        "filtered_reason": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Filtered Reason"
+        },
+        "independent_subquery_count": {
+          "default": 0,
+          "minimum": 0,
+          "title": "Independent Subquery Count",
+          "type": "integer"
+        },
+        "lexical_selection_score": {
+          "default": 0.0,
+          "title": "Lexical Selection Score",
           "type": "number"
+        },
+        "positions": {
+          "items": {
+            "type": "integer"
+          },
+          "maxItems": 16,
+          "title": "Positions",
+          "type": "array"
         },
         "selected": {
           "title": "Selected",
@@ -360,17 +1155,13 @@
           "default": null,
           "title": "Selection Reason"
         },
-        "filtered_reason": {
-          "anyOf": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Filtered Reason"
+        "title": {
+          "title": "Title",
+          "type": "string"
+        },
+        "url": {
+          "title": "Url",
+          "type": "string"
         }
       },
       "required": [
@@ -385,9 +1176,12 @@
     }
   },
   "properties": {
-    "query": {
-      "title": "Query",
-      "type": "string"
+    "citations": {
+      "items": {
+        "$ref": "#/$defs/Citation"
+      },
+      "title": "Citations",
+      "type": "array"
     },
     "passages": {
       "items": {
@@ -396,15 +1190,9 @@
       "title": "Passages",
       "type": "array"
     },
-    "citations": {
-      "items": {
-        "$ref": "#/$defs/Citation"
-      },
-      "title": "Citations",
-      "type": "array"
-    },
-    "stats": {
-      "$ref": "#/$defs/SearchStats"
+    "query": {
+      "title": "Query",
+      "type": "string"
     },
     "raw_markdown": {
       "anyOf": [
@@ -426,6 +1214,9 @@
       "default": "thorondor.search.v1",
       "title": "Schema Version",
       "type": "string"
+    },
+    "stats": {
+      "$ref": "#/$defs/SearchStats"
     }
   },
   "required": [

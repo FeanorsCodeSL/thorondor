@@ -6,7 +6,7 @@ Thorondor is a self-hosted semantic web-search service designed for agent workfl
 
 The design is built around three hard constraints:
 
-1. **No persistent corpus** — no vector store, no web index. Every search is a fresh live request; nothing is cached between calls.
+1. **No persistent corpus** — no vector store or web index. Search, map, and crawl remain fresh live requests. Known-URL fetches may use an operator-enabled local page cache that is disabled by default, capability-keyed, and retention-bounded. Robots snapshots use a separate bounded in-memory policy cache.
 2. **Citations are first-class** — every passage is linked to the URL and title of its source page. Agents always know where a fact came from.
 3. **Operator-controlled data path** — the operator decides which search engines SearXNG uses, which model endpoints handle embeddings and reranking, and which domains are crawlable. No data leaves the operator's infrastructure unless the operator explicitly configures outbound endpoints.
 
@@ -14,13 +14,13 @@ The design is built around three hard constraints:
 
 ### Orchestrator (`orchestrator/`)
 
-The central FastAPI service. It exposes `POST /v1/search`, a backward-compatible `POST /search` alias, and an MCP `web_search` tool mounted at `/mcp`. A single `run_search` pipeline function handles both surfaces.
+The central FastAPI service. It exposes `POST /v1/search`, a backward-compatible `POST /search` alias, `POST /v1/fetch`, `POST /v1/map`, and `POST /v1/crawl`, with matching MCP tools mounted at `/mcp`. An opt-in REST-only `/v1/crawl/jobs` family adds durable creation, status, paginated results, and cancellation without expanding the MCP descriptor. All operation families share process-owned admission, byte, deadline, URL-safety, and Crawl4AI outcome policies. Map and crawl additionally share one deterministic frontier, robots, sitemap, scope, and politeness policy.
 
-The orchestrator is the only service that speaks to all other components. It holds no state between requests other than shared HTTP connection pools (reused for efficiency). On startup it validates every required environment variable through a strict settings loader; missing or blank required keys raise `RuntimeError` and prevent the process from starting.
+The orchestrator is the only service that speaks to all other components. It holds shared HTTP connection pools and robots snapshots, plus an optional SQLite page cache for known-URL fetches and an independent optional SQLite crawl-job store. The job worker is intentionally single-process and single-replica. On startup it validates every required environment variable through a strict settings loader; missing or blank required keys raise `RuntimeError` and prevent the process from starting.
 
 ### Semantic Chunking Service (`semantic-chunking-service/`)
 
-A standalone FastAPI service exposing `POST /chunk` and `GET /healthz`. It receives page markdown from the orchestrator and returns semantically coherent chunks with token counts and provenance metadata.
+A standalone FastAPI service exposing `POST /chunk` and `GET /healthz`. It receives page markdown from the orchestrator and returns semantically coherent chunks with token counts, provenance metadata, and exact Unicode code-point spans. The orchestrator uses `ORCHESTRATOR_MARKDOWN` mode so already-cleaned Markdown is not destructively pre-cleaned again.
 
 The core algorithm is `ClusterSemanticChunker`: it splits text into ~50-token segments, generates embeddings for each segment using the configured OpenAI-compatible embedding server, builds an N×N cosine-similarity matrix, and uses dynamic programming to find globally optimal chunk boundaries that maximize semantic coherence within each chunk. When the segment count exceeds `CHUNKER_MAX_SEGMENTS_DP` (OOM guard), it falls back to a greedy-semantic algorithm that computes only adjacent-pair similarities. If the embedding server is unreachable, it falls back further to token-based splitting and marks chunks `embedding_degraded=true`.
 
@@ -30,15 +30,15 @@ An unmodified upstream SearXNG Docker image, configured through `searxng/setting
 
 ### Crawl4AI
 
-The public upstream Crawl4AI 0.9.2 self-hosted Docker API (`unclecode/crawl4ai@sha256:bd36741e...`), consumed over the internal Compose network. The orchestrator submits `POST /crawl` requests to extract page content. Crawl4AI handles JavaScript rendering, robots.txt checking, and returns both raw HTML and Markdown forms of the page content. Thorondor never vendors or patches Crawl4AI source.
+The public upstream Crawl4AI 0.9.2 self-hosted Docker API (`unclecode/crawl4ai@sha256:bd36741e...`), consumed over a dedicated internal control network. The orchestrator submits authenticated `POST /crawl` requests to extract pages, robots files, and sitemaps. Crawl4AI handles JavaScript rendering, applies its own robots check for ordinary page requests, and returns raw HTML, Markdown, links, metadata, status, and final-URL data. Thorondor never vendors or patches Crawl4AI source.
 
-Crawl4AI's outbound HTTP traffic routes through the embedded SSRF egress proxy to block requests to RFC-1918 and embedded-IPv4 IPv6 addresses.
+Crawl4AI has a separate outbound-only network for its built-in localhost pinning proxy. That proxy resolves each target once, rejects non-global destinations, and connects to the pinned address so Chromium cannot perform a second DNS resolution.
 
-### SSRF Egress Proxy (`ssrf-proxy/`)
+### Retained SSRF Egress Proxy (`ssrf-proxy/`)
 
-A minimal async HTTP CONNECT proxy built in Python's `asyncio`. It sits between Crawl4AI and the public internet. On every CONNECT or plain HTTP request it resolves the target hostname, expands IPv6 addresses (including NAT64, 6-to-4, and IPv4-compatible forms) to their embedded IPv4 equivalents, and rejects connections to loopback, link-local, private, reserved, multicast, unspecified, and operator-specified special IP addresses. This prevents Crawl4AI from being used to reach internal network resources.
+A minimal async HTTP CONNECT proxy built in Python's `asyncio`. It remains packaged for deployment compatibility, but Crawl4AI 0.9.2 does not route through it because the hardened upstream server replaces external browser proxy configuration with its own DNS-pinning proxy. Removing this retained service and image pipeline is a separate cleanup after deployment consumers are audited.
 
-The orchestrator also performs pre-crawl URL safety validation independently of the proxy (before sending URLs to Crawl4AI), providing defence-in-depth.
+The orchestrator performs pre-crawl and changed-final-URL safety validation independently of Crawl4AI's pinning proxy, providing defence-in-depth.
 
 ### Embedding Server
 
@@ -48,9 +48,26 @@ An OpenAI-compatible `/v1/embeddings` server used by the semantic chunking servi
 
 An OpenAI-compatible reranker server used by the orchestrator. In the `bundled-models` profile this is a TEI container. In the `llamacpp-models` profile it is a llama.cpp server with `--reranking` enabled, loading a GGUF reranker file. The orchestrator calls `POST <RERANKER_ENDPOINT><RERANKER_PATH>` with `{"query": ..., "documents": [...], "model": ...}` and receives a scored list. If the reranker is unreachable, the pipeline degrades gracefully to position-based ordering.
 
-### Optional LLM Planner
+### Optional LLM Operations
 
-When `LLM_ENDPOINT` and `LLM_MODEL` are configured, the orchestrator uses an `LlmPlanner` client that calls `POST /v1/chat/completions` to decompose the user query into up to `MAX_SUBQUERIES` sub-queries. Each sub-query is run against SearXNG in parallel, and the results are merged and deduplicated before URL selection. When `LLM_ENDPOINT` is blank (the default), an `IdentityPlanner` is used instead, which simply returns the original query unchanged.
+When `LLM_ENDPOINT` and `LLM_MODEL` are configured, OpenAI-compatible chat completions support optional query decomposition and explicit `json_schema` extraction. Decomposition produces up to `MAX_SUBQUERIES` sub-queries. Schema extraction uses a separate bounded client, a fixed prompt, exact evidence checks, and server-side validation. When `LLM_ENDPOINT` is blank, search uses `IdentityPlanner` and model-driven extraction is reported as unsupported.
+
+### Agent-facing fetch capabilities
+
+Known-URL fetch is the place for targeted web intelligence. The agent may ask
+for deterministic links, tables, narrowly defined Article-family or Product
+JSON-LD fields, or a bounded JSON-Schema projection. Each retained value is
+linked to the exact fetched document and remains labelled untrusted. A schema
+projection is accepted only when the returned object passes the local schema
+subset and each scalar value appears in its exact cleaned-Markdown evidence
+excerpt; otherwise the model data is suppressed as one atomic failure.
+
+The optional page cache gives fetches a bounded `new`, `same`, `changed`, or
+`removed` transition and capped change summaries. A target watch narrows that
+signal to one uniquely resolved text or attribute target and reports true only
+for the declared expected-to-desired transition. This lets a caller distinguish
+“the page changed” from “the product became available”; scheduling and action
+execution remain outside Thorondor.
 
 ## 3. Data Flow Narrative
 
@@ -60,29 +77,33 @@ A single search request proceeds as follows:
 
 2. **Query planning** — if `decompose=true` and an LLM planner is configured, the query is sent to the LLM planner which returns 1–3 sub-queries as a JSON array. The list is capped to `MAX_SUBQUERIES`. If planning fails, the original query is used.
 
-3. **URL discovery** — each sub-query is dispatched concurrently to SearXNG (`GET /search?q=...`). Results from all sub-queries are merged and deduplicated by URL, preserving the highest score for each URL. SearXNG's `unresponsive_engines` entries are retained in `stats`. Usable results with reported engine failures set `stats.discovery_status=degraded`; reported failures with no usable results set it to `unavailable` and return `reason=search_provider_unavailable`. A response with no results and no reported engine failures remains `reason=no_results_from_discovery`. `stats.urls_discovered` is set.
+3. **URL discovery** — each sub-query is dispatched concurrently to SearXNG (`GET /search?q=...`). A failed sub-query attempt no longer discards successful sibling attempts. Results are merged by normalized URL while preserving distinct sub-query, plural-engine, position, and upstream-score contributions; repeated identical reports within one sub-query do not masquerade as independent agreement. The highest upstream score remains the production discovery score. Per-sub-query elapsed time/result count, per-engine contribution counts, and SearXNG's `unresponsive_engines` are retained in bounded `stats` fields. SearXNG does not expose true per-engine latency. Usable results with any failed attempt or engine failure set `stats.discovery_status=degraded`; failures with no usable results set it to `unavailable`.
 
-4. **URL safety filter** — each discovered URL is checked against the `UrlSafetyPolicy`: the hostname is resolved, all returned IPs are checked against blocked categories and special IPs, and IPv6 addresses are expanded to find embedded IPv4 equivalents. Unsafe URLs are dropped silently.
+4. **URL safety filter** — each discovered URL is checked against the `UrlSafetyPolicy`: hostname resolution is moved off the event loop with bounded concurrency, all returned IPs are checked against blocked categories and special IPs, and IPv6 addresses are expanded to find embedded IPv4 equivalents. Unsafe URLs are dropped silently.
 
-5. **URL selection** — the `SelectionPolicyImpl` scores candidates by a combination of the SearXNG discovery score and a lexical overlap with the original query. It enforces per-domain limits (max 3 URLs per domain unless the allowed domain set has ≤ 1 entry), engine diversity, and domain diversity passes before filling by score. `stats.urls_selected` is set.
+5. **URL selection** — the `SelectionPolicyImpl` scores candidates by a combination of the SearXNG discovery score and a lexical overlap with the original query. It enforces per-domain limits (max 3 URLs per domain unless the allowed domain set has ≤ 1 entry), plural-engine diversity, and domain diversity passes before filling by score. Selected URL diagnostics are retained first; filtered decisions fill the remaining 50-item/64-KiB envelope and omissions are counted by reason.
 
-6. **Content extraction** — the orchestrator submits `POST /crawl` to Crawl4AI for each selected URL, up to `CRAWL_CONCURRENCY` in parallel with `CRAWL_PER_HOST_CONCURRENCY` per hostname. If `CRAWL_VALIDATE_REDIRECTS=true`, the orchestrator first performs a preflight HEAD request to follow and validate the redirect chain before handing the URL to Crawl4AI. Pages that return no markdown content are dropped. `stats.urls_crawled_ok` and `stats.urls_crawled_failed` are updated.
+6. **Content extraction** — the orchestrator submits the original selected URL and configured crawler identity to Crawl4AI with authenticated `POST /crawl`, up to `CRAWL_CONCURRENCY` in parallel with `CRAWL_PER_HOST_CONCURRENCY` per hostname. Crawl4AI reaches target sites through its dedicated egress network and built-in DNS-pinning proxy. The orchestrator captures bounded final URL, status, content type, validators, links, and metadata, then revalidates every changed final URL before accepting the page. Pages that return no markdown content are dropped. `stats.urls_crawled_ok` and `stats.urls_crawled_failed` are updated.
 
-7. **Markdown cleaning** — each page's HTML is passed through trafilatura to produce clean markdown. Boilerplate, navigation, footers, and comment sections (if disabled) are removed. `stats.markdown_chars_before` and `stats.markdown_chars_after` reflect the reduction.
+7. **Markdown cleaning** — each page's HTML is passed through trafilatura to produce clean markdown. Boilerplate, navigation, footers, and comment sections (if disabled) are removed. `stats.markdown_chars_before`, `stats.markdown_chars_after`, and an exact-line multiset count of non-empty source Markdown lines absent from the cleaned output are reported.
 
-8. **Content deduplication** — near-duplicate pages (based on content hashing) are dropped. `stats.pages_deduped` records how many were removed.
+8. **Content deduplication** — only full normalized-Markdown identity is used for destructive page deduplication. Shared prefixes with different bodies survive, and declared canonical metadata does not change this decision. `stats.pages_deduped` records exact duplicates removed.
 
-9. **Semantic chunking** — the orchestrator calls `POST /chunk` on the chunking service for each page. The chunker splits page markdown into semantically coherent chunks using `ClusterSemanticChunker`. Chunk metadata includes `source_url`, `title`, `position`, `source_id`, `chunk_strategy`, and `embedding_degraded`. If the chunker returns a 5xx error, a `ChunkerUnavailable` exception propagates and the orchestrator returns a 503.
+9. **Semantic chunking** — the orchestrator calls `POST /chunk` on the chunking service for each page. The chunker splits page markdown into semantically coherent chunks using `ClusterSemanticChunker`. Exact mode returns each chunk as `cleaned_markdown[start_index:end_index]`; the orchestrator verifies that equality before issuing `document_id` and `evidence_id`. Chunk metadata also includes `source_url`, `title`, `position`, `source_id`, `chunk_strategy`, and `embedding_degraded`. If the chunker returns a 5xx error, a `ChunkerUnavailable` exception propagates and the orchestrator returns a 503.
 
 10. **Candidate prefilter** — if more than 50 chunks were returned, the `CandidatePrefilterImpl` applies a fast lexical scorer to select the top-50 before reranking. The filter is source-preserving: it ensures at least one chunk from each crawled source is represented. `stats.chunks_prefiltered` records how many were dropped.
 
-11. **Reranking** — the orchestrator calls the reranker in batches of `RERANKER_BATCH_SIZE`. Each batch sends `{"query": ..., "documents": [...], "model": ...}` and receives relevance scores. Failed batches are tracked; chunks from failed batches are assigned a floor score below all successful scores to preserve relative ordering. If all batches fail, `RerankerUnavailable` is raised and the pipeline falls back to position-based scoring with `stats.reranked=false`.
+11. **Reranking** — the orchestrator calls the reranker in batches of `RERANKER_BATCH_SIZE`. Each call returns its scores and telemetry together, so concurrent searches cannot overwrite shared counters. Failed batches receive a calculated floor below successful scores. If all batches fail, the pipeline uses position scores with `stats.reranked=false`. Every returned passage keeps the existing scalar final score and a bounded, versioned component naming the calculation that produced it.
 
-12. **Relevance floor** — if `RELEVANCE_SCORE_FLOOR > 0.0` and reranking succeeded, passages scoring at or below the floor are dropped (unless all passages would be dropped, in which case all are kept).
+12. **Relevance and evidence quality** — if `RELEVANCE_SCORE_FLOOR > 0.0` and reranking succeeded, chunks at or below the floor are dropped. When `EVIDENCE_QUALITY_ENABLED=true`, the deterministic `evidence-quality@1` gate rejects narrowly structured navigation/footer boilerplate and generic-link fragments. It is disabled by default pending broader independent-corpus measurement.
 
-13. **Token-budget assembly** — `ResultAssemblerImpl` sorts by descending score and greedily selects chunks until either the `token_budget` is exhausted or `max_passages` is reached. Citations are deduplicated by URL, and each passage references its citation by ID.
+13. **Bounded assembly** — evidence first enters an independent 50-item, 64-KiB-per-serialized-item, 256-KiB-serialized-list envelope. An oversized top-ranked item is shortened while preserving or safely degrading its evidence identity. `ResultAssemblerImpl` then applies the caller's token and passage budgets. A final exact chunk may be truncated to the remaining word-token budget by shortening its end-exclusive span and recomputing its evidence ID.
 
-14. **Response** — `SearchResponse` is serialised and returned. If `include_raw_markdown=true`, the original crawled markdown for each cited page is appended. The structured log summary is emitted.
+14. **Response** — `SearchResponse` is serialised with additive evidence spans, stable identities, score components, diagnostics, and quality/drop counters. Optional raw Markdown has a separate 20-item, 256-KiB-per-item, 512-KiB-total envelope, so diagnostics cannot defeat the caller's evidence budget.
+
+Map and crawl use a separate synchronous path. The seed is safety-checked and fetched through Crawl4AI, then same-origin and seed-directory scope are re-homed to its validated final URL. Thorondor obtains one RFC 9309 robots snapshot per origin, reads declared and common sitemaps within document, entry, and byte limits, optionally adds SearXNG `site:` candidates, and traverses admitted links breadth-first. Every candidate passes the same normalization, scope, file, query, safety, robots, deduplication, and depth policy before queueing. `map` returns URL records only; `crawl` adds bounded typed page results. Both report requested and effective origins, source contributions, state transitions, terminal reasons, omissions, and warnings.
+
+The durable crawl-job route invokes that same crawl function and shared admission policy. SQLite atomically claims scoped idempotency keys, caps retained records, stores deduplicated page results as they arrive, and recovers interrupted running jobs on startup by repeating the bounded crawl from its seed. Retryable job failures use bounded backoff under a separate attempt deadline; completed and partial responses are not retried. Cancellation stops new admissions and settles unavoidable in-flight work under that deadline. Terminal retention is absolute and reads do not refresh it; raw HTML persistence requires a separate operator opt-in.
 
 ## 4. Deployment Topologies
 
@@ -110,7 +131,7 @@ The llama.cpp build `b10276` image is pinned to a specific SHA (`bde659bf...`) t
 
 **Reranker** — any server that accepts `POST <path>` with `{"query", "documents", "model"}` and returns `{"results": [{"index", "score"}, ...]}` works. Adjust `RERANKER_ENDPOINT`, `RERANKER_PATH`, `RERANKER_HEALTH_PATH`, and `RERANKER_MODEL`.
 
-**Query planner / LLM** — any OpenAI-compatible chat completions server works. Set `LLM_ENDPOINT` and `LLM_MODEL`. The planner prompt asks for a JSON array of 1–3 sub-queries.
+**LLM operations** — set `LLM_ENDPOINT` and `LLM_MODEL` for an OpenAI-compatible chat completions server. Query decomposition asks for a JSON array of sub-queries. Explicit schema extraction has a fixed prompt, strict local validation, value-bearing evidence checks, a process-owned four-request concurrency limit, and a 20-second model deadline.
 
 **Domain policy** — `DOMAIN_BLOCKLIST`, `DOMAIN_ALLOWLIST`, `ALLOWLIST_ONLY`, and per-call `domains`/`exclude_domains` in the request body provide layered domain control without code changes.
 
@@ -118,9 +139,10 @@ The llama.cpp build `b10276` image is pinned to a specific SHA (`bde659bf...`) t
 
 ## 6. Intentionally Out of Scope
 
-- **Persistent corpus** — no web index, no vector store. The design is stateless between requests.
-- **Implemented cache** — there is no result cache. The architecture has a cache seam defined in the interface layer but it is not instantiated in the current deployment.
+- **Persistent corpus** — no web index or vector store. Optional known-URL page records are not a searchable corpus and are never used by ordinary search.
+- **Search, map, or crawl result cache** — only `/v1/fetch` and `web_fetch` can use the optional page cache. Search, map, and bounded crawl remain live.
+- **Scheduler or autonomous actions** — Thorondor evaluates a target watch only when called. Tengwar or another agent runtime owns schedules, notifications, and follow-up actions.
 - **Authentication on the orchestrator** — the REST and MCP endpoints have no built-in auth. Operators should place a reverse proxy with TLS and access control in front of the orchestrator port.
 - **Rate limiting** — not implemented in the service itself; add a reverse proxy if needed.
-- **Crawled content sandboxing** — beyond Crawl4AI's own isolation and the SSRF proxy, crawled content is not sandboxed at the OS level. The orchestrator treats all crawled text as untrusted.
+- **Crawled content sandboxing** — beyond Crawl4AI's non-root, read-only container posture and built-in egress controls, crawled content is not sandboxed at the OS level. The orchestrator treats all crawled text as untrusted.
 - **Mandatory hosted vendor** — Thorondor never makes outbound calls to commercial search APIs unless the operator configures SearXNG to use them (an explicit operator choice in `searxng/settings.yml`).

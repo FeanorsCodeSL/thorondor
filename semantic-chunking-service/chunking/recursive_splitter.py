@@ -64,6 +64,20 @@ class RecursiveCharacterTextSplitter:
             return []
         return self._split_text_recursive(text, self.separators)
 
+    def split_text_with_spans(self, text: str) -> List[Tuple[str, int, int]]:
+        segments = self.split_text(text)
+        spans = []
+        offset = 0
+        for segment in segments:
+            end = offset + len(segment)
+            if text[offset:end] != segment:
+                raise ValueError("splitter produced a non-contiguous segment")
+            spans.append((text[offset:end], offset, end))
+            offset = end
+        if offset != len(text):
+            raise ValueError("splitter did not preserve the complete source")
+        return spans
+
     def _split_text_recursive(
         self,
         text: str,
