@@ -1,7 +1,5 @@
 # Thorondor
 
-> **Public alpha:** Thorondor is ready for local self-hosted evaluation, but it is not a managed production service. It does not include built-in endpoint authentication or rate limiting; expose it only behind your own proxy/security layer.
-
 A self-hosted, data-sovereign semantic web-search service for agents — discovers URLs through SearXNG, crawls pages via Crawl4AI, chunks content with a first-party semantic chunker, reranks passages against the original query, and returns cited evidence through REST and MCP with no mandatory hosted vendor.
 
 ## What It Is
@@ -41,8 +39,8 @@ All inter-service traffic travels over internal Compose networks. Crawl4AI's out
 
 | Path | Type | Description |
 |---|---|---|
-| `orchestrator/` | service | FastAPI app: `/v1/search`, `/search` (compat), `/v1/fetch`, `/v1/map`, `/v1/crawl`, `/livez`, `/healthz`, MCP `/mcp` |
-| `semantic-chunking-service/` | service | FastAPI chunker: `/chunk`, `/healthz` — ClusterSemanticChunker + OpenAI-compatible embedding client |
+| `orchestrator/` | service | FastAPI app: `/v1/search`, `/search` (compat), `/v1/fetch`, `/v1/map`, `/v1/crawl`, `/health`, MCP `/mcp` |
+| `semantic-chunking-service/` | service | FastAPI chunker: `/chunk`, `/health` — ClusterSemanticChunker + OpenAI-compatible embedding client |
 | `thorondor_cli/` | tool | Textual configurator, env/deploy helpers, native `thorondor-mcp` proxy, and harness writers |
 | `ssrf-proxy/` | service | Retained async HTTP CONNECT proxy for deployment compatibility; Crawl4AI 0.9.2 uses its own DNS-pinning egress |
 | `searxng/` | config | SearXNG `settings.yml` mounted read-only by Compose |
@@ -55,7 +53,7 @@ All inter-service traffic travels over internal Compose networks. Crawl4AI's out
 | `.env.llamacpp.example` | config | Template for `.env.llamacpp` — llama.cpp image SHA, GGUF paths, and batch sizes |
 | `.env.production.example` | config | Template overlay for released GHCR image refs and production service names |
 | `docs/architecture/` | docs | Operational architecture reference (overview, pipeline, deployment, deps, security, config) |
-| `docs/plans/` | docs | Remaining operational plans, such as release-image work |
+| `docs/plans/` | docs | Active implementation plans; completed plans are removed after implementation |
 | `.agents/skills/thorondor-web-search/` | skill | Repo-local agent skill for calling the running service |
 | `LICENSE` | license | MIT |
 | `THIRD-PARTY-NOTICES.md` | license | Third-party runtime image and package notices |
@@ -100,7 +98,7 @@ status and harness status:
 | `Endpoints` | Edit embedding, reranker, and optional LLM-operation endpoints. |
 | `Search/crawl` | Tune ports, budgets, crawl limits, robots, and domain filters. |
 | `Validate` | Check env completeness and show the exact Compose command. |
-| `Deploy` | Run `config`, `build`, `up -d`, `/healthz`, and smoke search. |
+| `Deploy` | Run `config`, `build`, `up -d`, `/health`, and smoke search. |
 | `Wire MCP` | Wire Claude Code, Codex, or OpenCode to `thorondor-mcp` or Docker HTTP `/mcp`. |
 | `Refresh state` | Re-read `.env` and the harness detection without restarting. |
 | `Quit` | Exit the dashboard. |
@@ -151,7 +149,7 @@ The script exits non-zero on any failure. After a successful deploy:
 
 ```powershell
 # Health check
-Invoke-RestMethod http://localhost:8080/healthz
+Invoke-RestMethod http://localhost:8080/health
 
 # Quick search
 $body = @{ query = "latest Python packaging tools 2025"; token_budget = 3000 } | ConvertTo-Json
@@ -182,7 +180,6 @@ Copy-Item .env.example .env
 # RERANKER_ENDPOINT=http://your-reranker-host:8081
 # RERANKER_MODEL=BAAI/bge-reranker-v2-m3
 # RERANKER_PATH=/rerank
-# RERANKER_HEALTH_PATH=/health
 
 # 3. Deploy without the llama.cpp override
 .\scripts\deploy.ps1 -Profile ""
@@ -230,12 +227,13 @@ just thorondor-deploy
 The recipe builds the three first-party `:local` images from the sibling
 Thorondor checkout when selected, attaches the Thorondor orchestrator and
 chunker to `tengwar-shared`, points them at Tengwar's `embedding` and `reranker`
-services, and waits for Thorondor `/healthz`. It also generates and preserves
-the managed `CRAWL4AI_API_KEY`. The recipe recreates only the Thorondor Compose project; do not use
-`down -v` or remove the shared network when switching versions.
+services, and waits for Thorondor `/health`. The endpoint checks only the
+orchestrator process and performs no dependency or public-web request. The recipe
+also generates and preserves the managed `CRAWL4AI_API_KEY`. It recreates only
+the Thorondor Compose project; do not use `down -v` or remove the shared network
+when switching versions.
 
-Use `/livez` for recurring process liveness and `/healthz` for dependency
-readiness. `/livez` performs no dependency or public-web request. Tengwar's MCP
+Use `/health` for recurring service health. Tengwar's MCP
 registry separately pins the discovered `web_search` descriptor checksum and
 withholds the tool when that descriptor changes; reapprove a changed descriptor
 through the admin MCP workflow before expecting `mcp_thorondor_web_search` to be
@@ -461,6 +459,110 @@ Transport: streamable HTTP (`stateless_http=True`). The server ID is `thorondor`
 
 The exposed tools are `web_search`, `web_fetch`, `web_map`, and `web_crawl`. Each mirrors its versioned REST request and response contract. `web_map` returns URL-only discovery outcomes; `web_crawl` adds typed page evidence for the bounded site slice.
 
+### MCP product contract
+
+The selected conformance claim is limited to the **2026-07-28 selected
+tool-server profile evidence**. Modern `server/discover` currently exposes the
+pinned SDK capability map:
+
+```json
+{
+  "prompts": {"listChanged": true},
+  "resources": {"subscribe": true, "listChanged": true},
+  "tools": {"listChanged": true}
+}
+```
+
+The prompt and resource handlers are retained SDK-provided empty primitives;
+Thorondor's product claim is for the four tools, not prompt/resource content,
+subscriptions, or list-change notifications. `tools/list` returns exactly
+`web_search`, `web_fetch`, `web_map`, and `web_crawl`.
+
+Tool annotations are identical on the HTTP and native stdio surfaces:
+
+| Tools | Annotations |
+|---|---|
+| `web_search`, `web_map`, `web_crawl` | `readOnlyHint=true`, `openWorldHint=true` |
+| `web_fetch` | `readOnlyHint=false`, `destructiveHint=false`, `idempotentHint=false`, `openWorldHint=true` |
+
+Successful and controlled operational tool outcomes are explicit
+`CallToolResult` values. They carry `resultType="complete"`, the corresponding
+REST body in `structuredContent`, and `isError=false` for success or
+`isError=true` for an operational failure. Every modern result carries
+`_meta["io.modelcontextprotocol/serverInfo"]` with `{"name":"thorondor",
+"version": THORONDOR_VERSION}`. Cacheable SDK hints are explicit
+`ttlMs=0` and `cacheScope="private"`; these hints do not enable persistence.
+Only the optional known-URL page cache can persist `web_fetch` data, and
+search, map, crawl, and structured requests remain live or bypass that cache.
+
+Protocol and dispatch failures remain top-level JSON-RPC errors. The selected
+surface uses `-32020` for an MCP header/envelope mismatch, `-32022` for an
+unsupported protocol version with `data.supported` and `data.requested`,
+`-32602` for invalid protocol parameters or an unknown tool, `-32601` for a
+removed or unknown method, and sanitized `-32603` for unexpected internal
+defects. Request-model validation inside a known tool is a structured
+`invalid_request` tool error with status 422; signature-level SDK validation
+before tool entry remains an SDK-generated `isError=true` tool result. HTTP
+status, route, dependency, retry, and typed outcome information for a known
+tool remains in its structured `CallToolResult`, rather than being converted
+into a transport-level exception. The final
+`MAX_RESPONSE_BODY_BYTES` check covers the complete serialized MCP result
+object, including content, `structuredContent`, `isError`, `resultType`, and
+identity metadata; it excludes JSON-RPC envelopes, HTTP headers, and transport
+framing. Oversized results become a bounded error and are not truncated into
+invalid structured evidence.
+
+Modern 2026-07-28 requests carry the required protocol version and client
+capabilities, plus optional client information, in the reserved per-request
+`_meta` envelope. HTTP requests also require a matching
+`MCP-Protocol-Version`, `Mcp-Method` matching the JSON-RPC method, and, for
+`tools/call`, `Mcp-Name` matching the tool name. `Accept` must cover both
+`application/json` and `text/event-stream`, or use `*/*`. A protocol, method,
+or tool-name mismatch is an HTTP 400 JSON-RPC `-32020` error; an unacceptable
+`Accept` value is an HTTP 406 transport response. Optional whitespace around
+MCP header values is removed before comparison. Modern responses are
+sessionless and do not issue `mcp-session-id`. A legacy 2025 handshake remains
+valid without these modern routing headers; a non-handshake modern envelope
+without them is rejected rather than silently treated as legacy. The native
+`thorondor-mcp` command uses stdio framing and forwards the same four versioned
+REST contracts.
+
+### Selected conformance evidence
+
+The pinned runner is Node `24.19.0` with
+`@modelcontextprotocol/conformance@0.2.0-alpha.10`. Install and run it from a
+fresh, empty output directory:
+
+```bash
+npm ci --prefix tools/mcp-conformance --ignore-scripts
+PYTHONPATH=. .venv/bin/python scripts/run-mcp-conformance.py \
+  --output-dir /tmp/thorondor-mcp-conformance
+```
+
+The profile contains 37 required scenarios. `tools-list`,
+`server-sse-multiple-streams`, and `dns-rebinding-protection` are direct gates;
+`server-stateless` and `caching` are mixed and evaluated check by check. Tool
+call, completion, prompt, resource, and input-required scenarios remain
+fixture-dependent or outside this selected product profile. Their output is
+retained for inspection but cannot establish a Thorondor production pass.
+The runner rejects reused output directories, records the manifest and exact
+result directories, and evaluates only artifacts from that manifest. Manifest
+claim/version drift, timeouts, invalid runner statuses, and scenario/artifact
+mismatches fail closed. A focused run such as `--scenario tools-list` is an
+explicitly scoped claim, not a full-profile result. Individual fixture
+scenarios may return nonzero while the evaluator still reports a clean
+selected gate result; those observations are not hidden. Mixed scenarios can
+also return nonzero because their informational failures and SHOULD
+observations remain visible; the evaluator uses the profile's per-check
+dispositions rather than treating that status as a blanket production
+failure.
+
+The two list-change SHOULD observations are reported separately and are
+intentional non-gating deviations: Thorondor does not add autonomous
+subscription notifications, so clients refresh the advertised lists when
+needed. OAuth, resources, prompts, completion, Tasks, MCP Apps, sampling,
+roots, MRTR, and production diagnostic tools are outside this claim.
+
 Example MCP tool call (Claude SDK style):
 
 ```json
@@ -474,39 +576,30 @@ Example MCP tool call (Claude SDK style):
 }
 ```
 
-The MCP server also supports stdio transport via `python -m orchestrator.mcp_server` for environments that require it.
+The native stdio surface is the supported `thorondor-mcp` command. Set
+`THORONDOR_BASE_URL` when the orchestrator is not at its default
+`http://localhost:8080`. If the orchestrator uses a non-default
+`MAX_RESPONSE_BODY_BYTES`, provide the same value to the proxy process; the
+command applies it both while reading REST responses and while constructing
+the final MCP result.
 
 ## Health and Observability
 
-### /livez
-
-`GET /livez` is the process-only liveness endpoint used by the orchestrator
-container health check. It returns `{"status":"ok"}` without probing SearXNG or
-any other dependency.
-
-### /healthz
+### /health
 
 ```json
 {
-  "status": "ok",
-  "dependencies": {
-    "searxng": true,
-    "crawl4ai": true,
-    "chunker": true,
-    "embedding": true,
-    "reranker": true
-  },
-  "hard_failures": [],
-  "degraded_dependencies": []
+  "status": "ok"
 }
 ```
 
-`GET /healthz` is the dependency-readiness endpoint. `status` is `"degraded"`
-if any dependency probe fails. The SearXNG probe calls its local `/healthz`
-endpoint and never performs a public search. `hard_failures` lists `searxng` or
-`chunker` — either alone causes `SearchDependencyUnavailable` (503).
-`degraded_dependencies` lists `crawl4ai`, `embedding`, and `reranker`; the
-pipeline tolerates their absence with reduced quality.
+`GET /health` is the only health endpoint on both Thorondor-owned services. It
+reports local process availability and never calls SearXNG, Crawl4AI, the
+chunker, an embedding provider, a reranker, or the public web. Docker and
+deployment harnesses can poll it repeatedly without causing search, crawl, or
+model inference. Dependency failures are detected and returned by real search,
+fetch, map, and crawl requests through their normal typed outcomes and
+degradation behavior.
 
 ### X-Request-ID
 
@@ -559,14 +652,6 @@ All keys must be present in `.env` (leave optional keys blank rather than deleti
 | `LOG_LEVEL` | `INFO` | Orchestrator log level. |
 | `CHUNKER_LOG_LEVEL` | `INFO` | Chunker service log level. |
 | `PROXY_LOG_LEVEL` | `INFO` | SSRF egress proxy log level. |
-
-### Healthcheck
-
-| Variable | Default | Description |
-|---|---|---|
-| `HEALTHCHECK_TIMEOUT_S` | `2.0` | Per-dependency probe timeout in seconds. |
-| `HEALTHCHECK_MAX_CONNECTIONS` | `8` | Max connections in the healthcheck HTTP client pool. |
-| `HEALTHCHECK_MAX_KEEPALIVE_CONNECTIONS` | `4` | Max keepalive connections in the healthcheck client pool. |
 
 ### Resource Envelope
 
@@ -696,7 +781,6 @@ All keys must be present in `.env` (leave optional keys blank rather than deleti
 | `RERANKER_MODEL` | `BAAI/bge-reranker-v2-m3` | Model name sent in rerank requests. |
 | `RERANKER_MODEL_REVISION` | `953dc6f6f85a1b2dbfca4c34a2796e7dde08d41e` | Immutable Hub revision used by the bundled TEI reranker container. |
 | `RERANKER_PATH` | `/rerank` | Rerank endpoint path. |
-| `RERANKER_HEALTH_PATH` | `/health` | Reranker health endpoint path. |
 | `RERANKER_API_KEY` | _(blank)_ | Optional bearer token for the reranker. |
 | `RERANKER_BATCH_SIZE` | `32` | Chunks per reranker API call. |
 | `RERANKER_TIMEOUT_S` | `30` | Reranker request timeout in seconds. |
@@ -822,12 +906,6 @@ Start Docker Desktop and wait until its system tray icon reports "running". Then
 `deploy-llamacpp.ps1` validates model paths before starting Compose. Either place the files under `models\` matching the paths in `.env.llamacpp`, or edit `.env.llamacpp` to point to your actual filenames.
 
 `thorondor download-models` verifies the pinned SHA-256 for both default GGUF files. On a mismatch it preserves the existing file and exits non-zero; remove or replace that file only after confirming its provenance.
-
-**`embedding=false` in /healthz**
-The chunker is running but cannot reach the embedding server. Check `EMBEDDING_ENDPOINT` in `.env` and verify the embedding container is healthy: `docker compose logs embedding`.
-
-**`reranker=false` in /healthz**
-The reranker server is unreachable. For llama.cpp, verify the GGUF file loads without error: `docker compose --env-file .env --env-file .env.llamacpp -f docker-compose.yml -f docker-compose.llamacpp.yml logs reranker`. For remote endpoints, check `RERANKER_ENDPOINT` and `RERANKER_HEALTH_PATH`.
 
 **`stats.reranked=false` in search response**
 The reranker was unreachable at query time. Passages are returned sorted by position (no semantic ranking). The service continues to function; fix the reranker and passages will be reranked again.

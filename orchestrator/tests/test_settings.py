@@ -12,7 +12,6 @@ REQUIRED = [
     "RERANKER_ENDPOINT",
     "RERANKER_MODEL",
     "RERANKER_PATH",
-    "RERANKER_HEALTH_PATH",
     "RERANKER_BATCH_SIZE",
     "RERANKER_TIMEOUT_S",
     "RELEVANCE_SCORE_FLOOR",
@@ -35,9 +34,6 @@ REQUIRED = [
     "CHUNKER_API_KEY",
     "RERANKER_API_KEY",
     "LLM_API_KEY",
-    "HEALTHCHECK_TIMEOUT_S",
-    "HEALTHCHECK_MAX_CONNECTIONS",
-    "HEALTHCHECK_MAX_KEEPALIVE_CONNECTIONS",
     "MARKDOWN_EXTRACTOR",
     "MARKDOWN_EXTRACTOR_FAVOR_RECALL",
     "MARKDOWN_EXTRACTOR_INCLUDE_COMMENTS",
@@ -117,7 +113,6 @@ def set_required_env(monkeypatch):
         "RERANKER_ENDPOINT": "http://reranker:80",
         "RERANKER_MODEL": "rerank",
         "RERANKER_PATH": "/rerank",
-        "RERANKER_HEALTH_PATH": "/health",
         "RERANKER_BATCH_SIZE": "32",
         "RERANKER_TIMEOUT_S": "30",
         "RELEVANCE_SCORE_FLOOR": "0.0",
@@ -140,9 +135,6 @@ def set_required_env(monkeypatch):
         "CHUNKER_API_KEY": "",
         "RERANKER_API_KEY": "",
         "LLM_API_KEY": "",
-        "HEALTHCHECK_TIMEOUT_S": "2.0",
-        "HEALTHCHECK_MAX_CONNECTIONS": "8",
-        "HEALTHCHECK_MAX_KEEPALIVE_CONNECTIONS": "4",
         "MARKDOWN_EXTRACTOR": "trafilatura",
         "MARKDOWN_EXTRACTOR_FAVOR_RECALL": "true",
         "MARKDOWN_EXTRACTOR_INCLUDE_COMMENTS": "false",
@@ -251,15 +243,11 @@ def test_domain_blocklist_parses_explicit_configuration(monkeypatch):
     assert settings.crawl_timeout_s == 15
     assert settings.default_token_budget == 4000
     assert settings.reranker_path == "/rerank"
-    assert settings.reranker_health_path == "/health"
     assert settings.reranker_batch_size == 7
     assert settings.reranker_timeout_s == 45
     assert settings.relevance_score_floor == 0.25
     assert settings.evidence_quality_enabled is False
     assert settings.log_level == "INFO"
-    assert settings.healthcheck_timeout_s == 2.0
-    assert settings.healthcheck_max_connections == 8
-    assert settings.healthcheck_max_keepalive_connections == 4
     assert settings.markdown_extractor == "trafilatura"
     assert settings.markdown_extractor_favor_recall is True
     assert settings.markdown_extractor_include_comments is False

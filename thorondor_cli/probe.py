@@ -82,19 +82,10 @@ def probe_embedding(base_url: str, model: str, token: str | None = None) -> Prob
 
 def probe_reranker(
     base_url: str,
-    health_path: str,
     rerank_path: str,
     model: str,
     token: str | None = None,
 ) -> ProbeResult:
-    health_url = f"{base_url.rstrip('/')}/{health_path.lstrip('/')}"
-    try:
-        health = httpx.get(health_url, headers=_auth_headers(token), timeout=15)
-    except httpx.TransportError as exc:
-        return ProbeResult("unreachable", type(exc).__name__)
-    health_result = _status_from_response(health, token)
-    if health_result.status != "ok":
-        return health_result
     payload = {"query": "ping", "documents": ["ping"], "model": model}
     rerank_url = f"{base_url.rstrip('/')}/{rerank_path.lstrip('/')}"
     return _post_json(rerank_url, payload, token, timeout=30)

@@ -103,14 +103,27 @@ if ($LASTEXITCODE -ne 0) {
     exit $LASTEXITCODE
 }
 
-if ((Get-Content (Join-Path $Root "scripts/deploy.ps1") -Raw) -notmatch "health\.dependencies\.PSObject\.Properties") {
-    Write-Error "scripts/deploy.ps1: deploy health polling must inspect dependency values."
+if ((Get-Content (Join-Path $Root "scripts/deploy.ps1") -Raw) -notmatch '\$health\.status -eq "ok"') {
+    Write-Error "scripts/deploy.ps1: deploy health polling must require local status ok."
     exit 1
 }
 
-if ((Get-Content (Join-Path $Root "scripts/deploy.sh") -Raw) -notmatch "dependencies") {
-    Write-Error "scripts/deploy.sh: deploy health polling must inspect dependency values."
+if ((Get-Content (Join-Path $Root "scripts/deploy.sh") -Raw) -notmatch 'd\.get\("status"\) == "ok"') {
+    Write-Error "scripts/deploy.sh: deploy health polling must require local status ok."
     exit 1
+}
+
+$automaticHealthScripts = @(
+    "scripts/deploy.ps1",
+    "scripts/deploy.sh",
+    "scripts/smoke.ps1",
+    "scripts/smoke.sh"
+)
+foreach ($path in $automaticHealthScripts) {
+    if ((Get-Content (Join-Path $Root $path) -Raw) -match "/(livez|healthz)") {
+        Write-Error "$path must use only the Thorondor /health endpoint."
+        exit 1
+    }
 }
 
 $templatePairs = @(

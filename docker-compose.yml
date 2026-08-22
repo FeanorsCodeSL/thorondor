@@ -41,7 +41,6 @@ services:
       RERANKER_ENDPOINT: "${RERANKER_ENDPOINT}"
       RERANKER_MODEL: "${RERANKER_MODEL}"
       RERANKER_PATH: "${RERANKER_PATH}"
-      RERANKER_HEALTH_PATH: "${RERANKER_HEALTH_PATH}"
       RERANKER_BATCH_SIZE: "${RERANKER_BATCH_SIZE}"
       RERANKER_TIMEOUT_S: "${RERANKER_TIMEOUT_S}"
       LLM_ENDPOINT: "${LLM_ENDPOINT?}"
@@ -64,9 +63,6 @@ services:
       CHUNKER_API_KEY: "${CHUNKER_API_KEY?}"
       RERANKER_API_KEY: "${RERANKER_API_KEY?}"
       LLM_API_KEY: "${LLM_API_KEY?}"
-      HEALTHCHECK_TIMEOUT_S: "${HEALTHCHECK_TIMEOUT_S}"
-      HEALTHCHECK_MAX_CONNECTIONS: "${HEALTHCHECK_MAX_CONNECTIONS}"
-      HEALTHCHECK_MAX_KEEPALIVE_CONNECTIONS: "${HEALTHCHECK_MAX_KEEPALIVE_CONNECTIONS}"
       MARKDOWN_EXTRACTOR: "${MARKDOWN_EXTRACTOR}"
       MARKDOWN_EXTRACTOR_FAVOR_RECALL: "${MARKDOWN_EXTRACTOR_FAVOR_RECALL}"
       MARKDOWN_EXTRACTOR_INCLUDE_COMMENTS: "${MARKDOWN_EXTRACTOR_INCLUDE_COMMENTS}"
@@ -139,9 +135,12 @@ services:
     volumes:
       - thorondor-page-cache:/var/lib/thorondor
     depends_on:
-      - searxng
-      - crawl4ai
-      - chunker
+      searxng:
+        condition: service_healthy
+      crawl4ai:
+        condition: service_healthy
+      chunker:
+        condition: service_healthy
 
   chunker:
     <<: *internal
@@ -170,6 +169,11 @@ services:
     environment:
       SEARXNG_BASE_URL: "${SEARXNG_BASE_URL}"
       SEARXNG_SECRET: "${SEARXNG_SECRET}"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8080/healthz', timeout=3)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
 
   crawl4ai:
     <<: *internal

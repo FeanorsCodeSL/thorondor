@@ -1,0 +1,13 @@
+{
+  "name": "thorondor-mcp-conformance",
+  "private": true,
+  "version": "0.0.0",
+  "description": "Pinned MCP conformance runner for Thorondor",
+  "engines": {
+    "node": "24.19.0"
+  },
+  "packageManager": "npm@11.17.0",
+  "dependencies": {
+    "@modelcontextprotocol/conformance": "0.2.0-alpha.10"
+  }
+}

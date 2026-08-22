@@ -89,7 +89,7 @@ recipe. Run `just thorondor-deploy` from the Tengwar checkout. It forces
 `THORONDOR_APP_NETWORK=tengwar-shared`, points the orchestrator and chunker at
 Tengwar's `embedding` and `reranker` services, builds configured `:local`
 first-party images from the sibling checkout, generates `CRAWL4AI_API_KEY` when
-needed, and waits for `/healthz`. This is a development Compose workflow; the
+needed, and waits for `/health`. This is a development Compose workflow; the
 immutable production candidate path remains the source-free image slice above.
 
 The wrapper recreates only the Thorondor Compose project. Preserve the external
@@ -205,7 +205,7 @@ The actions are:
 | `Endpoints` | Edits embedding, reranker, and optional LLM-operation endpoints. |
 | `Search/crawl` | Edits ports, budgets, crawl limits, robots, and domain filters. |
 | `Validate` | Reports env completeness and the Compose command that will run. |
-| `Deploy` | Runs `docker compose config`, `build`, `up -d`, `/healthz`, and smoke search. |
+| `Deploy` | Runs `docker compose config`, `build`, `up -d`, `/health`, and smoke search. |
 | `Wire MCP` | Wires Claude Code, Codex, or OpenCode to stdio `thorondor-mcp` or HTTP `/mcp`. |
 | `Refresh state` | Re-reads `.env` and re-detects harnesses without restarting. |
 | `Quit` | Exits the dashboard. |
@@ -220,6 +220,34 @@ uninstalls the local tool unless `--keep-tool` is passed. `thorondor-mcp` is the
 native stdio MCP proxy. It forwards `web_search`, `web_fetch`, `web_map`, and
 `web_crawl` to the running stack's matching versioned REST endpoints; the
 Dockerized streamable HTTP MCP endpoint continues to be served at `/mcp`.
+When the stack overrides `MAX_RESPONSE_BODY_BYTES`, pass the same value in the
+native proxy process environment so its REST-read and final MCP-result bounds
+remain aligned with the orchestrator.
+
+### MCP ingress and conformance evidence
+
+The MCP endpoint is an application protocol surface, not an authentication or
+TLS boundary. Keep the published orchestrator port on loopback for local use.
+When it must be exposed, place a reverse proxy or equivalent protected ingress
+in front of `/mcp` and the REST routes to terminate TLS, authenticate callers,
+authorize access, and apply rate limiting. MCP Host/Origin checks and protocol
+header validation protect transport routing; they do not establish caller
+identity. The native stdio proxy is local process access and forwards the same
+REST contracts, so its host deployment must protect the configured REST base
+URL as well.
+
+The selected MCP evidence can be reproduced without deployment or external
+services after installing the pinned runner:
+
+```bash
+npm ci --prefix tools/mcp-conformance --ignore-scripts
+PYTHONPATH=. .venv/bin/python scripts/run-mcp-conformance.py \
+  --output-dir /tmp/thorondor-mcp-conformance
+```
+
+Use a fresh output directory. The runner stores logs, a manifest, per-scenario
+artifacts, and evaluation; it rejects stale output and does not let
+fixture-dependent nonzero runner statuses turn into a production claim.
 
 ### External and host model endpoints
 
@@ -243,26 +271,35 @@ non-interactive and CI entrypoints.
 
 ## 4. Service Startup Order and Health Dependencies
 
-Compose `depends_on` relationships use no `condition: service_healthy` by default:
+Compose waits for each local API dependency to become healthy before
+starting the orchestrator:
 
 ```
 orchestrator
-  └── depends_on: searxng, crawl4ai, chunker
-  └── healthcheck: GET /livez (interval 30s, 3 retries)
+  └── depends_on service_healthy: searxng, crawl4ai, chunker
+  └── healthcheck: GET /health (interval 30s, 3 retries)
+
+chunker
+  └── healthcheck: GET /health (interval 30s, 3 retries)
+
+searxng
+  └── healthcheck: GET /healthz (interval 30s, 3 retries)
 
 crawl4ai
   └── healthcheck: curl /health (interval 30s, 3 retries, 40s start_period)
 ```
 
-All other services (`searxng`, `chunker`, `egress-proxy`, `embedding`, `reranker`) start without explicit health-gate dependencies and are polled by the deploy script via `GET /healthz` on the orchestrator. This readiness endpoint checks SearXNG through its local `/healthz` route and does not submit a search.
+The orchestrator and chunker expose only `GET /health`. It reports local process
+availability and never probes SearXNG, Crawl4AI, an embedding provider, or a
+reranker. The SearXNG image's built-in `/healthz` returns a local constant
+response and does not perform a search. Crawl4AI's `/health` reports local server
+metadata and does not crawl. These are internal Compose implementation details;
+Thorondor consumers use `/health` only.
 
-The orchestrator container health check calls process-only `GET /livez`, so its
-30-second polling interval generates no dependency or public-web traffic. The
-deploy script waits up to 120 seconds (60 attempts x 2s sleep) for `/healthz` to
-return a response with at least one dependency value and no `false` values in
-the `dependencies` object. The smoke script waits up to 180 seconds before
-issuing live search requests, which gives model containers extra time to finish
-loading.
+The deploy script waits up to 120 seconds (60 attempts x 2s sleep) for the
+orchestrator `/health` response to report `status: ok`. The optional smoke step
+then performs an explicit live search; it is functional verification rather than
+a health probe and may contact configured search and model providers.
 
 Structured fetch profiles are opt-in request capabilities and require no extra
 container or environment variable. `links`, `tables`, and `json_ld` use the
@@ -278,7 +315,7 @@ semantics, stale reads, or conditional revalidation.
 
 ### deploy.ps1 step by step
 
-1. **Parameter defaults** — `$Profile` defaults to `bundled-models`; override with `-Profile llamacpp-models` or `-Profile ""` (no profile). `$HealthUrl` defaults to `http://localhost:8080/healthz`.
+1. **Parameter defaults** — `$Profile` defaults to `bundled-models`; override with `-Profile llamacpp-models` or `-Profile ""` (no profile). `$HealthUrl` defaults to `http://localhost:8080/health`.
 
 2. **Env file bootstrap** — if `.env` does not exist, it is copied from `.env.example`. This means the first run always produces a valid `.env` from the example.
 
@@ -290,7 +327,7 @@ semantics, stale reads, or conditional revalidation.
 
 6. **Service start** — `docker compose up -d` starts all containers in the selected profile.
 
-7. **Health poll** — the script polls `GET $HealthUrl` every 2 seconds for up to 120 seconds. It succeeds only when the response has at least one dependency value and none are `false`; a degraded `/healthz` response does not pass deploy.
+7. **Health poll** — the script polls `GET $HealthUrl` every 2 seconds for up to 120 seconds. It succeeds when the local response reports `status: ok` and never invokes a dependency.
 
 8. **Smoke test** — unless `-SkipSmoke` is passed, `smoke.ps1` is called with the same Compose files, env files, and profile.
 
@@ -420,6 +457,6 @@ Known considerations:
 - [ ] **API keys on internal seams** — verify the generated `CRAWL4AI_API_KEY`; set `SEARXNG_API_KEY`, `CHUNKER_API_KEY`, `RERANKER_API_KEY`, and `EMBEDDING_API_KEY` if the corresponding services are accessible beyond the internal Docker network.
 - [ ] **Log shipping** — the orchestrator emits JSON logs to stdout. Configure a log driver or sidecar to ship to your log aggregation system.
 - [ ] **Container resource limits** — set memory limits for all containers, especially `CHUNKER_MEM_LIMIT` (default `768m`) for large documents with many segments. The DP chunker allocates O(N²) during similarity matrix computation.
-- [ ] **Health monitoring** — use `/livez` for process liveness and `/healthz` for dependency readiness. Alert on `hard_failures` being non-empty.
+- [ ] **Health monitoring** — use `/health`. It is local-only and safe for frequent polling; observe dependency failures through real request outcomes and service-specific Compose health state.
 - [ ] **Docker socket exposure** — Thorondor does not require access to the Docker socket. Verify no container has it mounted.
 - [ ] **Secrets management** — do not commit `.env` or `.env.llamacpp` files containing secrets. Use a secrets manager or CI/CD vault to inject values at deploy time.

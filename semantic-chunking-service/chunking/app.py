@@ -45,9 +45,9 @@ def _length(text: str) -> int:
     return len(text.split())
 
 
-@app.get("/healthz")
-def healthz():
-    return {"status": "ok", "embedding": _embedder.health_check()}
+@app.get("/health")
+def health():
+    return {"status": "ok"}
 
 
 @app.post("/chunk", responses={400: {"description": "Unknown or invalid chunking strategy"}})

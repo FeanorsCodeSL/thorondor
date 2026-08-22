@@ -185,48 +185,31 @@ flowchart LR
 
 A per-URL crawl failure is silent at the URL level — the URL is skipped and `stats.urls_crawled_failed` is incremented. The pipeline continues with whatever pages were successfully crawled. An empty response is only returned when **all** crawls fail.
 
-## 4. Liveness and Readiness Flow
+## 4. Health Flow
 
-`GET /livez` verifies only that the orchestrator process can serve requests. It
-does not call any dependency and is the endpoint used by the Docker health
-check.
+`GET /health` is the only health endpoint on the orchestrator and chunker. It
+verifies that the local process can serve requests and returns
+`{"status":"ok"}`. It does not access runtime dependency clients, submit a
+search, crawl a URL, or invoke embedding or reranking.
 
-`GET /healthz` probes all five dependencies concurrently and assembles a single
-readiness response. No dependency probe performs a public search. The SearXNG
-probe uses SearXNG's local `/healthz` endpoint, while other probe timeouts are
-governed by `HEALTHCHECK_TIMEOUT_S`.
+Compose checks third-party services through their passive local endpoints:
+SearXNG `/healthz` returns a constant local response, and Crawl4AI `/health`
+returns local server metadata. The orchestrator does not aggregate those checks.
+External model providers are never contacted by health traffic; failures are
+handled when a real request uses the dependency.
 
 ```mermaid
 sequenceDiagram
     participant Client
     participant Orchestrator
-    participant SearXNG
-    participant Crawl4AI
-    participant Chunker as Chunking Service
-    participant Reranker
-
-    Client->>Orchestrator: GET /healthz
-
-    par concurrent probes
-        Orchestrator->>SearXNG: GET /healthz
-        SearXNG-->>Orchestrator: OK (or error)
-    and
-        Orchestrator->>Crawl4AI: GET /health
-        Crawl4AI-->>Orchestrator: 200 (or error)
-    and
-        Orchestrator->>Chunker: GET /healthz
-        Chunker-->>Orchestrator: {"status": "ok", "embedding": true/false}
-    and
-        Orchestrator->>Reranker: GET /health
-        Reranker-->>Orchestrator: 200 (or error)
-    end
-
-    Orchestrator->>Orchestrator: Assemble dependency map\nhard_failures: [searxng, chunker if down]\ndegraded_dependencies: [crawl4ai, embedding, reranker if down]
-
-    Orchestrator-->>Client: {"status": "ok"|"degraded", "dependencies": {...}, "hard_failures": [...], "degraded_dependencies": [...]}
+    Client->>Orchestrator: GET /health
+    Orchestrator->>Orchestrator: Check local request handling
+    Orchestrator-->>Client: {"status": "ok"}
 ```
 
-`hard_failures` lists `searxng` or `chunker` — either causes `SearchDependencyUnavailable` (503) during a live search. `degraded_dependencies` lists `crawl4ai`, `embedding`, and `reranker`; their absence degrades quality but does not block the endpoint.
+Search-time dependency failures continue to produce their existing typed 503 or
+degraded search outcomes; health polling does not manufacture traffic to detect
+them early.
 
 ## 5. MCP Tool Invocation Flow
 
@@ -242,10 +225,57 @@ sequenceDiagram
     MCPServer->>MCPServer: Build SearchRequest from non-None parameters
     MCPServer->>Pipeline: await run_search(request, get_deps())
     Pipeline-->>MCPServer: SearchResponse
-    MCPServer->>MCPServer: response.model_dump()
-    MCPServer-->>AgentClient: dict {query, passages with evidence IDs/spans, citations with document metadata, stats, schema_version}
+    MCPServer->>MCPServer: Build CallToolResult with structuredContent=response.model_dump()
+    MCPServer-->>AgentClient: JSON-RPC result {resultType, content, structuredContent, isError, identity metadata}
 ```
 
-The MCP server is mounted at `/mcp` using `mcp.streamable_http_app()` with `stateless_http=True`. Stdio transport is available via `python -m orchestrator.mcp_server` for environments that require it.
+The MCP server is mounted at `/mcp` using `mcp.streamable_http_app()` with
+`stateless_http=True`. The supported native stdio command is `thorondor-mcp`,
+which forwards the same REST contracts.
 
 `X-Request-ID` propagation works identically for MCP calls — the middleware assigns the ID at the HTTP layer before the MCP frame is decoded, and it is forwarded to all downstream seams.
+
+### MCP lifecycle and result rules
+
+The modern 2026-07-28 HTTP request carries required
+`io.modelcontextprotocol/protocolVersion` and
+`io.modelcontextprotocol/clientCapabilities`, plus optional
+`io.modelcontextprotocol/clientInfo`, in `_meta`. The HTTP request also carries
+`MCP-Protocol-Version`, `Mcp-Method`, and, for `tools/call`, `Mcp-Name`; their
+values must match the envelope after optional HTTP whitespace is removed.
+`Accept` must cover JSON and SSE or use `*/*`. Protocol/routing mismatches
+return HTTP 400 with top-level `-32020`, while an unacceptable `Accept` returns
+HTTP 406 before a JSON-RPC result. Modern responses are sessionless. Legacy
+clients may still use the 2025 initialize handshake without the modern
+headers; a non-initialize modern envelope missing them is a mismatch error,
+not a legacy fallback.
+
+The four tool descriptors are shared by the orchestrator and native proxy.
+Read-only open-world annotations apply to search, map, and crawl; fetch is
+open-world, non-read-only, non-destructive, and non-idempotent. The SDK's empty
+prompt/resource primitives remain in the capability map for compatibility but
+are not part of the selected Thorondor claim.
+
+Every ordinary modern result is complete and identity-stamped. Tool execution
+errors preserve the corresponding REST envelope in `structuredContent` and
+set `isError=true`; invalid protocol parameters, method-not-found, unsupported
+version, header mismatch, and sanitized internal defects remain top-level
+JSON-RPC errors. Known-tool request-model failures are structured 422 tool
+errors, while signature-level SDK validation happens before tool entry. The
+complete serialized MCP result object is bounded by
+`MAX_RESPONSE_BODY_BYTES`, including text content, structured content, error
+state, result type, and identity metadata but not JSON-RPC or transport
+framing. The native proxy reads the same limit from its process environment.
+Cache hints are private with `ttlMs=0`; they do not change the page-cache
+policy, and structured calls bypass persistence.
+
+The official conformance harness is test-only. It uses faked outbound
+dependencies, a random local port, bounded readiness and scenario timeouts,
+fresh output directories, and manifest-scoped evaluation. Manifest identity,
+runner completion, and scenario-to-artifact relationships are validated before
+results are scored. Its 37-scenario profile separates direct gates, mixed
+checks, fixture-dependent observations, and out-of-profile behavior. The two
+list-change SHOULD warnings are intentional non-gating observations because
+Thorondor does not add autonomous subscription notifications. The evidence
+must not be read as a claim for OAuth, resources, prompts, completion, Tasks,
+Apps, sampling, roots, MRTR, or production diagnostics.

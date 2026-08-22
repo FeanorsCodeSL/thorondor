@@ -5,6 +5,7 @@ import os
 from typing import Literal
 
 import httpx
+from mcp.server.caching import CACHEABLE_METHODS, CacheHint
 from mcp.server.mcpserver import MCPServer
 from thorondor_contracts import (
     CRAWL_TOOL_DESCRIPTION,
@@ -16,12 +17,19 @@ from thorondor_contracts import (
     FETCH_TOOL_DESCRIPTION,
     MAP_TOOL_DESCRIPTION,
     SEARCH_TOOL_DESCRIPTION,
+    THORONDOR_VERSION,
     FetchCapability,
     StructuredFormat,
     TargetWatch,
 )
+from thorondor_mcp import tool_annotations, unknown_tool_middleware, wrap_mcp_tool
 
-mcp = MCPServer("thorondor")
+mcp = MCPServer(
+    "thorondor",
+    version=THORONDOR_VERSION,
+    cache_hints={method: CacheHint() for method in CACHEABLE_METHODS},
+)
+mcp.middleware.append(unknown_tool_middleware(mcp.list_tools))
 
 
 def _base_url() -> str:
@@ -31,6 +39,13 @@ def _base_url() -> str:
 def _headers() -> dict[str, str]:
     api_key = os.environ.get("THORONDOR_API_KEY", "").strip()
     return {"Authorization": f"Bearer {api_key}"} if api_key else {}
+
+
+def _max_response_body_bytes() -> int:
+    value = int(os.environ.get("MAX_RESPONSE_BODY_BYTES", DEFAULT_MAX_RESPONSE_BODY_BYTES))
+    if value < 1:
+        raise ValueError("MAX_RESPONSE_BODY_BYTES must be >= 1")
+    return value
 
 
 def _error_response(
@@ -45,9 +60,13 @@ def _error_response(
         detail = {}
     reason = detail.get("reason") if isinstance(detail, dict) else None
     result = {
-        "error": reason or "thorondor_http_error",
+        "error": "invalid_request" if status_code == 422 else reason or "thorondor_http_error",
         "status_code": status_code,
     }
+    if isinstance(detail, dict) and isinstance(detail.get("dependency"), str):
+        result["dependency"] = detail["dependency"]
+    if isinstance(detail, dict) and isinstance(detail.get("max_bytes"), int):
+        result["max_bytes"] = detail["max_bytes"]
     if isinstance(detail, dict) and isinstance(detail.get("route"), str):
         result["route"] = detail["route"]
     retry_after = headers.get("retry-after")
@@ -57,6 +76,7 @@ def _error_response(
 
 
 async def _post(path: str, payload: dict, route: str, timeout_s: float) -> dict:
+    max_response_body_bytes = _max_response_body_bytes()
     try:
         async with httpx.AsyncClient(timeout=timeout_s) as client:
             async with client.stream(
@@ -67,7 +87,7 @@ async def _post(path: str, payload: dict, route: str, timeout_s: float) -> dict:
             ) as response:
                 body = bytearray()
                 async for chunk in response.aiter_bytes():
-                    if len(body) + len(chunk) > DEFAULT_MAX_RESPONSE_BODY_BYTES:
+                    if len(body) + len(chunk) > max_response_body_bytes:
                         return {"error": "response_body_too_large", "status_code": 502}
                     body.extend(chunk)
                 body_bytes = bytes(body)
@@ -86,7 +106,6 @@ async def _post(path: str, payload: dict, route: str, timeout_s: float) -> dict:
         return {"error": "thorondor_invalid_json"}
 
 
-@mcp.tool(description=SEARCH_TOOL_DESCRIPTION)
 async def web_search(
     query: str,
     search_profile: Literal["quick", "research", "deep"] | None = None,
@@ -127,7 +146,6 @@ async def web_search(
     )
 
 
-@mcp.tool(description=FETCH_TOOL_DESCRIPTION)
 async def web_fetch(
     urls: list[str],
     capabilities: list[FetchCapability] | None = None,
@@ -176,7 +194,6 @@ async def web_fetch(
     )
 
 
-@mcp.tool(description=MAP_TOOL_DESCRIPTION)
 async def web_map(
     url: str,
     sitemap: Literal["include", "only", "skip"] | None = None,
@@ -215,7 +232,6 @@ async def web_map(
     )
 
 
-@mcp.tool(description=CRAWL_TOOL_DESCRIPTION)
 async def web_crawl(
     url: str,
     sitemap: Literal["include", "only", "skip"] | None = None,
@@ -257,6 +273,24 @@ async def web_crawl(
         payload,
         "crawl",
         DEFAULT_SITE_CRAWL_ROUTE_DEADLINE_S,
+    )
+
+
+def _max_mcp_response_bytes() -> int:
+    return _max_response_body_bytes()
+
+
+for _tool_name, _tool_fn, _tool_description in (
+    ("web_search", web_search, SEARCH_TOOL_DESCRIPTION),
+    ("web_fetch", web_fetch, FETCH_TOOL_DESCRIPTION),
+    ("web_map", web_map, MAP_TOOL_DESCRIPTION),
+    ("web_crawl", web_crawl, CRAWL_TOOL_DESCRIPTION),
+):
+    mcp.add_tool(
+        wrap_mcp_tool(_tool_fn, _max_mcp_response_bytes),
+        name=_tool_name,
+        description=_tool_description,
+        annotations=tool_annotations(_tool_name),
     )
 
 

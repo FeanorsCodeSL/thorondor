@@ -1,16 +1,15 @@
+from pathlib import Path
+
+import chunking.app as appmod
 import pytest
 from fastapi.testclient import TestClient
 
-import chunking.app as appmod
 from tests.conftest import fake_embed
 
 
 class _FakeEmbedder:
     def __call__(self, texts):
         return fake_embed(texts)
-
-    def health_check(self):
-        return True
 
 
 @pytest.fixture
@@ -42,9 +41,6 @@ def test_embedding_failure_surfaces_fallback_marker(monkeypatch):
     class DownEmbedder:
         def __call__(self, texts):
             raise RuntimeError("embedding refused")
-
-        def health_check(self):
-            return False
 
     monkeypatch.setattr(appmod, "_embedder", DownEmbedder())
     client = TestClient(appmod.app)
@@ -134,9 +130,6 @@ def test_orchestrator_markdown_fallback_preserves_exact_source_slices(monkeypatc
         def __call__(self, _texts):
             raise RuntimeError("embedding refused")
 
-        def health_check(self):
-            return False
-
     monkeypatch.setattr(appmod, "_embedder", DownEmbedder())
     client = TestClient(appmod.app)
     text = "Alpha beta gamma. " * 80
@@ -154,11 +147,35 @@ def test_orchestrator_markdown_fallback_preserves_exact_source_slices(monkeypatc
         assert chunk["text"] == text[chunk["start_index"]:chunk["end_index"]]
 
 
-def test_healthz_reports_embedding(client):
-    assert client.get("/healthz").json() == {"status": "ok", "embedding": True}
+def test_health_is_process_only(monkeypatch):
+    class FailOnAccessEmbedder:
+        def __getattribute__(self, name):
+            raise AssertionError(f"health accessed embedder attribute {name}")
+
+    monkeypatch.setattr(appmod, "_embedder", FailOnAccessEmbedder())
+
+    response = TestClient(appmod.app).get("/health")
+
+    assert response.status_code == 200
+    assert response.json() == {"status": "ok"}
+
+
+def test_legacy_health_routes_are_not_exposed():
+    client = TestClient(appmod.app)
+
+    assert client.get("/livez").status_code == 404
+    assert client.get("/healthz").status_code == 404
+
+
+def test_docker_healthcheck_targets_health_only():
+    dockerfile = (Path(__file__).parents[1] / "Dockerfile").read_text(encoding="utf-8")
+
+    assert "http://localhost:8000/health" in dockerfile
+    assert "/livez" not in dockerfile
+    assert "/healthz" not in dockerfile
 
 
 def test_request_id_header_is_echoed(client):
-    response = client.get("/healthz", headers={"X-Request-ID": "chunk-req"})
+    response = client.get("/health", headers={"X-Request-ID": "chunk-req"})
 
     assert response.headers["X-Request-ID"] == "chunk-req"

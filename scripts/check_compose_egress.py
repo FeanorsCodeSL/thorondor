@@ -22,6 +22,12 @@ REQUIRED_TMPFS_TARGETS = {
     "/home/appuser/.gunicorn",
 }
 EXPECTED_HEALTHCHECK = ["CMD", "curl", "-f", "http://localhost:11235/health"]
+EXPECTED_SEARXNG_HEALTHCHECK = [
+    "CMD",
+    "python",
+    "-c",
+    "import urllib.request; urllib.request.urlopen('http://localhost:8080/healthz', timeout=3)",
+]
 
 
 def _networks(service: dict) -> set[str]:
@@ -160,6 +166,14 @@ def _validate_providers(services: dict, networks: dict, provider_names: list[str
     return errors
 
 
+def _validate_searxng_health(services: dict) -> list[str]:
+    healthcheck = services.get("searxng", {}).get("healthcheck", {})
+    health_test = healthcheck.get("test") if isinstance(healthcheck, dict) else None
+    if health_test != EXPECTED_SEARXNG_HEALTHCHECK:
+        return ["searxng healthcheck must probe only local /healthz"]
+    return []
+
+
 def validate(config: dict, crawl_name: str, control_peer_name: str, provider_names: list[str]) -> list[str]:
     services = config.get("services", {})
     networks = config.get("networks", {})
@@ -169,6 +183,7 @@ def validate(config: dict, crawl_name: str, control_peer_name: str, provider_nam
         *_validate_environment(crawl, crawl_name),
         *_validate_hardening(crawl, crawl_name),
         *_validate_providers(services, networks, provider_names),
+        *_validate_searxng_health(services),
     ]
 
 

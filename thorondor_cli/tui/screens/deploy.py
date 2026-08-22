@@ -14,7 +14,7 @@ from .navigation import ARROW_NAV_BINDINGS, ArrowNavigationMixin
 
 
 class DeployScreen(ArrowNavigationMixin, Screen[None]):
-    """Run the Compose config/build/up/healthz/smoke sequence."""
+    """Run the Compose config/build/up/health/smoke sequence."""
 
     BINDINGS = [*ARROW_NAV_BINDINGS, ("escape", "cancel", "Back")]
 
@@ -31,7 +31,7 @@ class DeployScreen(ArrowNavigationMixin, Screen[None]):
     def compose(self) -> ComposeResult:
         yield Static("Deploy", id="deploy-title", classes="brand")
         with Vertical(id="deploy-body"):
-            yield Static("config → build → up -d → /healthz → smoke", classes="status")
+            yield Static("config → build → up -d → /health → smoke", classes="status")
             yield Static("", id="deploy-log", classes="status")
             with Horizontal(classes="form-row"):
                 yield Button("Start deploy", id="start-deploy", variant="primary")

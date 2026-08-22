@@ -23,14 +23,6 @@ All environment variables must be present in `.env` (and `.env.llamacpp` or `.en
 | `CHUNKER_LOG_LEVEL` | Required / `INFO` | string | Chunking service log level. | — |
 | `PROXY_LOG_LEVEL` | Required / `INFO` | string | SSRF egress proxy log level. | — |
 
-### Healthcheck
-
-| Variable | Required / Default | Type | Description | Related |
-|---|---|---|---|---|
-| `HEALTHCHECK_TIMEOUT_S` | Required / `2.0` | float (> 0) | Per-dependency probe timeout in seconds. | `HEALTHCHECK_MAX_CONNECTIONS` |
-| `HEALTHCHECK_MAX_CONNECTIONS` | Required / `8` | int (≥ 1) | Max connections in the healthcheck HTTP client pool. | `HEALTHCHECK_MAX_KEEPALIVE_CONNECTIONS` |
-| `HEALTHCHECK_MAX_KEEPALIVE_CONNECTIONS` | Required / `4` | int (≥ 1) | Max keepalive connections in the healthcheck client pool. | `HEALTHCHECK_MAX_CONNECTIONS` |
-
 ### Resource Envelope
 
 | Variable | Required / Default | Type | Description | Related |
@@ -161,7 +153,6 @@ The worker wakes immediately when this process creates a job. While idle it perf
 | `RERANKER_MODEL` | Required / `BAAI/bge-reranker-v2-m3` | string | Model name sent in rerank requests. | `RERANKER_ENDPOINT` |
 | `RERANKER_MODEL_REVISION` | Compose only / `953dc6f6f85a1b2dbfca4c34a2796e7dde08d41e` | commit | Immutable Hub revision passed to bundled TEI. | `RERANKER_MODEL` |
 | `RERANKER_PATH` | Required / `/rerank` | string | Rerank endpoint path. For llama.cpp: `/reranking`. | `RERANKER_ENDPOINT` |
-| `RERANKER_HEALTH_PATH` | Required / `/health` | string | Reranker health endpoint path. | `RERANKER_ENDPOINT` |
 | `RERANKER_API_KEY` | Optional (blank) | string | Bearer token for the reranker. Blank disables the header. | `RERANKER_ENDPOINT` |
 | `RERANKER_BATCH_SIZE` | Required / `32` | int (≥ 1) | Chunks per reranker API call. | `RERANKER_TIMEOUT_S` |
 | `RERANKER_TIMEOUT_S` | Required / `30` | int (≥ 1) | Reranker request timeout in seconds. | `RERANKER_BATCH_SIZE` |
@@ -285,9 +276,6 @@ The settings loader enforces the following constraints at startup time:
 | `CRAWLER_ROBOTS_USER_AGENT` is a valid token included in the outbound identity | `RuntimeError` |
 | `RERANKER_BATCH_SIZE` ≥ 1 | `RuntimeError` |
 | `RERANKER_TIMEOUT_S` ≥ 1 | `RuntimeError` |
-| `HEALTHCHECK_TIMEOUT_S` > 0 | `RuntimeError` |
-| `HEALTHCHECK_MAX_CONNECTIONS` ≥ 1 | `RuntimeError` |
-| `HEALTHCHECK_MAX_KEEPALIVE_CONNECTIONS` ≥ 1 | `RuntimeError` |
 | `MARKDOWN_EXTRACTOR` must equal `trafilatura` (case-insensitive) | `RuntimeError: MARKDOWN_EXTRACTOR must be trafilatura` |
 | `MAX_SUBQUERIES` between 1 and 8 | `RuntimeError: MAX_SUBQUERIES must be between 1 and 8` |
 | `SEARCH_PROFILE_*_TOKEN_BUDGET` ≥ 1 | `RuntimeError: search profile token_budget must be >= 1` |

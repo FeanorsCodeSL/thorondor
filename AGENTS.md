@@ -17,7 +17,7 @@ the repo-local agent skill.
 - `scripts/` - deployment and smoke helpers for PowerShell and Bash.
 - `docs/architecture/` - current architecture, pipeline, deployment, security,
   configuration, dependency, and contract documentation.
-- `docs/plans/` - remaining operational plans, such as release-image work.
+- `docs/plans/` - active implementation plans when work is in progress; completed plans are removed after implementation.
 - `docs/reviews/` - historical review snapshots; do not rewrite them casually.
 
 ## Service Capabilities and Boundaries

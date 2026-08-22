@@ -175,7 +175,6 @@ def build_llamacpp_env_values_from_draft(draft) -> dict[str, str]:
         reranker_endpoint=draft.env.get("RERANKER_ENDPOINT", ""),
         reranker_model=draft.env.get("RERANKER_MODEL", ""),
         reranker_path=draft.env.get("RERANKER_PATH", "/rerank"),
-        reranker_health_path=draft.env.get("RERANKER_HEALTH_PATH", "/health"),
         reranker_api_key=draft.env.get("RERANKER_API_KEY", ""),
         llm_endpoint=draft.env.get("LLM_ENDPOINT", ""),
         llm_model=draft.env.get("LLM_MODEL", ""),

@@ -73,7 +73,7 @@ $orchestratorHost = Get-RequiredDotEnvValue -Values $envValues -Key "ORCHESTRATO
 $orchestratorPort = Get-RequiredDotEnvValue -Values $envValues -Key "ORCHESTRATOR_PORT" -Path ".env"
 
 if ([string]::IsNullOrWhiteSpace($HealthUrl)) {
-    $HealthUrl = Join-OrchestratorUrl -HostName $orchestratorHost -Port $orchestratorPort -Path "/healthz"
+    $HealthUrl = Join-OrchestratorUrl -HostName $orchestratorHost -Port $orchestratorPort -Path "/health"
 }
 if ([string]::IsNullOrWhiteSpace($SearchUrl)) {
     $SearchUrl = Join-OrchestratorUrl -HostName $orchestratorHost -Port $orchestratorPort -Path "/search"
@@ -108,8 +108,7 @@ $ComposeArgs = New-ComposeArgs -Files $ComposeFiles -EnvFilePaths $EnvFiles -Sel
 for ($attempt = 1; $attempt -le 90; $attempt++) {
     try {
         $health = Invoke-RestMethod -Uri $HealthUrl -Method Get
-        $values = @($health.dependencies.PSObject.Properties | ForEach-Object { $_.Value })
-        if ($values.Count -gt 0 -and -not ($values -contains $false)) {
+        if ($health.status -eq "ok") {
             break
         }
     }
@@ -118,7 +117,7 @@ for ($attempt = 1; $attempt -le 90; $attempt++) {
     }
 
     if ($attempt -eq 90) {
-        Write-Error "Timed out waiting for all dependencies at $HealthUrl"
+        Write-Error "Timed out waiting for service health at $HealthUrl"
     }
     Start-Sleep -Seconds 2
 }

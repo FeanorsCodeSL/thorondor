@@ -143,7 +143,6 @@ class ModelModeScreen(ArrowNavigationMixin, Screen[None]):
             reranker_endpoint=draft.env.get("RERANKER_ENDPOINT", "http://reranker:80"),
             reranker_model=draft.env.get("RERANKER_MODEL", "BAAI/bge-reranker-v2-m3"),
             reranker_path=draft.env.get("RERANKER_PATH", "/rerank"),
-            reranker_health_path=draft.env.get("RERANKER_HEALTH_PATH", "/health"),
             reranker_api_key=draft.env.get("RERANKER_API_KEY", ""),
             llm_endpoint=draft.env.get("LLM_ENDPOINT", ""),
             llm_model=draft.env.get("LLM_MODEL", ""),

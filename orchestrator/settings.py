@@ -105,7 +105,6 @@ class Settings:
     reranker_endpoint: str
     reranker_model: str
     reranker_path: str
-    reranker_health_path: str
     reranker_batch_size: int
     reranker_timeout_s: int
     relevance_score_floor: float
@@ -128,9 +127,6 @@ class Settings:
     chunker_api_key: str | None
     reranker_api_key: str | None
     llm_api_key: str | None
-    healthcheck_timeout_s: float
-    healthcheck_max_connections: int
-    healthcheck_max_keepalive_connections: int
     markdown_extractor: str
     markdown_extractor_favor_recall: bool
     markdown_extractor_include_comments: bool
@@ -206,12 +202,6 @@ class Settings:
             raise RuntimeError("RERANKER_BATCH_SIZE must be >= 1")
         if self.reranker_timeout_s < 1:
             raise RuntimeError("RERANKER_TIMEOUT_S must be >= 1")
-        if self.healthcheck_timeout_s <= 0:
-            raise RuntimeError("HEALTHCHECK_TIMEOUT_S must be > 0")
-        if self.healthcheck_max_connections < 1:
-            raise RuntimeError("HEALTHCHECK_MAX_CONNECTIONS must be >= 1")
-        if self.healthcheck_max_keepalive_connections < 1:
-            raise RuntimeError("HEALTHCHECK_MAX_KEEPALIVE_CONNECTIONS must be >= 1")
         if self.markdown_extractor.lower() != "trafilatura":
             raise RuntimeError("MARKDOWN_EXTRACTOR must be trafilatura")
         if not 1 <= self.max_subqueries <= MAX_SUBQUERY_COUNT:
@@ -370,7 +360,6 @@ def load_settings() -> Settings:
         reranker_endpoint=_required("RERANKER_ENDPOINT"),
         reranker_model=_required("RERANKER_MODEL"),
         reranker_path=_required("RERANKER_PATH"),
-        reranker_health_path=_required("RERANKER_HEALTH_PATH"),
         reranker_batch_size=_int_env("RERANKER_BATCH_SIZE"),
         reranker_timeout_s=_int_env("RERANKER_TIMEOUT_S"),
         relevance_score_floor=_float_env("RELEVANCE_SCORE_FLOOR"),
@@ -393,9 +382,6 @@ def load_settings() -> Settings:
         chunker_api_key=_configured_optional("CHUNKER_API_KEY"),
         reranker_api_key=_configured_optional("RERANKER_API_KEY"),
         llm_api_key=_configured_optional("LLM_API_KEY"),
-        healthcheck_timeout_s=_float_env("HEALTHCHECK_TIMEOUT_S"),
-        healthcheck_max_connections=_int_env("HEALTHCHECK_MAX_CONNECTIONS"),
-        healthcheck_max_keepalive_connections=_int_env("HEALTHCHECK_MAX_KEEPALIVE_CONNECTIONS"),
         markdown_extractor=_required("MARKDOWN_EXTRACTOR"),
         markdown_extractor_favor_recall=_bool_env("MARKDOWN_EXTRACTOR_FAVOR_RECALL"),
         markdown_extractor_include_comments=_bool_env("MARKDOWN_EXTRACTOR_INCLUDE_COMMENTS"),

@@ -111,10 +111,10 @@ class FakeClient:
         pass
 
 
-def test_wait_for_health_passes_only_when_all_dependencies_true():
-    payload = {"dependencies": {"searxng": True, "chunker": True}}
+def test_wait_for_health_requires_ok_status():
+    payload = {"status": "ok"}
     assert wait_for_health(
-        "http://x/healthz",
+        "http://x/health",
         timeout_s=0.1,
         interval_s=0,
         client=FakeClient([FakeResponse(payload=payload)]),
@@ -122,10 +122,10 @@ def test_wait_for_health_passes_only_when_all_dependencies_true():
 
     with pytest.raises(DeployError):
         wait_for_health(
-            "http://x/healthz",
+            "http://x/health",
             timeout_s=0.01,
             interval_s=0,
-            client=FakeClient([FakeResponse(payload={"dependencies": {"x": False}})]),
+            client=FakeClient([FakeResponse(payload={"status": "degraded"})]),
         )
 
 

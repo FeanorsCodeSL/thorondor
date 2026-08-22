@@ -1,13 +1,14 @@
 """FastAPI app for Thorondor."""
 import asyncio
+import json
 from contextlib import asynccontextmanager, suppress
 from typing import Annotated
 
-import httpx
-from fastapi import FastAPI, Header, HTTPException, Query, Request
+from fastapi import FastAPI, Header, HTTPException, Query, Request, Response
 from fastapi.responses import JSONResponse
+from mcp_types import HEADER_MISMATCH
 
-from .clients.searxng_client import SEARXNG_INTERNAL_HEADERS
+from . import resource_policy as resource_policy_module
 from .crawl_job_store import (
     CrawlJobExpired,
     CrawlJobNotFound,
@@ -43,14 +44,12 @@ from .models import (
 )
 from .observability import configure_json_logging, new_request_id, reset_request_id, set_request_id
 from .pipeline import SearchDependencyUnavailable, build_deps_from_settings, run_search
-from .resource_policy import (
-    CapacityUnavailable,
-    ResourcePolicy,
-    RouteDeadlineExceeded,
-    RuntimeAdmission,
-)
+from .resource_policy import CapacityUnavailable, RouteDeadlineExceeded
 from .settings import load_settings
 from .site_pipeline import run_crawl, run_map
+
+ResourcePolicy = resource_policy_module.ResourcePolicy
+RuntimeAdmission = resource_policy_module.RuntimeAdmission
 
 
 @asynccontextmanager
@@ -67,52 +66,103 @@ async def lifespan(_app: FastAPI):
 app = FastAPI(title="thorondor", lifespan=lifespan, redirect_slashes=False)
 deps = None
 settings = None
-health_client: httpx.AsyncClient | None = None
+
+
+def _normalize_mcp_request(request: Request) -> bool:
+    is_mcp_request = request.scope["path"] in {"/mcp", "/mcp/"}
+    if is_mcp_request:
+        request.scope["headers"] = [
+            (name, value.strip(b" \t")) if name.lower().startswith(b"mcp-") else (name, value)
+            for name, value in request.scope["headers"]
+        ]
+    if request.scope["path"] == "/mcp":
+        request.scope["path"] = "/mcp/"
+    return is_mcp_request
+
+
+def _with_request_id(response: Response, request_id: str) -> Response:
+    response.headers["X-Request-ID"] = request_id
+    return response
+
+
+def _request_body_too_large_response(max_body_bytes: int) -> JSONResponse:
+    return JSONResponse(
+        status_code=413,
+        content={
+            "detail": {
+                "reason": "request_body_too_large",
+                "max_bytes": max_body_bytes,
+            }
+        },
+    )
+
+
+def _declared_body_exceeds_limit(request: Request, max_body_bytes: int) -> bool:
+    content_length = request.headers.get("content-length")
+    if content_length is None:
+        return False
+    try:
+        return int(content_length) > max_body_bytes
+    except ValueError:
+        return False
+
+
+def _mcp_header_mismatch_response(body: bytes, request: Request) -> JSONResponse | None:
+    try:
+        payload = json.loads(body)
+    except (ValueError, RecursionError):
+        payload = None
+    params = payload.get("params") if isinstance(payload, dict) else None
+    meta = params.get("_meta") if isinstance(params, dict) else None
+    if (
+        not isinstance(meta, dict)
+        or "io.modelcontextprotocol/protocolVersion" not in meta
+        or "mcp-protocol-version" in request.headers
+    ):
+        return None
+    return JSONResponse(
+        status_code=400,
+        content={
+            "jsonrpc": "2.0",
+            "id": payload.get("id") if isinstance(payload, dict) else None,
+            "error": {
+                "code": HEADER_MISMATCH,
+                "message": (
+                    "mcp-protocol-version header does not match "
+                    "the request envelope's protocol version"
+                ),
+            },
+        },
+    )
+
+
+async def _transport_preflight_response(
+    request: Request, is_mcp_request: bool
+) -> JSONResponse | None:
+    if request.method not in {"POST", "PUT", "PATCH"}:
+        return None
+    max_body_bytes = get_deps().resource_policy.max_request_body_bytes
+    if _declared_body_exceeds_limit(request, max_body_bytes):
+        return _request_body_too_large_response(max_body_bytes)
+    body = await request.body()
+    if len(body) > max_body_bytes:
+        return _request_body_too_large_response(max_body_bytes)
+    if not is_mcp_request:
+        return None
+    return _mcp_header_mismatch_response(body, request)
 
 
 @app.middleware("http")
 async def route_mcp_without_redirect(request: Request, call_next):
-    if request.scope["path"] == "/mcp":
-        request.scope["path"] = "/mcp/"
+    is_mcp_request = _normalize_mcp_request(request)
     request_id = request.headers.get("X-Request-ID") or new_request_id()
     token = set_request_id(request_id)
     try:
-        if request.method in {"POST", "PUT", "PATCH"}:
-            max_body_bytes = get_deps().resource_policy.max_request_body_bytes
-            content_length = request.headers.get("content-length")
-            if content_length is not None:
-                try:
-                    exceeds_limit = int(content_length) > max_body_bytes
-                except ValueError:
-                    exceeds_limit = False
-                if exceeds_limit:
-                    response = JSONResponse(
-                        status_code=413,
-                        content={
-                            "detail": {
-                                "reason": "request_body_too_large",
-                                "max_bytes": max_body_bytes,
-                            }
-                        },
-                    )
-                    response.headers["X-Request-ID"] = request_id
-                    return response
-            body = await request.body()
-            if len(body) > max_body_bytes:
-                response = JSONResponse(
-                    status_code=413,
-                    content={
-                        "detail": {
-                            "reason": "request_body_too_large",
-                            "max_bytes": max_body_bytes,
-                        }
-                    },
-                )
-                response.headers["X-Request-ID"] = request_id
-                return response
+        preflight_response = await _transport_preflight_response(request, is_mcp_request)
+        if preflight_response is not None:
+            return _with_request_id(preflight_response, request_id)
         response = await call_next(request)
-        response.headers["X-Request-ID"] = request_id
-        return response
+        return _with_request_id(response, request_id)
     finally:
         reset_request_id(token)
 
@@ -132,30 +182,13 @@ def get_deps():
     return deps
 
 
-def get_health_client() -> httpx.AsyncClient:
-    global health_client
-    if health_client is None or health_client.is_closed:
-        s = get_settings()
-        health_client = httpx.AsyncClient(
-            timeout=s.healthcheck_timeout_s,
-            limits=httpx.Limits(
-                max_connections=s.healthcheck_max_connections,
-                max_keepalive_connections=s.healthcheck_max_keepalive_connections,
-            ),
-        )
-    return health_client
-
-
 async def close_runtime_clients() -> None:
-    global deps, health_client
+    global deps
     if deps is not None:
         close = getattr(deps, "aclose", None)
         if close is not None:
             await close()
         deps = None
-    if health_client is not None:
-        await health_client.aclose()
-        health_client = None
 
 
 TRANSPORT_ERROR_RESPONSES = {
@@ -420,74 +453,8 @@ async def cancel_crawl_job(
         raise _job_error(exc) from exc
 
 
-async def _check_url(
-    name: str,
-    url: str,
-    headers: dict[str, str] | None = None,
-) -> tuple[str, bool]:
-    try:
-        response = await get_health_client().get(url, headers=headers)
-        return name, response.is_success
-    except Exception:
-        return name, False
-
-
-async def _check_chunker(url: str) -> tuple[tuple[str, bool], tuple[str, bool]]:
-    try:
-        response = await get_health_client().get(url)
-        if not response.is_success:
-            return ("chunker", False), ("embedding", False)
-        payload = response.json()
-        return ("chunker", True), ("embedding", bool(payload.get("embedding", False)))
-    except Exception:
-        return ("chunker", False), ("embedding", False)
-
-
-def _join_url(base_url: str, path: str) -> str:
-    normalized_path = path if path.startswith("/") else f"/{path}"
-    return f"{base_url.rstrip('/')}{normalized_path}"
-
-
-@app.get("/livez")
-async def livez():
+@app.get("/health")
+async def health():
     return {"status": "ok"}
-
-
-@app.get("/healthz")
-async def healthz():
-    s = get_settings()
-    searxng, crawl4ai, chunker_pair, reranker = await asyncio.gather(
-        _check_url(
-            "searxng",
-            f"{s.searxng_url.rstrip('/')}/healthz",
-            SEARXNG_INTERNAL_HEADERS,
-        ),
-        _check_url("crawl4ai", f"{s.crawl4ai_url.rstrip('/')}/health"),
-        _check_chunker(f"{s.chunker_url.rstrip('/')}/healthz"),
-        _check_url("reranker", _join_url(s.reranker_endpoint, s.reranker_health_path)),
-    )
-    chunker, embedding = chunker_pair
-    dependencies = {
-        "searxng": searxng[1],
-        "crawl4ai": crawl4ai[1],
-        "chunker": chunker[1],
-        "embedding": embedding[1],
-        "reranker": reranker[1],
-    }
-    if s.crawl_jobs_enabled:
-        dependencies["crawl_jobs"] = get_deps().crawl_jobs.healthy
-    hard_dependencies = ["searxng", "chunker"]
-    if s.crawl_jobs_enabled:
-        hard_dependencies.append("crawl_jobs")
-    return {
-        "status": "ok" if all(dependencies.values()) else "degraded",
-        "dependencies": dependencies,
-        "hard_failures": [
-            name for name in hard_dependencies if not dependencies[name]
-        ],
-        "degraded_dependencies": [
-            name for name in ("crawl4ai", "embedding", "reranker") if not dependencies[name]
-        ],
-    }
 
 app.mount("/mcp", mcp_http_app)

@@ -99,8 +99,7 @@ def wait_for_health(
                 if response.status_code == 200:
                     payload = response.json()
                     last_payload = payload if isinstance(payload, dict) else None
-                    values = list((last_payload or {}).get("dependencies", {}).values())
-                    if values and all(value is True for value in values):
+                    if (last_payload or {}).get("status") == "ok":
                         return last_payload or {}
             except (httpx.HTTPError, ValueError):
                 pass
@@ -108,7 +107,7 @@ def wait_for_health(
     finally:
         if owns_client:
             client.close()
-    raise DeployError(f"Timed out waiting for healthy dependencies at {health_url}: {last_payload}")
+    raise DeployError(f"Timed out waiting for service health at {health_url}: {last_payload}")
 
 
 def run_smoke_search(
@@ -163,7 +162,7 @@ def deploy(
             raise DeployError(f"{step} failed: {detail}")
 
     env = read_env(root / ".env")
-    health_url = orchestrator_url(env, "/healthz")
+    health_url = orchestrator_url(env, "/health")
     yield DeployProgress("health", health_url)
     wait_for_health(health_url)
     if not skip_smoke:

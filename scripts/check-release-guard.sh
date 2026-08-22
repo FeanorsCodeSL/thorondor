@@ -75,13 +75,18 @@ done
 
 "$PYTHON_BIN" scripts/check_requirement_locks.py
 
-if ! grep -q 'health.dependencies.PSObject.Properties' scripts/deploy.ps1; then
-  echo "scripts/deploy.ps1: deploy health polling must inspect dependency values." >&2
+if ! grep -q '\$health.status -eq "ok"' scripts/deploy.ps1; then
+  echo "scripts/deploy.ps1: deploy health polling must require local status ok." >&2
   exit 1
 fi
 
-if ! grep -q 'dependencies' scripts/deploy.sh; then
-  echo "scripts/deploy.sh: deploy health polling must inspect dependency values." >&2
+if ! grep -q 'd.get("status") == "ok"' scripts/deploy.sh; then
+  echo "scripts/deploy.sh: deploy health polling must require local status ok." >&2
+  exit 1
+fi
+
+if grep -Eq '/(livez|healthz)' scripts/deploy.ps1 scripts/deploy.sh scripts/smoke.ps1 scripts/smoke.sh; then
+  echo "Deploy and smoke scripts must use only the Thorondor /health endpoint." >&2
   exit 1
 fi
 
