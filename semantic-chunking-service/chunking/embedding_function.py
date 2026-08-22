@@ -245,12 +245,3 @@ class EmbeddingFunction:
         """Generate embedding for a single text."""
         result = self([text])
         return result[0] if result else []
-
-    def health_check(self) -> bool:
-        """Check if the embedding service is reachable and returns vectors."""
-        try:
-            result = self._call_embedding_api(["health check"], 1, 1)
-            return bool(result and len(result[0]) > 0)
-        except Exception as e:
-            logger.warning(f"Embedding health check failed: {e}")
-            return False

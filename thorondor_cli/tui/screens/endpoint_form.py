@@ -20,7 +20,6 @@ ENDPOINT_FIELDS: tuple[tuple[str, str, str], ...] = (
     ("reranker_endpoint", "Reranker base URL", ""),
     ("reranker_model", "Reranker model", ""),
     ("reranker_path", "Rerank path", ""),
-    ("reranker_health_path", "Health path", ""),
     ("reranker_api_key", "Reranker token", "password"),
     ("llm_endpoint", "Optional LLM base URL", ""),
     ("llm_model", "Optional LLM model", ""),
@@ -86,7 +85,6 @@ class EndpointFormScreen(ArrowNavigationMixin, Screen[None]):
         )
         reranker = probe_reranker(
             answers.reranker_endpoint,
-            answers.reranker_health_path,
             answers.reranker_path,
             answers.reranker_model,
             answers.reranker_api_key or None,
@@ -120,7 +118,6 @@ class EndpointFormScreen(ArrowNavigationMixin, Screen[None]):
             reranker_endpoint=_value("reranker_endpoint"),
             reranker_model=_value("reranker_model"),
             reranker_path=_value("reranker_path") or "/rerank",
-            reranker_health_path=_value("reranker_health_path") or "/health",
             reranker_api_key=_value("reranker_api_key"),
             llm_endpoint=_value("llm_endpoint"),
             llm_model=_value("llm_model"),

@@ -46,7 +46,7 @@ def _start_server(block_fetch: bool = False) -> tuple[subprocess.Popen, str]:
         if process.poll() is not None:
             raise RuntimeError("conformance server exited before readiness")
         try:
-            with urllib.request.urlopen(f"{base_url}/livez", timeout=0.2) as response:
+            with urllib.request.urlopen(f"{base_url}/health", timeout=0.2) as response:
                 if response.status == 200:
                     return process, base_url
         except (urllib.error.URLError, TimeoutError):

@@ -113,7 +113,7 @@ $orchestratorHost = Get-RequiredDotEnvValue -Values $envValues -Key "ORCHESTRATO
 $orchestratorPort = Get-RequiredDotEnvValue -Values $envValues -Key "ORCHESTRATOR_PORT" -Path ".env"
 
 if ([string]::IsNullOrWhiteSpace($HealthUrl)) {
-    $HealthUrl = Join-OrchestratorUrl -HostName $orchestratorHost -Port $orchestratorPort -Path "/healthz"
+    $HealthUrl = Join-OrchestratorUrl -HostName $orchestratorHost -Port $orchestratorPort -Path "/health"
 }
 if ([string]::IsNullOrWhiteSpace($SearchUrl)) {
     $SearchUrl = Join-OrchestratorUrl -HostName $orchestratorHost -Port $orchestratorPort -Path "/search"
@@ -150,8 +150,7 @@ $ComposeArgs = New-ComposeArgs -Files $ComposeFiles -EnvFilePaths $EnvFiles -Sel
 for ($attempt = 1; $attempt -le 60; $attempt++) {
     try {
         $health = Invoke-RestMethod -Uri $HealthUrl -Method Get
-        $values = @($health.dependencies.PSObject.Properties | ForEach-Object { $_.Value })
-        if ($values.Count -gt 0 -and -not ($values -contains $false)) {
+        if ($health.status -eq "ok") {
             break
         }
     }
@@ -164,7 +163,7 @@ for ($attempt = 1; $attempt -le 60; $attempt++) {
             Write-Error ($health | ConvertTo-Json -Depth 10)
         }
         & docker @ComposeArgs ps
-        Write-Error "Timed out waiting for all dependencies at $HealthUrl"
+        Write-Error "Timed out waiting for service health at $HealthUrl"
     }
 
     Start-Sleep -Seconds 2
@@ -174,10 +173,9 @@ if ($null -eq $health) {
     Write-Error "No health response received from $HealthUrl"
 }
 
-$finalValues = @($health.dependencies.PSObject.Properties | ForEach-Object { $_.Value })
-if ($finalValues.Count -eq 0 -or ($finalValues -contains $false)) {
+if ($health.status -ne "ok") {
     Write-Error ($health | ConvertTo-Json -Depth 10)
-    Write-Error "Deployment health check failed because one or more dependencies are unhealthy."
+    Write-Error "Deployment health check failed."
 }
 
 if (-not $SkipSmoke) {

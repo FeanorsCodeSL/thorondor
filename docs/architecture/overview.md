@@ -46,14 +46,13 @@ operator ingress.
 
 ### Semantic Chunking Service (`semantic-chunking-service/`)
 
-A standalone FastAPI service exposing `POST /chunk`, process-only `GET /livez`,
-and explicit dependency diagnostic `GET /healthz`. It receives page markdown
+A standalone FastAPI service exposing `POST /chunk` and local-only `GET /health`.
+It receives page markdown
 from the orchestrator and returns semantically coherent chunks with token
 counts, provenance metadata, and exact Unicode code-point spans. The
 orchestrator uses `ORCHESTRATOR_MARKDOWN` mode so already-cleaned Markdown is
-not destructively pre-cleaned again. Docker probes `/livez`; `/healthz` makes
-one request to the configured embedding provider and is never a recurring
-container health probe.
+not destructively pre-cleaned again. Docker probes `/health`, which never calls
+the configured embedding provider.
 
 The core algorithm is `ClusterSemanticChunker`: it splits text into ~50-token segments, generates embeddings for each segment using the configured OpenAI-compatible embedding server, builds an N×N cosine-similarity matrix, and uses dynamic programming to find globally optimal chunk boundaries that maximize semantic coherence within each chunk. When the segment count exceeds `CHUNKER_MAX_SEGMENTS_DP` (OOM guard), it falls back to a greedy-semantic algorithm that computes only adjacent-pair similarities. If the embedding server is unreachable, it falls back further to token-based splitting and marks chunks `embedding_degraded=true`.
 
@@ -162,7 +161,7 @@ The llama.cpp build `b10276` image is pinned to a specific SHA (`bde659bf...`) t
 
 **Embedding server** — any server that speaks `POST /v1/embeddings` (OpenAI format) works. Set `EMBEDDING_ENDPOINT` and `EMBEDDING_MODEL`. The chunker service is model-agnostic.
 
-**Reranker** — any server that accepts `POST <path>` with `{"query", "documents", "model"}` and returns `{"results": [{"index", "score"}, ...]}` works. Adjust `RERANKER_ENDPOINT`, `RERANKER_PATH`, `RERANKER_HEALTH_PATH`, and `RERANKER_MODEL`.
+**Reranker** — any server that accepts `POST <path>` with `{"query", "documents", "model"}` and returns `{"results": [{"index", "score"}, ...]}` works. Adjust `RERANKER_ENDPOINT`, `RERANKER_PATH`, and `RERANKER_MODEL`.
 
 **LLM operations** — set `LLM_ENDPOINT` and `LLM_MODEL` for an OpenAI-compatible chat completions server. Query decomposition asks for a JSON array of sub-queries. Explicit schema extraction has a fixed prompt, strict local validation, value-bearing evidence checks, a process-owned four-request concurrency limit, and a 20-second model deadline.
 

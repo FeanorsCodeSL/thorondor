@@ -185,54 +185,31 @@ flowchart LR
 
 A per-URL crawl failure is silent at the URL level — the URL is skipped and `stats.urls_crawled_failed` is incremented. The pipeline continues with whatever pages were successfully crawled. An empty response is only returned when **all** crawls fail.
 
-## 4. Liveness and Readiness Flow
+## 4. Health Flow
 
-`GET /livez` on both the orchestrator and chunker verifies only that the process
-can serve requests. Neither route calls a dependency, and each is used by its
-service's Docker health check.
+`GET /health` is the only health endpoint on the orchestrator and chunker. It
+verifies that the local process can serve requests and returns
+`{"status":"ok"}`. It does not access runtime dependency clients, submit a
+search, crawl a URL, or invoke embedding or reranking.
 
-`GET /healthz` probes the five core dependencies concurrently and assembles a
-single readiness response. When durable crawl jobs are enabled, it also reports
-the local crawl-job worker as a sixth dependency. No dependency probe performs a
-public search. The SearXNG probe uses SearXNG's local `/healthz` endpoint, while
-other probe timeouts are governed by `HEALTHCHECK_TIMEOUT_S`.
-
-The chunker's `GET /healthz` remains an explicit embedding diagnostic and makes
-one embedding request. The orchestrator readiness flow calls that diagnostic,
-so operator-triggered readiness checks can reach the configured embedding
-provider. Recurring Docker liveness never enters this flow.
+Compose checks third-party services through their passive local endpoints:
+SearXNG `/healthz` returns a constant local response, and Crawl4AI `/health`
+returns local server metadata. The orchestrator does not aggregate those checks.
+External model providers are never contacted by health traffic; failures are
+handled when a real request uses the dependency.
 
 ```mermaid
 sequenceDiagram
     participant Client
     participant Orchestrator
-    participant SearXNG
-    participant Crawl4AI
-    participant Chunker as Chunking Service
-    participant Reranker
-
-    Client->>Orchestrator: GET /healthz
-
-    par concurrent probes
-        Orchestrator->>SearXNG: GET /healthz
-        SearXNG-->>Orchestrator: OK (or error)
-    and
-        Orchestrator->>Crawl4AI: GET /health
-        Crawl4AI-->>Orchestrator: 200 (or error)
-    and
-        Orchestrator->>Chunker: GET /healthz
-        Chunker-->>Orchestrator: {"status": "ok", "embedding": true/false}
-    and
-        Orchestrator->>Reranker: GET /health
-        Reranker-->>Orchestrator: 200 (or error)
-    end
-
-    Orchestrator->>Orchestrator: Assemble dependency map\nhard_failures: [searxng, chunker if down]\ndegraded_dependencies: [crawl4ai, embedding, reranker if down]
-
-    Orchestrator-->>Client: {"status": "ok"|"degraded", "dependencies": {...}, "hard_failures": [...], "degraded_dependencies": [...]}
+    Client->>Orchestrator: GET /health
+    Orchestrator->>Orchestrator: Check local request handling
+    Orchestrator-->>Client: {"status": "ok"}
 ```
 
-`hard_failures` lists `searxng` or `chunker` — either causes `SearchDependencyUnavailable` (503) during a live search. `degraded_dependencies` lists `crawl4ai`, `embedding`, and `reranker`; their absence degrades quality but does not block the endpoint.
+Search-time dependency failures continue to produce their existing typed 503 or
+degraded search outcomes; health polling does not manufacture traffic to detect
+them early.
 
 ## 5. MCP Tool Invocation Flow
 

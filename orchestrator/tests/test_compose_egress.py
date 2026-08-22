@@ -40,7 +40,17 @@ def _config() -> dict:
                     "test": ["CMD", "curl", "-f", "http://localhost:11235/health"],
                 },
             },
-            "searxng": {"networks": ["internal", "provider-egress"]},
+            "searxng": {
+                "networks": ["internal", "provider-egress"],
+                "healthcheck": {
+                    "test": [
+                        "CMD",
+                        "python",
+                        "-c",
+                        "import urllib.request; urllib.request.urlopen('http://localhost:8080/healthz', timeout=3)",
+                    ],
+                },
+            },
         },
     }
 
@@ -151,3 +161,14 @@ def test_rejects_redis_implementation_detail_healthcheck():
     ]
 
     assert _validate(config) == ["crawl4ai healthcheck must probe only /health"]
+
+
+def test_requires_passive_local_searxng_healthcheck():
+    config = _config()
+    config["services"]["searxng"]["healthcheck"]["test"] = [
+        "CMD",
+        "curl",
+        "http://localhost:8080/search?q=health",
+    ]
+
+    assert _validate(config) == ["searxng healthcheck must probe only local /healthz"]

@@ -18,8 +18,6 @@ HOST_ENDPOINTS_OVERLAY = "docker-compose.host-endpoints.yml"
 
 INTEGER_KEYS = {
     "ORCHESTRATOR_PORT",
-    "HEALTHCHECK_MAX_CONNECTIONS",
-    "HEALTHCHECK_MAX_KEEPALIVE_CONNECTIONS",
     "MAX_SUBQUERIES",
     "SEARCH_PROFILE_QUICK_TOKEN_BUDGET",
     "SEARCH_PROFILE_QUICK_MAX_URLS",
@@ -43,7 +41,7 @@ INTEGER_KEYS = {
     "PROXY_READ_CHUNK_BYTES",
     "PROXY_RELAY_CHUNK_BYTES",
 }
-FLOAT_KEYS = {"HEALTHCHECK_TIMEOUT_S", "EMBEDDING_TIMEOUT_S", "RELEVANCE_SCORE_FLOOR"}
+FLOAT_KEYS = {"EMBEDDING_TIMEOUT_S", "RELEVANCE_SCORE_FLOOR"}
 BOOL_KEYS = {
     "MARKDOWN_EXTRACTOR_FAVOR_RECALL",
     "MARKDOWN_EXTRACTOR_INCLUDE_COMMENTS",
@@ -93,7 +91,6 @@ class ConfigAnswers:
     reranker_endpoint: str = "http://reranker:80"
     reranker_model: str = "BAAI/bge-reranker-v2-m3"
     reranker_path: str = "/rerank"
-    reranker_health_path: str = "/health"
     reranker_api_key: str = ""
     llm_endpoint: str = ""
     llm_model: str = ""
@@ -284,7 +281,6 @@ def build_env_values(
             RERANKER_MODEL="BAAI/bge-reranker-v2-m3",
             RERANKER_MODEL_REVISION="953dc6f6f85a1b2dbfca4c34a2796e7dde08d41e",
             RERANKER_PATH="/rerank",
-            RERANKER_HEALTH_PATH="/health",
         )
     elif answers.mode == "llamacpp":
         embedding_endpoint = "http://embedding:8080"
@@ -297,14 +293,12 @@ def build_env_values(
             EMBEDDING_MODEL=llamacpp.get("LLAMACPP_EMBEDDING_ALIAS", "bge-m3"),
             RERANKER_MODEL=llamacpp.get("LLAMACPP_RERANKER_ALIAS", "bge-reranker-v2-m3"),
             RERANKER_PATH="/reranking",
-            RERANKER_HEALTH_PATH="/health",
         )
     else:
         values.update(
             EMBEDDING_MODEL=answers.embedding_model,
             RERANKER_MODEL=answers.reranker_model,
             RERANKER_PATH=answers.reranker_path,
-            RERANKER_HEALTH_PATH=answers.reranker_health_path,
         )
 
     values.update(

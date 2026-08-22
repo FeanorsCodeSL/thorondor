@@ -45,13 +45,8 @@ def _length(text: str) -> int:
     return len(text.split())
 
 
-@app.get("/healthz")
-def healthz():
-    return {"status": "ok", "embedding": _embedder.health_check()}
-
-
-@app.get("/livez")
-def livez():
+@app.get("/health")
+def health():
     return {"status": "ok"}
 
 

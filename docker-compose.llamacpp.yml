@@ -6,7 +6,6 @@ services:
       RERANKER_ENDPOINT: "http://reranker:8080"
       RERANKER_MODEL: "${LLAMACPP_RERANKER_ALIAS}"
       RERANKER_PATH: "/reranking"
-      RERANKER_HEALTH_PATH: "/health"
 
   chunker:
     environment:

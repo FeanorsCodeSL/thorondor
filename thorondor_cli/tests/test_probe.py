@@ -24,12 +24,11 @@ def test_embedding_probe_maps_success_and_auth_error():
 
 @respx.mock
 def test_reranker_probe_sends_production_body_and_flags_bad_model():
-    respx.get("http://rank.test/health").mock(return_value=httpx.Response(200, json={}))
     route = respx.post("http://rank.test/rerank").mock(
         return_value=httpx.Response(400, text="bad model")
     )
 
-    result = probe_reranker("http://rank.test", "/health", "/rerank", "bad-model", "token")
+    result = probe_reranker("http://rank.test", "/rerank", "bad-model", "token")
 
     assert result.status == "model_not_found"
     assert route.calls.last.request.headers["authorization"] == "Bearer token"

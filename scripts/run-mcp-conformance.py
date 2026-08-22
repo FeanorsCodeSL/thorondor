@@ -42,7 +42,7 @@ def _wait_for_ready(process: subprocess.Popen, url: str, timeout: float) -> None
         if process.poll() is not None:
             raise RuntimeError(f"conformance server exited with status {process.returncode}")
         try:
-            with urllib.request.urlopen(f"{url}/livez", timeout=0.5) as response:
+            with urllib.request.urlopen(f"{url}/health", timeout=0.5) as response:
                 if response.status == 200:
                     return
         except (OSError, urllib.error.URLError, TimeoutError):
