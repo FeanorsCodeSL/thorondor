@@ -187,14 +187,20 @@ A per-URL crawl failure is silent at the URL level — the URL is skipped and `s
 
 ## 4. Liveness and Readiness Flow
 
-`GET /livez` verifies only that the orchestrator process can serve requests. It
-does not call any dependency and is the endpoint used by the Docker health
-check.
+`GET /livez` on both the orchestrator and chunker verifies only that the process
+can serve requests. Neither route calls a dependency, and each is used by its
+service's Docker health check.
 
-`GET /healthz` probes all five dependencies concurrently and assembles a single
-readiness response. No dependency probe performs a public search. The SearXNG
-probe uses SearXNG's local `/healthz` endpoint, while other probe timeouts are
-governed by `HEALTHCHECK_TIMEOUT_S`.
+`GET /healthz` probes the five core dependencies concurrently and assembles a
+single readiness response. When durable crawl jobs are enabled, it also reports
+the local crawl-job worker as a sixth dependency. No dependency probe performs a
+public search. The SearXNG probe uses SearXNG's local `/healthz` endpoint, while
+other probe timeouts are governed by `HEALTHCHECK_TIMEOUT_S`.
+
+The chunker's `GET /healthz` remains an explicit embedding diagnostic and makes
+one embedding request. The orchestrator readiness flow calls that diagnostic,
+so operator-triggered readiness checks can reach the configured embedding
+provider. Recurring Docker liveness never enters this flow.
 
 ```mermaid
 sequenceDiagram
@@ -242,10 +248,57 @@ sequenceDiagram
     MCPServer->>MCPServer: Build SearchRequest from non-None parameters
     MCPServer->>Pipeline: await run_search(request, get_deps())
     Pipeline-->>MCPServer: SearchResponse
-    MCPServer->>MCPServer: response.model_dump()
-    MCPServer-->>AgentClient: dict {query, passages with evidence IDs/spans, citations with document metadata, stats, schema_version}
+    MCPServer->>MCPServer: Build CallToolResult with structuredContent=response.model_dump()
+    MCPServer-->>AgentClient: JSON-RPC result {resultType, content, structuredContent, isError, identity metadata}
 ```
 
-The MCP server is mounted at `/mcp` using `mcp.streamable_http_app()` with `stateless_http=True`. Stdio transport is available via `python -m orchestrator.mcp_server` for environments that require it.
+The MCP server is mounted at `/mcp` using `mcp.streamable_http_app()` with
+`stateless_http=True`. The supported native stdio command is `thorondor-mcp`,
+which forwards the same REST contracts.
 
 `X-Request-ID` propagation works identically for MCP calls — the middleware assigns the ID at the HTTP layer before the MCP frame is decoded, and it is forwarded to all downstream seams.
+
+### MCP lifecycle and result rules
+
+The modern 2026-07-28 HTTP request carries required
+`io.modelcontextprotocol/protocolVersion` and
+`io.modelcontextprotocol/clientCapabilities`, plus optional
+`io.modelcontextprotocol/clientInfo`, in `_meta`. The HTTP request also carries
+`MCP-Protocol-Version`, `Mcp-Method`, and, for `tools/call`, `Mcp-Name`; their
+values must match the envelope after optional HTTP whitespace is removed.
+`Accept` must cover JSON and SSE or use `*/*`. Protocol/routing mismatches
+return HTTP 400 with top-level `-32020`, while an unacceptable `Accept` returns
+HTTP 406 before a JSON-RPC result. Modern responses are sessionless. Legacy
+clients may still use the 2025 initialize handshake without the modern
+headers; a non-initialize modern envelope missing them is a mismatch error,
+not a legacy fallback.
+
+The four tool descriptors are shared by the orchestrator and native proxy.
+Read-only open-world annotations apply to search, map, and crawl; fetch is
+open-world, non-read-only, non-destructive, and non-idempotent. The SDK's empty
+prompt/resource primitives remain in the capability map for compatibility but
+are not part of the selected Thorondor claim.
+
+Every ordinary modern result is complete and identity-stamped. Tool execution
+errors preserve the corresponding REST envelope in `structuredContent` and
+set `isError=true`; invalid protocol parameters, method-not-found, unsupported
+version, header mismatch, and sanitized internal defects remain top-level
+JSON-RPC errors. Known-tool request-model failures are structured 422 tool
+errors, while signature-level SDK validation happens before tool entry. The
+complete serialized MCP result object is bounded by
+`MAX_RESPONSE_BODY_BYTES`, including text content, structured content, error
+state, result type, and identity metadata but not JSON-RPC or transport
+framing. The native proxy reads the same limit from its process environment.
+Cache hints are private with `ttlMs=0`; they do not change the page-cache
+policy, and structured calls bypass persistence.
+
+The official conformance harness is test-only. It uses faked outbound
+dependencies, a random local port, bounded readiness and scenario timeouts,
+fresh output directories, and manifest-scoped evaluation. Manifest identity,
+runner completion, and scenario-to-artifact relationships are validated before
+results are scored. Its 37-scenario profile separates direct gates, mixed
+checks, fixture-dependent observations, and out-of-profile behavior. The two
+list-change SHOULD warnings are intentional non-gating observations because
+Thorondor does not add autonomous subscription notifications. The evidence
+must not be read as a claim for OAuth, resources, prompts, completion, Tasks,
+Apps, sampling, roots, MRTR, or production diagnostics.

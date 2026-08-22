@@ -220,6 +220,34 @@ uninstalls the local tool unless `--keep-tool` is passed. `thorondor-mcp` is the
 native stdio MCP proxy. It forwards `web_search`, `web_fetch`, `web_map`, and
 `web_crawl` to the running stack's matching versioned REST endpoints; the
 Dockerized streamable HTTP MCP endpoint continues to be served at `/mcp`.
+When the stack overrides `MAX_RESPONSE_BODY_BYTES`, pass the same value in the
+native proxy process environment so its REST-read and final MCP-result bounds
+remain aligned with the orchestrator.
+
+### MCP ingress and conformance evidence
+
+The MCP endpoint is an application protocol surface, not an authentication or
+TLS boundary. Keep the published orchestrator port on loopback for local use.
+When it must be exposed, place a reverse proxy or equivalent protected ingress
+in front of `/mcp` and the REST routes to terminate TLS, authenticate callers,
+authorize access, and apply rate limiting. MCP Host/Origin checks and protocol
+header validation protect transport routing; they do not establish caller
+identity. The native stdio proxy is local process access and forwards the same
+REST contracts, so its host deployment must protect the configured REST base
+URL as well.
+
+The selected MCP evidence can be reproduced without deployment or external
+services after installing the pinned runner:
+
+```bash
+npm ci --prefix tools/mcp-conformance --ignore-scripts
+PYTHONPATH=. .venv/bin/python scripts/run-mcp-conformance.py \
+  --output-dir /tmp/thorondor-mcp-conformance
+```
+
+Use a fresh output directory. The runner stores logs, a manifest, per-scenario
+artifacts, and evaluation; it rejects stale output and does not let
+fixture-dependent nonzero runner statuses turn into a production claim.
 
 ### External and host model endpoints
 
@@ -250,19 +278,27 @@ orchestrator
   └── depends_on: searxng, crawl4ai, chunker
   └── healthcheck: GET /livez (interval 30s, 3 retries)
 
+chunker
+  └── healthcheck: GET /livez (interval 30s, 3 retries)
+
 crawl4ai
   └── healthcheck: curl /health (interval 30s, 3 retries, 40s start_period)
 ```
 
-All other services (`searxng`, `chunker`, `egress-proxy`, `embedding`, `reranker`) start without explicit health-gate dependencies and are polled by the deploy script via `GET /healthz` on the orchestrator. This readiness endpoint checks SearXNG through its local `/healthz` route and does not submit a search.
+All services start without explicit health-gate dependencies. The deploy script
+polls the orchestrator via `GET /healthz`; this operator-triggered readiness
+endpoint checks SearXNG through its local `/healthz` route and does not submit a
+search. It also calls the chunker's explicit `/healthz` diagnostic, which makes
+one embedding request per readiness poll, so deployment can reach the configured
+embedding provider.
 
-The orchestrator container health check calls process-only `GET /livez`, so its
-30-second polling interval generates no dependency or public-web traffic. The
-deploy script waits up to 120 seconds (60 attempts x 2s sleep) for `/healthz` to
-return a response with at least one dependency value and no `false` values in
-the `dependencies` object. The smoke script waits up to 180 seconds before
-issuing live search requests, which gives model containers extra time to finish
-loading.
+The orchestrator and chunker container health checks call their process-only
+`GET /livez` routes, so their 30-second polling intervals generate no dependency
+or public-web traffic. The deploy script waits up to 120 seconds (60 attempts x
+2s sleep) for `/healthz` to return a response with at least one dependency value
+and no `false` values in the `dependencies` object. The smoke script waits up to
+180 seconds before issuing live search requests, which gives model containers
+extra time to finish loading.
 
 Structured fetch profiles are opt-in request capabilities and require no extra
 container or environment variable. `links`, `tables`, and `json_ld` use the

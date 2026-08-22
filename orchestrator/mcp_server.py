@@ -4,16 +4,25 @@ import os
 from typing import Literal
 
 import anyio
+from mcp.server.caching import CACHEABLE_METHODS, CacheHint
 from mcp.server.mcpserver import MCPServer
 from mcp.server.transport_security import TransportSecuritySettings
+from pydantic import ValidationError
 from thorondor_contracts import (
     CRAWL_TOOL_DESCRIPTION,
     FETCH_TOOL_DESCRIPTION,
     MAP_TOOL_DESCRIPTION,
     SEARCH_TOOL_DESCRIPTION,
+    THORONDOR_VERSION,
     FetchCapability,
     StructuredFormat,
     TargetWatch,
+)
+from thorondor_mcp import (
+    MCPRequestValidationError,
+    tool_annotations,
+    unknown_tool_middleware,
+    wrap_mcp_tool,
 )
 
 from .fetch_pipeline import run_fetch
@@ -23,7 +32,7 @@ from .models import (
     MapRequest,
     SearchRequest,
 )
-from .pipeline import run_search
+from .pipeline import SearchDependencyUnavailable, run_search
 from .resource_policy import CapacityUnavailable, RouteDeadlineExceeded
 from .site_pipeline import run_crawl, run_map
 
@@ -50,7 +59,12 @@ def _csv_env(name: str, default: tuple[str, ...]) -> list[str]:
     return [part.strip() for part in raw.split(",") if part.strip()]
 
 
-mcp = MCPServer("thorondor")
+mcp = MCPServer(
+    "thorondor",
+    version=THORONDOR_VERSION,
+    cache_hints={method: CacheHint() for method in CACHEABLE_METHODS},
+)
+mcp.middleware.append(unknown_tool_middleware(mcp.list_tools))
 deps_override = None
 def set_deps(deps) -> None:
     global deps_override
@@ -82,7 +96,7 @@ def _operation_error(exc: CapacityUnavailable | RouteDeadlineExceeded) -> dict:
 
 def _request_limit_error(payload: dict, deps) -> dict | None:
     size = len(
-        json.dumps(payload, ensure_ascii=True, separators=(",", ":")).encode("utf-8")
+        json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
     )
     max_bytes = deps.resource_policy.max_request_body_bytes
     if size <= max_bytes:
@@ -103,7 +117,6 @@ def _bounded_response(response, deps) -> dict:
     return response.model_dump()
 
 
-@mcp.tool(description=SEARCH_TOOL_DESCRIPTION)
 async def web_search(
     query: str,
     search_profile: Literal["quick", "research", "deep"] | None = None,
@@ -139,15 +152,23 @@ async def web_search(
     deps = _get_deps()
     if error := _request_limit_error(request_data, deps):
         return error
-    request = SearchRequest(**request_data)
+    try:
+        request = SearchRequest(**request_data)
+    except ValidationError as exc:
+        raise MCPRequestValidationError from exc
     try:
         response = await run_search(request, deps)
+    except SearchDependencyUnavailable as exc:
+        return {
+            "error": exc.reason,
+            "status_code": 503,
+            "dependency": exc.dependency,
+        }
     except (CapacityUnavailable, RouteDeadlineExceeded) as exc:
         return _operation_error(exc)
     return _bounded_response(response, deps)
 
 
-@mcp.tool(description=FETCH_TOOL_DESCRIPTION)
 async def web_fetch(
     urls: list[str],
     capabilities: list[FetchCapability] | None = None,
@@ -191,7 +212,10 @@ async def web_fetch(
     deps = _get_deps()
     if error := _request_limit_error(request_data, deps):
         return error
-    request = FetchRequest(**request_data)
+    try:
+        request = FetchRequest(**request_data)
+    except ValidationError as exc:
+        raise MCPRequestValidationError from exc
     try:
         response = await run_fetch(request, deps)
     except (CapacityUnavailable, RouteDeadlineExceeded) as exc:
@@ -199,7 +223,6 @@ async def web_fetch(
     return _bounded_response(response, deps)
 
 
-@mcp.tool(description=MAP_TOOL_DESCRIPTION)
 async def web_map(
     url: str,
     sitemap: Literal["include", "only", "skip"] | None = None,
@@ -234,13 +257,16 @@ async def web_map(
     if error := _request_limit_error(request_data, deps):
         return error
     try:
-        response = await run_map(MapRequest(**request_data), deps)
+        request = MapRequest(**request_data)
+    except ValidationError as exc:
+        raise MCPRequestValidationError from exc
+    try:
+        response = await run_map(request, deps)
     except (CapacityUnavailable, RouteDeadlineExceeded) as exc:
         return _operation_error(exc)
     return _bounded_response(response, deps)
 
 
-@mcp.tool(description=CRAWL_TOOL_DESCRIPTION)
 async def web_crawl(
     url: str,
     sitemap: Literal["include", "only", "skip"] | None = None,
@@ -281,10 +307,32 @@ async def web_crawl(
     if error := _request_limit_error(request_data, deps):
         return error
     try:
-        response = await run_crawl(CrawlRequest(**request_data), deps)
+        request = CrawlRequest(**request_data)
+    except ValidationError as exc:
+        raise MCPRequestValidationError from exc
+    try:
+        response = await run_crawl(request, deps)
     except (CapacityUnavailable, RouteDeadlineExceeded) as exc:
         return _operation_error(exc)
     return _bounded_response(response, deps)
+
+
+def _max_mcp_response_bytes() -> int:
+    return _get_deps().resource_policy.max_response_body_bytes
+
+
+for _tool_name, _tool_fn, _tool_description in (
+    ("web_search", web_search, SEARCH_TOOL_DESCRIPTION),
+    ("web_fetch", web_fetch, FETCH_TOOL_DESCRIPTION),
+    ("web_map", web_map, MAP_TOOL_DESCRIPTION),
+    ("web_crawl", web_crawl, CRAWL_TOOL_DESCRIPTION),
+):
+    mcp.add_tool(
+        wrap_mcp_tool(_tool_fn, _max_mcp_response_bytes),
+        name=_tool_name,
+        description=_tool_description,
+        annotations=tool_annotations(_tool_name),
+    )
 
 
 mcp_http_app = mcp.streamable_http_app(

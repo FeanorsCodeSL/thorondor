@@ -116,6 +116,7 @@ Thorondor provides SSRF protection, log sanitization, and network isolation. The
 
 - **TLS termination** — the orchestrator does not serve HTTPS. A reverse proxy with a valid TLS certificate must be placed in front.
 - **Access control** — there is no authentication on `POST /v1/search`, `POST /search`, `POST /v1/fetch`, `POST /v1/map`, `POST /v1/crawl`, the crawl-job routes, or the MCP endpoint. Restrict access at the network or reverse-proxy layer. `X-Thorondor-Job-Scope` is an ownership partition only: a protected ingress must authenticate the caller, strip any caller-supplied value, and assign the trusted scope.
+- **MCP transport is not identity** — MCP `Host`/`Origin` allowlists, protocol-version headers, JSON-RPC IDs, and the stateless HTTP lifecycle validate routing and message shape only. They do not authenticate or authorize a caller. Apply TLS termination, authentication, authorization, and rate limiting at the reverse proxy for both `/mcp` and REST routes.
 - **Host binding and firewall** — keep `ORCHESTRATOR_HOST=127.0.0.1` for personal/local deployments. Use `ORCHESTRATOR_HOST=0.0.0.0` only behind firewall, TLS, authentication, and rate limiting.
 - **Secret hygiene** — `.env` contains sensitive values. Do not commit it to version control. Inject secrets from a secrets manager at deploy time.
 - **`ALLOWLIST_ONLY=false` responsibility** — with the default setting, the service will crawl any URL that passes the IP safety filter. Set `ALLOWLIST_ONLY=true` and populate `DOMAIN_ALLOWLIST` in high-risk environments.

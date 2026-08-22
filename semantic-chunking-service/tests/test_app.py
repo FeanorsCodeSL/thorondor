@@ -1,7 +1,9 @@
+from pathlib import Path
+
+import chunking.app as appmod
 import pytest
 from fastapi.testclient import TestClient
 
-import chunking.app as appmod
 from tests.conftest import fake_embed
 
 
@@ -154,8 +156,41 @@ def test_orchestrator_markdown_fallback_preserves_exact_source_slices(monkeypatc
         assert chunk["text"] == text[chunk["start_index"]:chunk["end_index"]]
 
 
-def test_healthz_reports_embedding(client):
-    assert client.get("/healthz").json() == {"status": "ok", "embedding": True}
+def test_livez_is_process_only(monkeypatch):
+    class FailOnAccessEmbedder:
+        def __getattribute__(self, name):
+            raise AssertionError(f"livez accessed embedder attribute {name}")
+
+    monkeypatch.setattr(appmod, "_embedder", FailOnAccessEmbedder())
+
+    response = TestClient(appmod.app).get("/livez")
+
+    assert response.status_code == 200
+    assert response.json() == {"status": "ok"}
+
+
+def test_healthz_runs_explicit_embedding_diagnostic(monkeypatch):
+    class RecordingEmbedder:
+        calls = 0
+
+        def health_check(self):
+            self.calls += 1
+            return True
+
+    embedder = RecordingEmbedder()
+    monkeypatch.setattr(appmod, "_embedder", embedder)
+
+    response = TestClient(appmod.app).get("/healthz")
+
+    assert response.json() == {"status": "ok", "embedding": True}
+    assert embedder.calls == 1
+
+
+def test_docker_healthcheck_targets_livez():
+    dockerfile = (Path(__file__).parents[1] / "Dockerfile").read_text(encoding="utf-8")
+
+    assert "http://localhost:8000/livez" in dockerfile
+    assert "http://localhost:8000/healthz" not in dockerfile
 
 
 def test_request_id_header_is_echoed(client):

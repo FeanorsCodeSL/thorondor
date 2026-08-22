@@ -1,12 +1,15 @@
 """FastAPI app for Thorondor."""
 import asyncio
+import json
 from contextlib import asynccontextmanager, suppress
 from typing import Annotated
 
 import httpx
 from fastapi import FastAPI, Header, HTTPException, Query, Request
 from fastapi.responses import JSONResponse
+from mcp_types import HEADER_MISMATCH
 
+from . import resource_policy as resource_policy_module
 from .clients.searxng_client import SEARXNG_INTERNAL_HEADERS
 from .crawl_job_store import (
     CrawlJobExpired,
@@ -43,14 +46,12 @@ from .models import (
 )
 from .observability import configure_json_logging, new_request_id, reset_request_id, set_request_id
 from .pipeline import SearchDependencyUnavailable, build_deps_from_settings, run_search
-from .resource_policy import (
-    CapacityUnavailable,
-    ResourcePolicy,
-    RouteDeadlineExceeded,
-    RuntimeAdmission,
-)
+from .resource_policy import CapacityUnavailable, RouteDeadlineExceeded
 from .settings import load_settings
 from .site_pipeline import run_crawl, run_map
+
+ResourcePolicy = resource_policy_module.ResourcePolicy
+RuntimeAdmission = resource_policy_module.RuntimeAdmission
 
 
 @asynccontextmanager
@@ -72,6 +73,12 @@ health_client: httpx.AsyncClient | None = None
 
 @app.middleware("http")
 async def route_mcp_without_redirect(request: Request, call_next):
+    is_mcp_request = request.scope["path"] in {"/mcp", "/mcp/"}
+    if is_mcp_request:
+        request.scope["headers"] = [
+            (name, value.strip(b" \t")) if name.lower().startswith(b"mcp-") else (name, value)
+            for name, value in request.scope["headers"]
+        ]
     if request.scope["path"] == "/mcp":
         request.scope["path"] = "/mcp/"
     request_id = request.headers.get("X-Request-ID") or new_request_id()
@@ -110,6 +117,35 @@ async def route_mcp_without_redirect(request: Request, call_next):
                 )
                 response.headers["X-Request-ID"] = request_id
                 return response
+            if is_mcp_request:
+                try:
+                    payload = json.loads(body)
+                except (ValueError, RecursionError):
+                    payload = None
+                params = payload.get("params") if isinstance(payload, dict) else None
+                meta = params.get("_meta") if isinstance(params, dict) else None
+                payload_id = payload.get("id") if isinstance(payload, dict) else None
+                if (
+                    isinstance(meta, dict)
+                    and "io.modelcontextprotocol/protocolVersion" in meta
+                    and "mcp-protocol-version" not in request.headers
+                ):
+                    response = JSONResponse(
+                        status_code=400,
+                        content={
+                            "jsonrpc": "2.0",
+                            "id": payload_id,
+                            "error": {
+                                "code": HEADER_MISMATCH,
+                                "message": (
+                                    "mcp-protocol-version header does not match "
+                                    "the request envelope's protocol version"
+                                ),
+                            },
+                        },
+                    )
+                    response.headers["X-Request-ID"] = request_id
+                    return response
         response = await call_next(request)
         response.headers["X-Request-ID"] = request_id
         return response

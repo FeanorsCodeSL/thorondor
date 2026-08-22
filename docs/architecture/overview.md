@@ -18,9 +18,42 @@ The central FastAPI service. It exposes `POST /v1/search`, a backward-compatible
 
 The orchestrator is the only service that speaks to all other components. It holds shared HTTP connection pools and robots snapshots, plus an optional SQLite page cache for known-URL fetches and an independent optional SQLite crawl-job store. The job worker is intentionally single-process and single-replica. On startup it validates every required environment variable through a strict settings loader; missing or blank required keys raise `RuntimeError` and prevent the process from starting.
 
+### MCP protocol boundary
+
+The `/mcp` mount and native `thorondor-mcp` proxy expose the same four tools:
+`web_search`, `web_fetch`, `web_map`, and `web_crawl`. The selected evidence
+claim is limited to the 2026-07-28 tool-server profile. Modern requests use a
+per-request `_meta` envelope with required protocol version and client
+capabilities, optional client information, and matching HTTP `MCP-Protocol-Version`,
+`Mcp-Method`, and (for `tools/call`) `Mcp-Name` routing headers. `Accept` must
+cover JSON and SSE or use `*/*`; an unacceptable value is HTTP 406, while a
+protocol or routing mismatch is a top-level `-32020` JSON-RPC error. Optional
+whitespace around MCP header values is removed before comparison. The HTTP
+surface is stateless and does not issue session IDs. The legacy initialize
+handshake remains supported as a separate lifecycle, while a modern envelope
+without its required routing data is rejected rather than downgraded.
+
+The pinned SDK retains empty prompt/resource primitives and advertises its
+capability map, but Thorondor does not claim prompt/resource content,
+subscriptions, or list-change notifications. Tool results preserve the REST
+body in `structuredContent`, use explicit `CallToolResult` error state, and
+carry the Thorondor identity metadata. Private zero-TTL cache hints apply to
+cacheable discovery/list methods; tool-call results do not claim those hint
+fields. The final MCP result byte limit includes all serialized result fields
+and excludes JSON-RPC and transport framing. HTTP/MCP ingress authentication, TLS,
+authorization, and rate limiting remain outside the service at the protected
+operator ingress.
+
 ### Semantic Chunking Service (`semantic-chunking-service/`)
 
-A standalone FastAPI service exposing `POST /chunk` and `GET /healthz`. It receives page markdown from the orchestrator and returns semantically coherent chunks with token counts, provenance metadata, and exact Unicode code-point spans. The orchestrator uses `ORCHESTRATOR_MARKDOWN` mode so already-cleaned Markdown is not destructively pre-cleaned again.
+A standalone FastAPI service exposing `POST /chunk`, process-only `GET /livez`,
+and explicit dependency diagnostic `GET /healthz`. It receives page markdown
+from the orchestrator and returns semantically coherent chunks with token
+counts, provenance metadata, and exact Unicode code-point spans. The
+orchestrator uses `ORCHESTRATOR_MARKDOWN` mode so already-cleaned Markdown is
+not destructively pre-cleaned again. Docker probes `/livez`; `/healthz` makes
+one request to the configured embedding provider and is never a recurring
+container health probe.
 
 The core algorithm is `ClusterSemanticChunker`: it splits text into ~50-token segments, generates embeddings for each segment using the configured OpenAI-compatible embedding server, builds an N×N cosine-similarity matrix, and uses dynamic programming to find globally optimal chunk boundaries that maximize semantic coherence within each chunk. When the segment count exceeds `CHUNKER_MAX_SEGMENTS_DP` (OOM guard), it falls back to a greedy-semantic algorithm that computes only adjacent-pair similarities. If the embedding server is unreachable, it falls back further to token-based splitting and marks chunks `embedding_degraded=true`.
 

@@ -76,3 +76,8 @@ models/
 
 # Git worktrees
 .worktree/
+
+# MCP conformance runner outputs and installed dependencies
+tools/mcp-conformance/node_modules/
+tools/mcp-conformance/results/
+tools/mcp-conformance/.cache/

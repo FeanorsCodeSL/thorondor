@@ -2,6 +2,7 @@ from typing import Literal
 
 from pydantic import BaseModel, Field, model_validator
 
+THORONDOR_VERSION = "0.0.0"
 MAX_FETCH_URLS = 4
 MAX_FETCH_URL_BYTES = 8192
 FETCH_CAPABILITIES = (

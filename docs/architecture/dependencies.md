@@ -118,3 +118,4 @@ When using the `bundled-models` (TEI) profile, model weights are downloaded from
 | Bash | `scripts/*.sh` | Linux equivalents of the PowerShell scripts |
 | Docker Compose | `docker-compose.yml`, `docker-compose.llamacpp.yml` | Local stack management |
 | GitHub Actions | `.github/workflows/release-guard.yml` | CI release guard, dependency install, compile check, offline pytest, and Compose config validation |
+| Node.js/npm | `tools/mcp-conformance/package.json`, `tools/mcp-conformance/package-lock.json` | Pinned official MCP conformance runner used by the selected test-only profile |
