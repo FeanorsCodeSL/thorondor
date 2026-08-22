@@ -315,6 +315,19 @@ def test_oversized_request_body_returns_413_before_validation(monkeypatch):
     }
 
 
+def test_invalid_content_length_uses_actual_body_size(monkeypatch):
+    monkeypatch.setattr(appmod, "deps", fakes.deps())
+
+    response = TestClient(appmod.app).post(
+        "/v1/search",
+        content=b'{"query":"x"}',
+        headers={"Content-Type": "application/json", "Content-Length": "invalid"},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["passages"]
+
+
 def test_capacity_returns_429_with_retry_after_and_health_remains_available(monkeypatch):
     deps = fakes.deps(
         resource_policy=appmod.ResourcePolicy(

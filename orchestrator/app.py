@@ -4,7 +4,7 @@ import json
 from contextlib import asynccontextmanager, suppress
 from typing import Annotated
 
-from fastapi import FastAPI, Header, HTTPException, Query, Request
+from fastapi import FastAPI, Header, HTTPException, Query, Request, Response
 from fastapi.responses import JSONResponse
 from mcp_types import HEADER_MISMATCH
 
@@ -68,8 +68,7 @@ deps = None
 settings = None
 
 
-@app.middleware("http")
-async def route_mcp_without_redirect(request: Request, call_next):
+def _normalize_mcp_request(request: Request) -> bool:
     is_mcp_request = request.scope["path"] in {"/mcp", "/mcp/"}
     if is_mcp_request:
         request.scope["headers"] = [
@@ -78,74 +77,92 @@ async def route_mcp_without_redirect(request: Request, call_next):
         ]
     if request.scope["path"] == "/mcp":
         request.scope["path"] = "/mcp/"
+    return is_mcp_request
+
+
+def _with_request_id(response: Response, request_id: str) -> Response:
+    response.headers["X-Request-ID"] = request_id
+    return response
+
+
+def _request_body_too_large_response(max_body_bytes: int) -> JSONResponse:
+    return JSONResponse(
+        status_code=413,
+        content={
+            "detail": {
+                "reason": "request_body_too_large",
+                "max_bytes": max_body_bytes,
+            }
+        },
+    )
+
+
+def _declared_body_exceeds_limit(request: Request, max_body_bytes: int) -> bool:
+    content_length = request.headers.get("content-length")
+    if content_length is None:
+        return False
+    try:
+        return int(content_length) > max_body_bytes
+    except ValueError:
+        return False
+
+
+def _mcp_header_mismatch_response(body: bytes, request: Request) -> JSONResponse | None:
+    try:
+        payload = json.loads(body)
+    except (ValueError, RecursionError):
+        payload = None
+    params = payload.get("params") if isinstance(payload, dict) else None
+    meta = params.get("_meta") if isinstance(params, dict) else None
+    if (
+        not isinstance(meta, dict)
+        or "io.modelcontextprotocol/protocolVersion" not in meta
+        or "mcp-protocol-version" in request.headers
+    ):
+        return None
+    return JSONResponse(
+        status_code=400,
+        content={
+            "jsonrpc": "2.0",
+            "id": payload.get("id") if isinstance(payload, dict) else None,
+            "error": {
+                "code": HEADER_MISMATCH,
+                "message": (
+                    "mcp-protocol-version header does not match "
+                    "the request envelope's protocol version"
+                ),
+            },
+        },
+    )
+
+
+async def _transport_preflight_response(
+    request: Request, is_mcp_request: bool
+) -> JSONResponse | None:
+    if request.method not in {"POST", "PUT", "PATCH"}:
+        return None
+    max_body_bytes = get_deps().resource_policy.max_request_body_bytes
+    if _declared_body_exceeds_limit(request, max_body_bytes):
+        return _request_body_too_large_response(max_body_bytes)
+    body = await request.body()
+    if len(body) > max_body_bytes:
+        return _request_body_too_large_response(max_body_bytes)
+    if not is_mcp_request:
+        return None
+    return _mcp_header_mismatch_response(body, request)
+
+
+@app.middleware("http")
+async def route_mcp_without_redirect(request: Request, call_next):
+    is_mcp_request = _normalize_mcp_request(request)
     request_id = request.headers.get("X-Request-ID") or new_request_id()
     token = set_request_id(request_id)
     try:
-        if request.method in {"POST", "PUT", "PATCH"}:
-            max_body_bytes = get_deps().resource_policy.max_request_body_bytes
-            content_length = request.headers.get("content-length")
-            if content_length is not None:
-                try:
-                    exceeds_limit = int(content_length) > max_body_bytes
-                except ValueError:
-                    exceeds_limit = False
-                if exceeds_limit:
-                    response = JSONResponse(
-                        status_code=413,
-                        content={
-                            "detail": {
-                                "reason": "request_body_too_large",
-                                "max_bytes": max_body_bytes,
-                            }
-                        },
-                    )
-                    response.headers["X-Request-ID"] = request_id
-                    return response
-            body = await request.body()
-            if len(body) > max_body_bytes:
-                response = JSONResponse(
-                    status_code=413,
-                    content={
-                        "detail": {
-                            "reason": "request_body_too_large",
-                            "max_bytes": max_body_bytes,
-                        }
-                    },
-                )
-                response.headers["X-Request-ID"] = request_id
-                return response
-            if is_mcp_request:
-                try:
-                    payload = json.loads(body)
-                except (ValueError, RecursionError):
-                    payload = None
-                params = payload.get("params") if isinstance(payload, dict) else None
-                meta = params.get("_meta") if isinstance(params, dict) else None
-                payload_id = payload.get("id") if isinstance(payload, dict) else None
-                if (
-                    isinstance(meta, dict)
-                    and "io.modelcontextprotocol/protocolVersion" in meta
-                    and "mcp-protocol-version" not in request.headers
-                ):
-                    response = JSONResponse(
-                        status_code=400,
-                        content={
-                            "jsonrpc": "2.0",
-                            "id": payload_id,
-                            "error": {
-                                "code": HEADER_MISMATCH,
-                                "message": (
-                                    "mcp-protocol-version header does not match "
-                                    "the request envelope's protocol version"
-                                ),
-                            },
-                        },
-                    )
-                    response.headers["X-Request-ID"] = request_id
-                    return response
+        preflight_response = await _transport_preflight_response(request, is_mcp_request)
+        if preflight_response is not None:
+            return _with_request_id(preflight_response, request_id)
         response = await call_next(request)
-        response.headers["X-Request-ID"] = request_id
-        return response
+        return _with_request_id(response, request_id)
     finally:
         reset_request_id(token)
 

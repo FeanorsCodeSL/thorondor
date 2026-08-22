@@ -8,7 +8,6 @@ import os
 import subprocess
 import sys
 import time
-import urllib.error
 import urllib.request
 from pathlib import Path
 
@@ -45,7 +44,7 @@ def _wait_for_ready(process: subprocess.Popen, url: str, timeout: float) -> None
             with urllib.request.urlopen(f"{url}/health", timeout=0.5) as response:
                 if response.status == 200:
                     return
-        except (OSError, urllib.error.URLError, TimeoutError):
+        except OSError:
             pass
         time.sleep(0.1)
     raise TimeoutError(f"conformance server did not become ready within {timeout}s")

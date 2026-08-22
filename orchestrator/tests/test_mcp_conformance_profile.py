@@ -123,6 +123,28 @@ def test_manifest_validation_binds_result_directory_to_scenario():
         validate_run_manifest(profile, manifest)
 
 
+def test_manifest_validation_rejects_duplicate_scenarios_and_result_directories():
+    profile = load_profile()
+    result_directory = "server-tools-list-2026-08-18T12-00-00-000Z"
+    scenario = {
+        "scenario": "tools-list",
+        "returncode": 0,
+        "result_directories": [result_directory],
+    }
+    manifest = {
+        "claim": profile["claim"],
+        "protocol_version": profile["protocol_version"],
+        "scenarios": [scenario, scenario],
+    }
+
+    with pytest.raises(ValueError, match="duplicate scenario"):
+        validate_run_manifest(profile, manifest)
+
+    manifest["scenarios"] = [scenario | {"result_directories": [result_directory] * 2}]
+    with pytest.raises(ValueError, match="duplicate result directory"):
+        validate_run_manifest(profile, manifest)
+
+
 def test_mixed_scenario_check_ids_have_explicit_dispositions():
     profile = load_profile()
     samples = {

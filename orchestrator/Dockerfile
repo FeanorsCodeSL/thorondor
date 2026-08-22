@@ -10,7 +10,7 @@ RUN pip install --no-cache-dir -r requirements.lock \
     && install -d -o appuser -g appuser /var/lib/thorondor
 COPY --chown=appuser:appuser --chmod=0555 orchestrator/ ./orchestrator/
 COPY --chown=appuser:appuser --chmod=0444 thorondor_contracts.py ./thorondor_contracts.py
-COPY --chown=appuser:appuser --chmod=0444 thorondor_mcp.py ./thorondor_mcp.py
+COPY --chown=root:root --chmod=0444 thorondor_mcp.py ./thorondor_mcp.py
 
 EXPOSE 8080
 HEALTHCHECK --interval=30s --timeout=5s --retries=3 \

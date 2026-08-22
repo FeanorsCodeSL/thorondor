@@ -58,7 +58,7 @@ def main() -> None:
     appmod.deps = runtime_deps
     mcp_server.set_deps(runtime_deps)
 
-    async def state():
+    def state():
         return JSONResponse(
             {
                 "fetch_started": bool(extractor and extractor.started),
@@ -67,7 +67,7 @@ def main() -> None:
             }
         )
 
-    async def release():
+    def release():
         if extractor:
             extractor.release_requested.set()
         return JSONResponse({"released": bool(extractor)})

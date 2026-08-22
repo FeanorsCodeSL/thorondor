@@ -16,6 +16,7 @@ PACKAGE_PATH = TOOLING_ROOT / "package.json"
 PACKAGE_LOCK_PATH = TOOLING_ROOT / "package-lock.json"
 NVMRC_PATH = TOOLING_ROOT / ".nvmrc"
 PROFILE_CLAIM = "2026-07-28 selected tool-server profile evidence"
+CHECKS_FILENAME = "checks.json"
 REQUIRED_SCENARIOS = frozenset(
     {
         "server-stateless",
@@ -223,6 +224,22 @@ def load_profile(path: Path = PROFILE_PATH) -> dict[str, Any]:
 
 
 def validate_profile(profile: Mapping[str, Any]) -> None:
+    _validate_profile_metadata(profile)
+    _validate_runner(profile.get("runner"))
+    _validate_disposition_rationales(profile.get("disposition_rationales"))
+    required = _validate_scenario_collection(
+        profile.get("required_scenarios"), REQUIRED_SCENARIOS, "required"
+    )
+    not_scored = _validate_scenario_collection(
+        profile.get("not_scored_scenarios"), NOT_SCORED_SCENARIOS, "not_scored"
+    )
+    for entry in required:
+        _validate_required_scenario(entry)
+    for entry in not_scored:
+        _validate_not_scored_scenario(entry)
+
+
+def _validate_profile_metadata(profile: Mapping[str, Any]) -> None:
     if profile.get("schema_version") != "thorondor.mcp.conformance.profile.v1":
         raise ValueError("unsupported conformance profile schema")
     if profile.get("protocol_version") != "2026-07-28":
@@ -238,33 +255,30 @@ def validate_profile(profile: Mapping[str, Any]) -> None:
         "requirements_blob": "b0c4f8560429e8f4b6c89833cc0b35405bc004ff",
     }:
         raise ValueError("requirements source pin drift")
-    _validate_runner(profile.get("runner"))
-    _validate_disposition_rationales(profile.get("disposition_rationales"))
-    required = _validate_scenario_collection(
-        profile.get("required_scenarios"), REQUIRED_SCENARIOS, "required"
-    )
-    not_scored = _validate_scenario_collection(
-        profile.get("not_scored_scenarios"), NOT_SCORED_SCENARIOS, "not_scored"
-    )
-    for entry in required:
-        if entry["classification"] != REQUIRED_CLASSIFICATIONS[entry["id"]]:
-            raise ValueError(f"required classification drift: {entry['id']}")
-        if entry["classification"] == "mixed" and not entry["checks"].get("rules"):
-            raise ValueError(f"mixed scenario has no explicit check rules: {entry['id']}")
-        if entry["classification"] in {"direct_gate", "mixed"}:
-            _validate_gate_requirements(entry)
-        expected_default = {
-            "direct_gate": "gate",
-            "mixed": "unclassified",
-            "fixture_dependent": "fixture_dependent",
-        }[entry["classification"]]
-        if entry["checks"]["default"] != expected_default:
-            raise ValueError(f"invalid default disposition for {entry['id']}")
-    for entry in not_scored:
-        if entry["classification"] != NOT_SCORED_CLASSIFICATIONS[entry["id"]]:
-            raise ValueError(f"not_scored classification drift: {entry['id']}")
-        if entry["checks"]["default"] != "informational":
-            raise ValueError(f"not_scored scenario cannot be a gate: {entry['id']}")
+
+
+def _validate_required_scenario(entry: Mapping[str, Any]) -> None:
+    classification = entry["classification"]
+    if classification != REQUIRED_CLASSIFICATIONS[entry["id"]]:
+        raise ValueError(f"required classification drift: {entry['id']}")
+    if classification == "mixed" and not entry["checks"].get("rules"):
+        raise ValueError(f"mixed scenario has no explicit check rules: {entry['id']}")
+    if classification in {"direct_gate", "mixed"}:
+        _validate_gate_requirements(entry)
+    expected_default = {
+        "direct_gate": "gate",
+        "mixed": "unclassified",
+        "fixture_dependent": "fixture_dependent",
+    }[classification]
+    if entry["checks"]["default"] != expected_default:
+        raise ValueError(f"invalid default disposition for {entry['id']}")
+
+
+def _validate_not_scored_scenario(entry: Mapping[str, Any]) -> None:
+    if entry["classification"] != NOT_SCORED_CLASSIFICATIONS[entry["id"]]:
+        raise ValueError(f"not_scored classification drift: {entry['id']}")
+    if entry["checks"]["default"] != "informational":
+        raise ValueError(f"not_scored scenario cannot be a gate: {entry['id']}")
 
 
 def validate_tooling_files(
@@ -317,42 +331,59 @@ def validate_run_manifest(
     scenarios: list[str] = []
     result_directories: list[str] = []
     for entry in entries:
-        if not isinstance(entry, Mapping) or not isinstance(entry.get("scenario"), str):
-            raise ValueError("manifest scenario entry is invalid")
-        scenario = entry["scenario"]
-        if scenario not in classifications:
-            raise ValueError(f"manifest contains unknown required scenario: {scenario}")
-        if scenario in scenarios:
-            raise ValueError(f"manifest contains duplicate scenario: {scenario}")
-        timed_out = entry.get("timed_out", False)
-        if not isinstance(timed_out, bool):
-            raise ValueError(f"manifest timeout flag is invalid: {scenario}")
-        returncode = entry.get("returncode")
-        if timed_out:
-            raise ValueError(f"manifest scenario timed out: {scenario}")
-        if isinstance(returncode, bool) or not isinstance(returncode, int):
-            raise ValueError(f"manifest return code is invalid: {scenario}")
-        if returncode not in {0, 1}:
-            raise ValueError(f"manifest runner status is invalid: {scenario}")
-        if classifications[scenario] == "direct_gate" and returncode != 0:
-            raise ValueError(f"direct-gate runner exited nonzero: {scenario}")
-        directories = entry.get("result_directories", [])
-        if not isinstance(directories, list) or not all(
-            isinstance(directory, str) for directory in directories
-        ):
-            raise ValueError(f"manifest result directories are invalid: {scenario}")
-        for directory in directories:
-            path = Path(directory)
-            if path.is_absolute() or len(path.parts) != 1:
-                raise ValueError(f"manifest result directory is not portable: {directory}")
-            checks_path = path / "checks.json"
-            if _scenario_from_result_path(checks_path) != scenario:
-                raise ValueError(f"manifest result directory does not match scenario: {scenario}")
-            if directory in result_directories:
-                raise ValueError(f"manifest contains duplicate result directory: {directory}")
-            result_directories.append(directory)
+        scenario = _validate_manifest_scenario(entry, classifications, scenarios)
+        result_directories.extend(
+            _validate_manifest_result_directories(entry, scenario, result_directories)
+        )
         scenarios.append(scenario)
     return scenarios, result_directories
+
+
+def _validate_manifest_scenario(
+    entry: Any, classifications: Mapping[str, str], scenarios: Collection[str]
+) -> str:
+    if not isinstance(entry, Mapping) or not isinstance(entry.get("scenario"), str):
+        raise ValueError("manifest scenario entry is invalid")
+    scenario = entry["scenario"]
+    if scenario not in classifications:
+        raise ValueError(f"manifest contains unknown required scenario: {scenario}")
+    if scenario in scenarios:
+        raise ValueError(f"manifest contains duplicate scenario: {scenario}")
+    timed_out = entry.get("timed_out", False)
+    if not isinstance(timed_out, bool):
+        raise ValueError(f"manifest timeout flag is invalid: {scenario}")
+    if timed_out:
+        raise ValueError(f"manifest scenario timed out: {scenario}")
+    returncode = entry.get("returncode")
+    if isinstance(returncode, bool) or not isinstance(returncode, int):
+        raise ValueError(f"manifest return code is invalid: {scenario}")
+    if returncode not in {0, 1}:
+        raise ValueError(f"manifest runner status is invalid: {scenario}")
+    if classifications[scenario] == "direct_gate" and returncode != 0:
+        raise ValueError(f"direct-gate runner exited nonzero: {scenario}")
+    return scenario
+
+
+def _validate_manifest_result_directories(
+    entry: Mapping[str, Any], scenario: str, existing: Collection[str]
+) -> list[str]:
+    directories = entry.get("result_directories", [])
+    if not isinstance(directories, list) or not all(
+        isinstance(directory, str) for directory in directories
+    ):
+        raise ValueError(f"manifest result directories are invalid: {scenario}")
+    validated: list[str] = []
+    for directory in directories:
+        path = Path(directory)
+        if path.is_absolute() or len(path.parts) != 1:
+            raise ValueError(f"manifest result directory is not portable: {directory}")
+        checks_path = path / CHECKS_FILENAME
+        if _scenario_from_result_path(checks_path) != scenario:
+            raise ValueError(f"manifest result directory does not match scenario: {scenario}")
+        if directory in existing or directory in validated:
+            raise ValueError(f"manifest contains duplicate result directory: {directory}")
+        validated.append(directory)
+    return validated
 
 
 def evaluate_checks(
@@ -557,7 +588,7 @@ def _result_check_paths(
     results_root: Path, result_directories: Collection[str | Path] | None
 ) -> list[Path]:
     if result_directories is None:
-        return sorted(results_root.rglob("checks.json"))
+        return sorted(results_root.rglob(CHECKS_FILENAME))
     root = results_root.resolve()
     paths: list[Path] = []
     for raw_directory in result_directories:
@@ -569,7 +600,7 @@ def _result_check_paths(
             directory.relative_to(root)
         except ValueError as exc:
             raise ValueError(f"result directory is outside results root: {directory}") from exc
-        checks_path = directory / "checks.json"
+        checks_path = directory / CHECKS_FILENAME
         if not checks_path.is_file():
             raise ValueError(f"manifest result directory has no checks.json: {directory}")
         paths.append(checks_path)
@@ -627,26 +658,39 @@ def _validate_scenario_collection(
     if set(actual_ids) != expected_ids or len(actual_ids) != len(expected_ids):
         raise ValueError(f"{label} scenario set drift")
     for entry in entries:
-        if entry.get("classification") not in CLASSIFICATIONS:
-            raise ValueError(f"invalid {label} classification: {entry.get('id')}")
-        checks = entry.get("checks")
-        if not isinstance(checks, Mapping) or checks.get("default") not in DISPOSITIONS:
-            raise ValueError(f"invalid check policy: {entry.get('id')}")
-        for rule in checks.get("rules", []):
-            if (
-                not isinstance(rule, Mapping)
-                or not isinstance(rule.get("pattern"), str)
-                or rule.get("disposition") not in DISPOSITIONS - {"unclassified"}
-            ):
-                raise ValueError(f"invalid check rule: {entry.get('id')}")
-        patterns = [rule["pattern"] for rule in checks.get("rules", [])]
-        if len(patterns) != len(set(patterns)):
-            raise ValueError(f"duplicate check rule: {entry.get('id')}")
-        if entry.get("classification") == "mixed" and any(
-            any(character in pattern for character in "*?[]") for pattern in patterns
-        ):
-            raise ValueError(f"mixed check rules must be bounded: {entry.get('id')}")
+        _validate_scenario_entry(entry, label)
     return entries
+
+
+def _validate_scenario_entry(entry: Mapping[str, Any], label: str) -> None:
+    if entry.get("classification") not in CLASSIFICATIONS:
+        raise ValueError(f"invalid {label} classification: {entry.get('id')}")
+    checks = entry.get("checks")
+    if not isinstance(checks, Mapping) or checks.get("default") not in DISPOSITIONS:
+        raise ValueError(f"invalid check policy: {entry.get('id')}")
+    patterns = _validate_check_rules(checks.get("rules", []), entry.get("id"))
+    if len(patterns) != len(set(patterns)):
+        raise ValueError(f"duplicate check rule: {entry.get('id')}")
+    if entry.get("classification") == "mixed":
+        _validate_bounded_check_patterns(patterns, entry.get("id"))
+
+
+def _validate_check_rules(rules: Any, scenario: Any) -> list[str]:
+    patterns: list[str] = []
+    for rule in rules:
+        if (
+            not isinstance(rule, Mapping)
+            or not isinstance(rule.get("pattern"), str)
+            or rule.get("disposition") not in DISPOSITIONS - {"unclassified"}
+        ):
+            raise ValueError(f"invalid check rule: {scenario}")
+        patterns.append(rule["pattern"])
+    return patterns
+
+
+def _validate_bounded_check_patterns(patterns: Collection[str], scenario: Any) -> None:
+    if any(any(character in pattern for character in "*?[]") for pattern in patterns):
+        raise ValueError(f"mixed check rules must be bounded: {scenario}")
 
 
 def _scenario_entry(profile: Mapping[str, Any], scenario: str) -> Mapping[str, Any]:
