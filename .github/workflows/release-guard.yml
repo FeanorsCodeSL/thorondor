@@ -12,6 +12,10 @@ jobs:
       - uses: actions/setup-python@v7.0.0
         with:
           python-version: "3.13"
+      - name: Install release guard dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e .
       - name: Check pinned runtime images and SearXNG boundary
         run: bash scripts/check-release-guard.sh
 
