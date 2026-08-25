@@ -31,13 +31,13 @@ Dashed border = optional component (not started unless `LLM_ENDPOINT` is configu
 | `ghcr.io/feanorscodesl/thorondor-orchestrator` | release tag or digest | amd64, arm64 | MIT | First-party REST/MCP orchestration service |
 | `ghcr.io/feanorscodesl/thorondor-chunker` | release tag or digest | amd64, arm64 | MIT | First-party semantic chunking service |
 | `ghcr.io/feanorscodesl/thorondor-egress-proxy` | release tag or digest | amd64, arm64 | MIT | Retained first-party SSRF proxy; Crawl4AI 0.9.2 does not route through it |
-| `searxng/searxng` | `2026.8.4-c63835bd2`, `@sha256:f4c8e59de166ed71f6380c0847c312ca51f0d41996e31d0559163b6b09ecde52` | amd64, arm64, arm/v7 | AGPL-3.0 | Multi-engine URL discovery |
+| `searxng/searxng` | `2026.8.22-9fea41204`, `@sha256:11a9b34cdc0b1ec2b991470a2762ecb5a1a531898289fb51dcd015260450729e` | amd64, arm64, arm/v7 | AGPL-3.0 | Multi-engine URL discovery |
 | `unclecode/crawl4ai` | `0.9.2`, `@sha256:bd36741e7bdd35ddc1a05d9183e1d6d8cefb61dd640d944a25d026b76e917690` | amd64, arm64 | Apache-2.0 | JavaScript-capable page crawling with connect-time DNS pinning |
 | `ghcr.io/huggingface/text-embeddings-inference` | revision `4150561`, `@sha256:af92a3852c965393cbdd111865c3a72445d2b430c7daf84269ffdb5cf178f4eb` | amd64 only | Apache-2.0 | Embedding + reranking (`bundled-models` profile) |
-| `ghcr.io/ggml-org/llama.cpp:server` | build `b10276`, `@sha256:bde659bfc300ee7d4d2e558e8a97e06211bc2bf079e31d22b61497f4f2cd85b1` | amd64, arm64, s390x | MIT | Embedding + reranking via GGUF (`llamacpp-models` profile) |
-| `python:3.13-slim` | `@sha256:bf503bb2243c5aad0aa951544dd60d165f992646441d35dea90893703fc26251` | amd64, arm64 | PSF License | Base for first-party Python services |
+| `ghcr.io/ggml-org/llama.cpp:server` | build `b10454`, `@sha256:2244d2b223b49912c7e0c31b4a3654e5e62cf19899f1f36ad30e785eac171a31` | amd64, arm64, s390x | MIT | Embedding + reranking via GGUF (`llamacpp-models` profile) |
+| `python:3.13-slim` | `@sha256:7e3a6aca9d74f93cca21a91d86a8dad8c34749afd5b4a98ee481c9c47b9f5ed4` | amd64, arm64 | PSF License | Base for first-party Python services |
 
-> Note: first-party service Dockerfiles run as non-root users. The Python base image is pinned to the vetted multi-architecture `3.13.14-slim-trixie` manifest digest.
+> Note: first-party service Dockerfiles run as non-root users. The Python base image is pinned to the vetted multi-architecture `3.13.15-slim-trixie` manifest digest.
 
 The `publish-images` workflow is the source of the first-party GHCR images. It
 publishes multi-arch manifests and records digest refs in the release artifact
@@ -50,11 +50,11 @@ publishes multi-arch manifests and records digest refs in the release artifact
 | Package | Version | License | Purpose |
 |---|---|---|---|
 | FastAPI | 0.141.1 | MIT | REST API framework |
-| Uvicorn[standard] | 0.52.1 | BSD-3-Clause | ASGI server |
+| Uvicorn[standard] | 0.52.4 | BSD-3-Clause | ASGI server |
 | httpx | 0.28.1 | BSD-3-Clause | Async HTTP client for all downstream seams |
-| idna | 3.18 | BSD-3-Clause | Non-transitional IDNA encoding for conservative URL identity |
+| idna | 3.19 | BSD-3-Clause | Non-transitional IDNA encoding for conservative URL identity |
 | Pydantic | 2.13.4 | MIT | Request/response wire models, settings validation |
-| MCP Python SDK | 2.0.0 | MIT | MCP `web_search`, `web_fetch`, `web_map`, and `web_crawl` tool surfaces |
+| MCP Python SDK | 2.1.0 | MIT | MCP `web_search`, `web_fetch`, `web_map`, and `web_crawl` tool surfaces |
 | Trafilatura | 2.2.0 | Apache-2.0 | HTML-to-Markdown content extraction |
 
 Page-cache and crawl-job persistence use Python's standard-library `sqlite3`; the
@@ -65,9 +65,9 @@ current design adds no runtime package, Redis service, or queue dependency.
 | Package | Version | License | Purpose |
 |---|---|---|---|
 | FastAPI | 0.141.1 | MIT | REST API framework |
-| Uvicorn[standard] | 0.52.1 | BSD-3-Clause | ASGI server |
+| Uvicorn[standard] | 0.52.4 | BSD-3-Clause | ASGI server |
 | httpx | 0.28.1 | BSD-3-Clause | HTTP client for embedding server calls |
-| NumPy | 2.5.1 | BSD-3-Clause | Similarity matrix computation, cosine similarity |
+| NumPy | 2.5.2 | BSD-3-Clause | Similarity matrix computation, cosine similarity |
 | Pydantic | 2.13.4 | MIT | Request/response models |
 
 ### Dev / Test dependencies

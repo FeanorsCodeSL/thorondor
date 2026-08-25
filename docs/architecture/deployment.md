@@ -437,13 +437,13 @@ Blank `SEARXNG_SECRET=` or `CRAWL4AI_API_KEY=` in `.env`, then re-run `deploy.ps
 
 ## 8. Running on ARM64 / DGX Spark
 
-The llama.cpp build `b10276` image SHA `bde659bfc300ee7d4d2e558e8a97e06211bc2bf079e31d22b61497f4f2cd85b1` is a multi-arch manifest that includes `linux/arm64`. The pinned TEI revision `4150561` is AMD64-only, so ARM64 deployments must use the llama.cpp profile or BYO model endpoints.
+The llama.cpp build `b10454` image SHA `2244d2b223b49912c7e0c31b4a3654e5e62cf19899f1f36ad30e785eac171a31` is a multi-arch manifest that includes `linux/arm64`. The pinned TEI revision `4150561` is AMD64-only, so ARM64 deployments must use the llama.cpp profile or BYO model endpoints.
 
 No ARM64-specific code changes are needed. Run the same `deploy-llamacpp.ps1` command. Docker Desktop or Docker Engine on the ARM64 host will pull the correct architecture layer.
 
 Known considerations:
 - CPU inference is the default. CUDA or Metal acceleration in llama.cpp requires rebuilding the image with GPU support — beyond the scope of this deployment guide.
-- The SearXNG image (`sha256:f4c8e59d...`) and Crawl4AI image (`sha256:bd36741e...`) are pulled from Docker Hub; both pinned indexes include AMD64 and ARM64 manifests.
+- The SearXNG image (`sha256:11a9b34c...`) and Crawl4AI image (`sha256:bd36741e...`) are pulled from Docker Hub; both pinned indexes include AMD64 and ARM64 manifests.
 - The bundled TEI profile cannot run natively on ARM64 with the pinned image.
 
 ## 9. Production Hardening Checklist

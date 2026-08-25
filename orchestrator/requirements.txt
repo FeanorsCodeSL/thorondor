@@ -1,7 +1,7 @@
 fastapi==0.141.1
-uvicorn[standard]==0.52.1
+uvicorn[standard]==0.52.4
 httpx==0.28.1
-idna==3.18
+idna==3.19
 pydantic==2.13.4
-mcp==2.0.0
+mcp==2.1.0
 trafilatura==2.2.0
