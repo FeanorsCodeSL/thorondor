@@ -153,7 +153,7 @@ Set `EMBEDDING_ENDPOINT`, `RERANKER_ENDPOINT`, and optionally `LLM_ENDPOINT` to 
 
 ### (d) ARM64 / DGX Spark
 
-The llama.cpp build `b10276` image is pinned to a specific SHA (`bde659bf...`) that is verified for both `linux/amd64` and `linux/arm64`. On ARM64 hosts the same `deploy-llamacpp.ps1` command applies with the same env files. The pinned TEI revision `4150561` is AMD64-only, so the bundled-models profile is not supported natively on ARM64. The Thorondor first-party code itself remains architecture-independent.
+The llama.cpp build `b10454` image is pinned to a specific SHA (`2244d2b2...`) that is verified for both `linux/amd64` and `linux/arm64`. On ARM64 hosts the same `deploy-llamacpp.ps1` command applies with the same env files. The pinned TEI revision `4150561` is AMD64-only, so the bundled-models profile is not supported natively on ARM64. The Thorondor first-party code itself remains architecture-independent.
 
 ## 5. Extension Points
 

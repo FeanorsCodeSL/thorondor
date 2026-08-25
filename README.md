@@ -859,7 +859,7 @@ Crawl4AI 0.9.2 owns its browser's connect-time DNS pinning and therefore has a d
 
 | Variable | Default | Description |
 |---|---|---|
-| `LLAMACPP_IMAGE` | `ghcr.io/ggml-org/llama.cpp:server@sha256:bde659bf...` | Pinned llama.cpp build `b10276` server image SHA. |
+| `LLAMACPP_IMAGE` | `ghcr.io/ggml-org/llama.cpp:server@sha256:2244d2b2...` | Pinned llama.cpp build `b10454` server image SHA. |
 | `LLAMACPP_EMBEDDING_MODEL` | `/models/bge-m3.gguf` | Container path to the embedding GGUF (mounted from `./models`). |
 | `LLAMACPP_EMBEDDING_ALIAS` | `bge-m3` | Model alias used in embedding API requests. |
 | `LLAMACPP_EMBEDDING_POOLING` | `cls` | Pooling strategy for the embedding model. |

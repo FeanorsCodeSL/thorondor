@@ -10,11 +10,11 @@ own generated SBOM for the exact artifacts they ship.
 
 | Component | Runtime reference | License | Upstream |
 |---|---|---|---|
-| SearXNG | `searxng/searxng@sha256:f4c8e59de166ed71f6380c0847c312ca51f0d41996e31d0559163b6b09ecde52` | AGPL-3.0 | https://github.com/searxng/searxng |
+| SearXNG | `searxng/searxng@sha256:11a9b34cdc0b1ec2b991470a2762ecb5a1a531898289fb51dcd015260450729e` | AGPL-3.0 | https://github.com/searxng/searxng |
 | Crawl4AI | `unclecode/crawl4ai@sha256:bd36741e7bdd35ddc1a05d9183e1d6d8cefb61dd640d944a25d026b76e917690` | Apache-2.0 | https://github.com/unclecode/crawl4ai |
 | Hugging Face Text Embeddings Inference | revision `4150561`, `ghcr.io/huggingface/text-embeddings-inference@sha256:af92a3852c965393cbdd111865c3a72445d2b430c7daf84269ffdb5cf178f4eb` | Apache-2.0 | https://github.com/huggingface/text-embeddings-inference |
-| llama.cpp server | build `b10276`, `ghcr.io/ggml-org/llama.cpp:server@sha256:bde659bfc300ee7d4d2e558e8a97e06211bc2bf079e31d22b61497f4f2cd85b1` | MIT | https://github.com/ggml-org/llama.cpp |
-| Python base image | `python:3.13-slim@sha256:bf503bb2243c5aad0aa951544dd60d165f992646441d35dea90893703fc26251` | Python Software Foundation License + bundled OS package licenses | https://hub.docker.com/_/python |
+| llama.cpp server | build `b10454`, `ghcr.io/ggml-org/llama.cpp:server@sha256:2244d2b223b49912c7e0c31b4a3654e5e62cf19899f1f36ad30e785eac171a31` | MIT | https://github.com/ggml-org/llama.cpp |
+| Python base image | `python:3.13-slim@sha256:7e3a6aca9d74f93cca21a91d86a8dad8c34749afd5b4a98ee481c9c47b9f5ed4` | Python Software Foundation License + bundled OS package licenses | https://hub.docker.com/_/python |
 
 ### SearXNG — AGPL-3.0 notice
 
